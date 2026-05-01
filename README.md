@@ -65,4 +65,10 @@ The built executable will be placed under `dist/`.
 Back up your game files before saving edited data. A lot of formats here are
 very specific to ASBR, and bad values can still make the game unhappy.
 
-And if you want thank me, then... BTC: bc1qglgl3zqjqhdkqn0y97thqlhfpg7hxvjg09tlv4
+## Donations
+
+This project is free and will remain free.
+
+If you still want to support development:
+
+- BTC: bc1qglgl3zqjqhdkqn0y97thqlhfpg7hxvjg09tlv4
