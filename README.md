@@ -59,7 +59,10 @@ The built executable will be placed under `dist/`.
   character at the bottom, and inspiration
 - [JoJo Modding Community](https://discord.gg/bfWPHBwbr9) - inspiration
 
+
 ## Notes
 
 Back up your game files before saving edited data. A lot of formats here are
 very specific to ASBR, and bad values can still make the game unhappy.
+
+And if you want thank me, then... BTC: bc1qglgl3zqjqhdkqn0y97thqlhfpg7hxvjg09tlv4
