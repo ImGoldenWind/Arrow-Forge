@@ -343,6 +343,135 @@ def save_xfbin(xfbin, path: str) -> None:
     _write_path(xfbin, path)
 
 
+def refresh_texture_entries(xfbin) -> list[TextureEntry]:
+    """Rebuild TextureEntry wrappers from the current XFBIN object."""
+    entries: list[TextureEntry] = []
+    for page_idx, page in enumerate(xfbin.pages):
+        for chunk in page.chunks:
+            entry = _chunk_to_entry(chunk, page_idx)
+            if entry:
+                entries.append(entry)
+    return entries
+
+
+def add_texture_from_file(xfbin, import_path: str, template_entry: TextureEntry | None = None) -> TextureEntry:
+    """Import an external image/DDS/NUT as a new NuccChunkTexture page."""
+    new_tex = _texture_from_file(import_path)
+    base_name = os.path.splitext(os.path.basename(import_path))[0] or 'new_texture'
+    name = _unique_texture_name(refresh_texture_entries(xfbin), base_name)
+    file_path = _make_texture_file_path(name, template_entry)
+
+    new_chunk = NuccChunkTexture(file_path, name)
+    new_chunk.has_props = True
+    new_chunk.extension = '.nut'
+
+    nut = Nut()
+    nut.magic = 'NTP3'
+    nut.version = 0x0100
+    nut.textures = [new_tex]
+    nut.texture_count = 1
+    new_chunk.nut = nut
+
+    page = Page()
+    page.chunks.append(new_chunk)
+    xfbin.pages.append(page)
+
+    entry = _chunk_to_entry(new_chunk, len(xfbin.pages) - 1)
+    if entry is None:
+        raise ValueError('Imported file did not produce a valid texture entry')
+    return entry
+
+
+def duplicate_texture_entry(xfbin, entry: TextureEntry) -> TextureEntry:
+    """Clone an existing texture entry into a new page and return its wrapper."""
+    new_chunk = _clone_chunk(entry)
+    if new_chunk is None:
+        raise ValueError('Could not duplicate this texture')
+
+    entries = refresh_texture_entries(xfbin)
+    new_name = _unique_texture_name(entries, f"{entry.name}_copy")
+    new_chunk.name = new_name
+    new_chunk.filePath = _make_texture_file_path(new_name, entry)
+
+    page = Page()
+    page.chunks.append(new_chunk)
+    xfbin.pages.append(page)
+
+    new_entry = _chunk_to_entry(new_chunk, len(xfbin.pages) - 1)
+    if new_entry is None:
+        raise ValueError('Duplicated chunk did not produce a valid texture entry')
+    return new_entry
+
+
+def delete_texture_entry(xfbin, entry: TextureEntry) -> bool:
+    """Remove a texture chunk from the XFBIN. Returns True if removed."""
+    chunk = entry.chunk
+    if chunk is None:
+        return False
+
+    for page in xfbin.pages:
+        page.chunk_references = [
+            ref for ref in page.chunk_references
+            if getattr(ref, 'chunk', None) is not chunk
+        ]
+
+    for page in list(xfbin.pages):
+        if chunk not in page.chunks:
+            continue
+        page.chunks.remove(chunk)
+        if len(xfbin.pages) > 1 and not _page_has_data_chunks(page):
+            xfbin.pages.remove(page)
+        return True
+    return False
+
+
+def _texture_from_file(import_path: str) -> NutTexture:
+    with open(import_path, 'rb') as f:
+        data = f.read()
+
+    ext = os.path.splitext(import_path)[1].lower()
+
+    if ext == '.dds' or data[:4] == b'DDS ':
+        return dds_to_nut_texture(data)
+
+    if ext in ('.png', '.jpg', '.jpeg', '.bmp', '.tga') or data[:4] == b'\x89PNG':
+        img = Image.open(io.BytesIO(data)).convert('RGBA')
+        return pil_to_nut_texture_rgba(img)
+
+    if ext == '.nut':
+        with BinaryReader(data, Endian.BIG) as br:
+            br_nut = br.read_struct(BrNut)
+        nut = Nut()
+        nut.init_data(br_nut)
+        if not nut.textures:
+            raise ValueError('NUT file contains no textures')
+        return copy.deepcopy(nut.textures[0])
+
+    raise ValueError(f'Unsupported format: {ext}')
+
+
+def _unique_texture_name(entries: list[TextureEntry], base_name: str) -> str:
+    existing = {e.name.lower() for e in entries}
+    candidate = base_name
+    counter = 1
+    while candidate.lower() in existing:
+        candidate = f"{base_name}_{counter}"
+        counter += 1
+    return candidate
+
+
+def _make_texture_file_path(name: str, template_entry: TextureEntry | None) -> str:
+    if template_entry and template_entry.file_path:
+        directory = os.path.dirname(template_entry.file_path).replace('\\', '/')
+        ext = os.path.splitext(template_entry.file_path)[1] or '.nut'
+        return f"{directory}/{name}{ext}" if directory else f"{name}{ext}"
+    return f"{name}.nut"
+
+
+def _page_has_data_chunks(page: Page) -> bool:
+    return any(not isinstance(c, (NuccChunkNull, NuccChunkPage)) for c in page.chunks)
+
+
 # Replace texture from external file
 def replace_texture_from_file(entry: TextureEntry, import_path: str) -> str | None:
     """Replace the texture in-place. Returns an error string or None on success."""

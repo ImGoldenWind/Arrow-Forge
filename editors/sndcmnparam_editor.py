@@ -42,8 +42,10 @@ from core.style_helpers import (
     ss_main_label,
     ss_transparent,
 )
+from core.editor_file_state import set_file_label
 from parsers.sndcmnparam_parser import parse_sndcmnparam_xfbin, save_sndcmnparam_xfbin
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 def _clear_layout(layout):
@@ -218,7 +220,7 @@ class SndCmnParamEditor(QWidget):
         self._editor_layout.setContentsMargins(0, 0, 0, 0)
         self._editor_layout.setSpacing(0)
         self._editor_scroll.setWidget(self._editor_widget)
-        self._show_placeholder(self._tr("placeholder_char_stats", ui_text("placeholder_char_stats")))
+        self._show_placeholder(ui_text("ui_sndcmnparam_open_a_sndcmnparam_xfbin_file_to_begin_editing"))
 
         main_layout.addWidget(self._editor_scroll, 1)
         root.addWidget(main, 1)
@@ -227,11 +229,12 @@ class SndCmnParamEditor(QWidget):
         path, _ = QFileDialog.getOpenFileName(
             self,
             ui_text("ui_sndcmnparam_open_sndcmnparam_xfbin"),
-            "",
+            game_files_dialog_dir(target_patterns=("sndcmnparam.xfbin", "sndcmnparam.bin.xfbin")),
             "Sound CMN Param files (sndcmnparam.xfbin *.xfbin);;All files (*.*)",
         )
         if not path:
             return
+        create_backup_on_open(path)
         self._filepath = path
         self._file_lbl.setText(self._tr("loading", ui_text("loading")))
         self._file_lbl.setStyleSheet(ss_file_label())
@@ -258,8 +261,7 @@ class SndCmnParamEditor(QWidget):
         self._current_section_idx = 0 if sections else None
         self._current_entry_idx = 0 if sections and sections[0]["entries"] else None
 
-        self._file_lbl.setText(os.path.basename(path))
-        self._file_lbl.setStyleSheet(ss_file_label_loaded())
+        set_file_label(self._file_lbl, path)
         self._save_btn.setEnabled(True)
         self._populate_categories()
         self._select_category(self._current_section_idx)
@@ -274,7 +276,7 @@ class SndCmnParamEditor(QWidget):
         self._save_btn.setEnabled(False)
         self._set_action_state(False)
         self._clear_categories()
-        self._show_placeholder(self._tr("placeholder_char_stats", ui_text("placeholder_char_stats")))
+        self._show_placeholder(ui_text("ui_sndcmnparam_open_a_sndcmnparam_xfbin_file_to_begin_editing"))
         QMessageBox.critical(
             self,
             self._tr("dlg_title_error", ui_text("dlg_title_error")),
@@ -288,8 +290,7 @@ class SndCmnParamEditor(QWidget):
         try:
             save_sndcmnparam_xfbin(self._filepath, self._raw, self._sections)
             self._dirty = False
-            self._file_lbl.setText(os.path.basename(self._filepath))
-            self._file_lbl.setStyleSheet(ss_file_label_loaded())
+            set_file_label(self._file_lbl, self._filepath)
             self._raw, self._sections = parse_sndcmnparam_xfbin(self._filepath)
             self._populate_categories()
             self._select_category(self._current_section_idx)
@@ -360,7 +361,7 @@ class SndCmnParamEditor(QWidget):
         if idx is None or idx < 0 or idx >= len(self._sections):
             self._current_section_idx = None
             self._current_entry_idx = None
-            self._show_placeholder(self._tr("placeholder_char_stats", ui_text("placeholder_char_stats")))
+            self._show_placeholder(ui_text("ui_sndcmnparam_open_a_sndcmnparam_xfbin_file_to_begin_editing"))
             self._set_action_state(False)
             return
         self._sync_visible_fields()
@@ -393,7 +394,7 @@ class SndCmnParamEditor(QWidget):
         self._entry_cards = []
         section = self._current_section()
         if not section:
-            self._show_placeholder(self._tr("placeholder_char_stats", ui_text("placeholder_char_stats")))
+            self._show_placeholder(ui_text("ui_sndcmnparam_open_a_sndcmnparam_xfbin_file_to_begin_editing"))
             return
 
         title = QLabel(section["name"])
@@ -612,8 +613,7 @@ class SndCmnParamEditor(QWidget):
             return
         self._dirty = True
         if self._filepath:
-            self._file_lbl.setText(ui_text("ui_customcardparam_value", p0=os.path.basename(self._filepath)))
-            self._file_lbl.setStyleSheet(ss_file_label_loaded())
+            set_file_label(self._file_lbl, self._filepath, dirty=True)
 
     def _set_action_state(self, enabled):
         self._add_btn.setEnabled(enabled)

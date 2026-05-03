@@ -20,8 +20,10 @@ from core.style_helpers import (
     ss_scrollarea_transparent, ss_field_label, ss_sidebar_btn,
     ss_file_label, TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.editor_file_state import set_file_label
 from parsers.damageeff_parser import parse_damageeff_xfbin, save_damageeff_xfbin, _NONE_VAL
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 # Field definitions
 
@@ -295,7 +297,7 @@ class DamageEffEditor(QWidget):
     def _show_placeholder(self):
         _clear_layout(self._main_layout)
         self._field_widgets = {}
-        lbl = QLabel(ui_text("xfa_no_file"))
+        lbl = QLabel(ui_text("ui_damageeff_open_a_damageeff_bin_xfbin_file_to_begin_editing"))
         lbl.setFont(QFont("Segoe UI", 14))
         lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -376,6 +378,8 @@ class DamageEffEditor(QWidget):
     def _mark_dirty(self):
         self._dirty = True
         self._btn_save.setEnabled(True)
+        if self._filepath:
+            set_file_label(self._file_lbl, self._filepath, dirty=True)
 
     def _apply_fields(self):
         if self._current_idx < 0 or self._result is None:
@@ -420,11 +424,12 @@ class DamageEffEditor(QWidget):
 
     def _on_load_effectprm(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_damageeff_load_effectprm_bin_xfbin"), "",
+            self, ui_text("ui_damageeff_load_effectprm_bin_xfbin"), game_files_dialog_dir(target_patterns="effectprm.bin.xfbin"),
             "XFBIN Files (effectprm.bin.xfbin);;All Files (*.*)"
         )
         if not path:
             return
+        create_backup_on_open(path)
         try:
             from parsers.effectprm_parser import parse_effectprm_xfbin
             _, eff = parse_effectprm_xfbin(path)
@@ -453,6 +458,7 @@ class DamageEffEditor(QWidget):
     # Data loading
 
     def _load_file(self, filepath):
+        create_backup_on_open(filepath)
         try:
             raw, result = parse_damageeff_xfbin(filepath)
         except Exception as e:
@@ -469,8 +475,7 @@ class DamageEffEditor(QWidget):
         self._populate_sidebar()
         self._show_empty_selection()
 
-        self._file_lbl.setText(os.path.basename(filepath))
-        self._file_lbl.setStyleSheet(f"color: {P['text_file']}; background: transparent;")
+        set_file_label(self._file_lbl, filepath)
         self._btn_save.setEnabled(True)
         self._btn_new.setEnabled(True)
 
@@ -483,7 +488,7 @@ class DamageEffEditor(QWidget):
 
     def _on_open(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_damageeff_open_damageeff_bin_xfbin"), "",
+            self, ui_text("ui_damageeff_open_damageeff_bin_xfbin"), game_files_dialog_dir(target_patterns="damageeff.bin.xfbin"),
             "XFBIN Files (damageeff.bin.xfbin);;All Files (*.*)"
         )
         if path:
@@ -499,6 +504,7 @@ class DamageEffEditor(QWidget):
         try:
             save_damageeff_xfbin(filepath, self._raw, self._result)
             self._dirty = False
+            set_file_label(self._file_lbl, filepath)
             QMessageBox.information(self, ui_text("ui_assist_saved"), ui_text("ui_assist_file_saved_value", p0=os.path.basename(filepath)))
         except Exception as e:
             QMessageBox.critical(self, ui_text("ui_assist_save_error"), ui_text("ui_assist_failed_to_save_value", p0=e))

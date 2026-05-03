@@ -18,12 +18,14 @@ from core.style_helpers import (
     ss_placeholder, ss_file_label,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.editor_file_state import set_file_label
 from parsers.charviewer_parser import (
     parse_charviewer_xfbin,
     save_charviewer_xfbin,
     make_default_entry,
 )
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 _PART_NAMES = {
     0: ui_text("ui_charviewer_all_none"),
@@ -580,7 +582,7 @@ class CharViewerEditor(QWidget):
         e["unk3"]        = _int("unk3")
         e["unk4"]        = _int("unk4")
 
-        self._dirty = True
+        self._mark_dirty()
 
         # Refresh the button labels if viewer_id or chara_code changed
         for btn, bi in self._entry_buttons:
@@ -601,11 +603,12 @@ class CharViewerEditor(QWidget):
     def _on_open(self):
         path, _ = QFileDialog.getOpenFileName(
             self, ui_text("ui_charviewer_open_charviewerparam_bin_xfbin"),
-            self._filepath or "",
+            game_files_dialog_dir(self._filepath or "", "CharViewerParam.bin.xfbin"),
             "XFBIN Files (*.xfbin);;All Files (*)"
         )
         if not path:
             return
+        create_backup_on_open(path)
         try:
             raw, version, entries = parse_charviewer_xfbin(path)
         except Exception as ex:
@@ -617,7 +620,7 @@ class CharViewerEditor(QWidget):
         self._entries  = entries
         self._dirty    = False
         self._current_idx = -1
-        self._lbl_file.setText(os.path.basename(path))
+        set_file_label(self._lbl_file, path)
         self._btn_save.setEnabled(True)
         self._btn_add.setEnabled(True)
         self._rebuild_list()
@@ -636,7 +639,7 @@ class CharViewerEditor(QWidget):
             if not path:
                 return
             self._filepath = path
-            self._lbl_file.setText(os.path.basename(path))
+            set_file_label(self._lbl_file, path)
         self._do_save(self._filepath)
 
     def _do_save(self, path: str):
@@ -644,6 +647,7 @@ class CharViewerEditor(QWidget):
             save_charviewer_xfbin(path, self._raw, self._version, self._entries)
             self._raw   = bytearray(open(path, "rb").read())
             self._dirty = False
+            set_file_label(self._lbl_file, path)
             QMessageBox.information(self, ui_text("ui_assist_saved"),
                                     ui_text("ui_charviewer_saved_value_entries_to_value", p0=len(self._entries), p1=path))
         except Exception as ex:
@@ -651,10 +655,15 @@ class CharViewerEditor(QWidget):
 
     # Add / Duplicate / Delete
 
+    def _mark_dirty(self):
+        self._dirty = True
+        if self._filepath:
+            set_file_label(self._lbl_file, self._filepath, dirty=True)
+
     def _on_add(self):
         new_e = make_default_entry(len(self._entries))
         self._entries.append(new_e)
-        self._dirty = True
+        self._mark_dirty()
         self._rebuild_list()
         self._select_entry(len(self._entries) - 1)
 
@@ -666,7 +675,7 @@ class CharViewerEditor(QWidget):
         new_e["viewer_id"]      = new_e["viewer_id"] + "_copy"
         insert_at = self._current_idx + 1
         self._entries.insert(insert_at, new_e)
-        self._dirty = True
+        self._mark_dirty()
         self._rebuild_list()
         self._select_entry(insert_at)
 
@@ -683,7 +692,7 @@ class CharViewerEditor(QWidget):
             return
         old_idx = self._current_idx
         del self._entries[old_idx]
-        self._dirty       = True
+        self._mark_dirty()
         self._current_idx = -1
         self._rebuild_list()
         if self._visible_indices:

@@ -16,8 +16,10 @@ from core.style_helpers import (
     ss_section_label, ss_field_label,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.editor_file_state import set_file_label
 from parsers.effectprm_parser import parse_effectprm_xfbin, save_effectprm_xfbin
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 def _clear_layout(layout):
@@ -465,10 +467,11 @@ class EffectEditor(QWidget):
 
     def _load_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_effect_open_effectprm_xfbin"), "",
+            self, ui_text("ui_effect_open_effectprm_xfbin"), game_files_dialog_dir(target_patterns=("effectprm.bin.xfbin", "effectprm.xfbin")),
             "Effect PRM files (effectprm.bin.xfbin *.xfbin);;All files (*.*)"
         )
         if path:
+            create_backup_on_open(path)
             self._start_load(path)
 
     def _start_load(self, path):
@@ -505,8 +508,7 @@ class EffectEditor(QWidget):
         self._dirty   = False
         self._entries = [dict(e) for e in result['entries']]
 
-        self._file_lbl.setText(os.path.basename(path))
-        self._file_lbl.setStyleSheet(f"color: {P['text_file']};")
+        set_file_label(self._file_lbl, path)
 
         self._save_btn.setEnabled(True)
         self._add_btn.setEnabled(True)
@@ -534,9 +536,7 @@ class EffectEditor(QWidget):
     def _mark_dirty(self):
         if not self._dirty:
             self._dirty = True
-            name = os.path.basename(self._filepath) if self._filepath else ''
-            self._file_lbl.setText(ui_text("ui_effect_value", p0=name))
-            self._file_lbl.setStyleSheet(f"color: {P['accent']};")
+            set_file_label(self._file_lbl, self._filepath, dirty=True)
 
     def _save_file(self):
         if self._filepath:
@@ -549,8 +549,7 @@ class EffectEditor(QWidget):
             save_effectprm_xfbin(path, self._raw, self._result)
             self._filepath = path
             self._dirty    = False
-            self._file_lbl.setText(os.path.basename(path))
-            self._file_lbl.setStyleSheet(f"color: {P['text_file']};")
+            set_file_label(self._file_lbl, path)
             self._raw, self._result = parse_effectprm_xfbin(path)
             self._entries = [dict(e) for e in self._result['entries']]
             current_slot = self._current_entry['slot_id'] if self._current_entry else None

@@ -111,10 +111,35 @@ THEMES = {
 }
 
 # Active palette — mutable, updated on theme switch
-P: dict[str, str] = dict(THEMES["Soft & Wet"])
+DEFAULT_THEME = "Star Platinum"
+
+THEME_ALIASES = {
+    "soft_wet": "Soft & Wet",
+    "soft_&_wet": "Soft & Wet",
+    "wonder_of_u": "Wonder of U",
+    "star_platinum": "Star Platinum",
+    "crazy_diamond": "Crazy Diamond",
+    "gold_experience_requiem": "GER",
+    "ger": "GER",
+    "stone_free": "Stone Free",
+}
+
+
+def normalize_theme_key(theme_key: str | None) -> str:
+    if theme_key in THEMES:
+        return theme_key
+    if isinstance(theme_key, str):
+        normalized = theme_key.strip().lower().replace(" ", "_")
+        return THEME_ALIASES.get(normalized, DEFAULT_THEME)
+    return DEFAULT_THEME
+
+
+P: dict[str, str] = dict(THEMES[DEFAULT_THEME])
 
 
 def apply_theme(theme_key: str):
     global P
+    theme_key = normalize_theme_key(theme_key)
     P.clear()
     P.update(THEMES[theme_key])
+    return theme_key

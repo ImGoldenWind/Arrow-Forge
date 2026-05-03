@@ -23,7 +23,7 @@ TOOLS = {
 
     # Character actions and fight-call systems.
     "MOVESET": [
-        ("0xxx00prm.bin",         icon_skill,      "tool_char_skill", "dlg_char_skill"),
+        ("0xxx00prm.bin, prm_gha.bin",         icon_skill,      "tool_char_skill", "dlg_char_skill"),
         ("0xxx00_SPM",            icon_movelist,   "tool_movelist",   "dlg_movelist"),
         ("0xxx00_x",              icon_projectile, "tool_projectile", "dlg_projectile"),
         ("SupportCharaParam.bin", icon_assist,     "tool_assist",     "dlg_assist"),
@@ -89,6 +89,7 @@ CAT_KEYS = [
 ]
 
 CAT_PORTRAIT = {
+    "FAVORITES":     "resources/guide_favorites.png",
     "CHARACTER":     "resources/guide_characters.png",
     "MOVESET":       "resources/guide_moveset.png",
     "BATTLE_PARAMS": "resources/guide_battle_params.png",

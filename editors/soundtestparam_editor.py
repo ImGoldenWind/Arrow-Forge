@@ -54,6 +54,7 @@ from parsers.soundtestparam_parser import (
     save_soundtestparam_xfbin,
 )
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 _UNLOCK_LABELS = {
@@ -228,7 +229,7 @@ class SoundTestParamEditor(QWidget):
         self._editor_layout.setContentsMargins(0, 0, 0, 0)
         self._editor_layout.setSpacing(0)
         self._editor_scroll.setWidget(self._editor_widget)
-        self._show_placeholder(self._tr("placeholder_char_stats", ui_text("placeholder_char_stats")))
+        self._show_placeholder(ui_text("ui_soundtestparam_open_a_soundtestparam_xfbin_file_to_begin_editing"))
 
         main_layout.addWidget(self._editor_scroll, 1)
         root.addWidget(main, 1)
@@ -239,13 +240,14 @@ class SoundTestParamEditor(QWidget):
         path, _ = QFileDialog.getOpenFileName(
             self,
             ui_text("ui_soundtestparam_open_soundtestparam"),
-            "",
+            game_files_dialog_dir(target_patterns=("SoundTestParam.xfbin", "SoundTestParam.bin.xfbin")),
             "XFBIN files (*.xfbin);;All files (*.*)",
         )
         if path:
             self._load(path)
 
     def _load(self, path: str):
+        create_backup_on_open(path)
         self._file_label.setText(self._tr("loading", ui_text("loading")))
         try:
             raw, version, entries = parse_soundtestparam_xfbin(path)
@@ -257,7 +259,7 @@ class SoundTestParamEditor(QWidget):
             self._file_label.setText(self._tr("no_file_loaded", ui_text("ui_btladjprm_no_file_loaded")))
             self._file_label.setStyleSheet(ss_file_label())
             self._clear_entry_list()
-            self._show_placeholder(self._tr("placeholder_char_stats", ui_text("placeholder_char_stats")))
+            self._show_placeholder(ui_text("ui_soundtestparam_open_a_soundtestparam_xfbin_file_to_begin_editing"))
             QMessageBox.critical(
                 self,
                 self._tr("dlg_title_error", ui_text("dlg_title_error")),

@@ -17,6 +17,7 @@ from parsers.mainmodeparam_parser import (
     make_default_panel, PANEL_TYPE_NAMES,
 )
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 # Layout helpers
@@ -308,7 +309,7 @@ class MainModeParamEditor(QWidget):
 
     def _show_placeholder(self):
         _clear_layout(self._editor_layout)
-        lbl = QLabel(self.t("placeholder_mainmodeparam"))
+        lbl = QLabel(ui_text("ui_mainmodeparam_open_a_mainmodeparam_bin_xfbin_file_to_begin_editing"))
         lbl.setFont(QFont("Segoe UI", 16))
         lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -320,10 +321,11 @@ class MainModeParamEditor(QWidget):
 
     def _load_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, self.t("file_open_mainmodeparam"), "",
+            self, self.t("file_open_mainmodeparam"), game_files_dialog_dir(target_patterns="MainModeParam.bin.xfbin"),
             "XFBIN files (*.xfbin);;All files (*.*)")
         if not path:
             return
+        create_backup_on_open(path)
         self._file_lbl.setText(self.t("loading"))
 
         def _worker():

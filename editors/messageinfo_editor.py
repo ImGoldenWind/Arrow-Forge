@@ -16,10 +16,12 @@ from core.style_helpers import (
     ss_btn,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.editor_file_state import set_file_label
 from parsers.messageinfo_parser import (
     parse_messageinfo_xfbin, save_messageinfo_xfbin,
 )
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 _CHAR_NAMES: dict[int, str] = {
@@ -344,7 +346,7 @@ class MessageInfoEditor(QWidget):
         self._editor_layout.setContentsMargins(0, 0, 0, 0)
         self._editor_layout.setSpacing(0)
         self._editor_scroll.setWidget(self._editor_widget)
-        self._show_placeholder(ui_text("ui_btladjprm_no_file_loaded"))
+        self._show_placeholder(ui_text("ui_messageinfo_open_a_messageinfo_bin_xfbin_file_to_begin_editing"))
 
         right_vlayout.addWidget(self._editor_scroll, 1)
         main_layout.addWidget(right_container, 1)
@@ -874,21 +876,20 @@ class MessageInfoEditor(QWidget):
 
     def _mark_dirty(self):
         self._btn_save.setEnabled(True)
-        name = os.path.basename(self._filepath) if self._filepath else ""
-        self._file_lbl.setText(ui_text("ui_effect_value", p0=name))
-        self._file_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+        set_file_label(self._file_lbl, self._filepath, dirty=True)
 
     # File operations
 
     def _on_open(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_messageinfo_open_messageinfo_bin_xfbin"), "",
+            self, ui_text("ui_messageinfo_open_messageinfo_bin_xfbin"), game_files_dialog_dir(target_patterns="messageInfo.bin.xfbin"),
             "XFBIN Files (*.xfbin);;All Files (*)",
         )
         if path:
             self._load_file(path)
 
     def _load_file(self, filepath: str):
+        create_backup_on_open(filepath)
         try:
             data, version, entries = parse_messageinfo_xfbin(filepath)
         except Exception as exc:
@@ -903,8 +904,7 @@ class MessageInfoEditor(QWidget):
         self._current_char_id = None
         self._selected_entry_idx = None
 
-        self._file_lbl.setText(os.path.basename(filepath))
-        self._file_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        set_file_label(self._file_lbl, filepath)
         self._btn_save.setEnabled(True)
         self._add_btn.setEnabled(True)
 
@@ -926,5 +926,4 @@ class MessageInfoEditor(QWidget):
             QMessageBox.critical(self, ui_text("ui_assist_save_error"), ui_text("ui_assist_failed_to_save_value", p0=exc))
             return
         self._orig_entries = [dict(e) for e in self._entries]
-        self._file_lbl.setText(os.path.basename(self._filepath))
-        self._file_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        set_file_label(self._file_lbl, self._filepath)

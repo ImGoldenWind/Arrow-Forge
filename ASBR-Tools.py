@@ -1,21 +1,30 @@
 import sys
 import os
+import re
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
     QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea, QRadioButton,
-    QButtonGroup,
+    QButtonGroup, QCheckBox, QLineEdit, QSizePolicy, QFileDialog,
+    QMessageBox, QProgressDialog,
 )
 from PyQt6.QtGui import QFont, QPixmap, QIcon, QCursor, QDesktopServices
-from PyQt6.QtCore import Qt, QTimer, QSize, QPoint, QUrl
+from PyQt6.QtCore import Qt, QTimer, QSize, QPoint, QUrl, QThread, pyqtSignal
 
-from core.themes import THEMES, P, apply_theme
+from core.themes import THEMES, P, apply_theme, normalize_theme_key
 from core.translations import TRANSLATIONS, available_languages, ui_text
-from core.icons import (icon_settings_gear, icon_cpk_unpack, icon_credits_star, _pil_to_qpixmap,
+from core.icons import (icon_settings_gear, icon_cpk_unpack, icon_credits_star, icon_favorite_category,
+                        icon_favorite_star, icon_tool_pin, _pil_to_qpixmap,
                         icon_social_github, icon_social_youtube, icon_social_discord, icon_social_nexusmods)
 from core.tool_data import TOOLS, CAT_KEYS, CAT_META, CAT_PORTRAIT
 from core.settings import load_settings, save_settings
 from core.skeleton import reset_palette, SkeletonBar, SkeletonCard
+from core import updater
+from core.file_drop import install_file_drop
+from core.style_helpers import (
+    ss_home_grid_scrollarea, ss_main_label, ss_tool_card,
+    ss_tool_favorite_btn, ss_tool_file_hint_label, ss_search,
+)
 from editors.char_stats_editor import CharacterStatsEditor
 from editors.characode_editor import CharacodeEditor
 from editors.info_editor import InfoEditor
@@ -84,7 +93,10 @@ def _make_styled_btn(text, bg, hover, fg, font, width=0, height=0, icon=None):
 # Tool card
 class ToolCard(QFrame):
     def __init__(self, parent, label, file_hint, icon, dlg_key,
-                 on_hover=None, on_leave=None, app=None):
+                 on_hover=None, on_leave=None, app=None,
+                 tool_id=None, favorite=False, favorite_tooltip="",
+                 on_toggle_favorite=None, pinned=False, pin_tooltip="",
+                 on_toggle_pin=None, pin_category_key=None, category_key=None):
         super().__init__(parent)
         self._label = label
         self._file_hint = file_hint
@@ -92,21 +104,23 @@ class ToolCard(QFrame):
         self._on_hover_cb = on_hover
         self._on_leave_cb = on_leave
         self._app = app
+        self._tool_id = tool_id or dlg_key
+        self._category_key = category_key
+        self._pin_category_key = pin_category_key or category_key
+        self._favorite = favorite
+        self._pinned = pinned
+        self._on_toggle_favorite = on_toggle_favorite
+        self._on_toggle_pin = on_toggle_pin
+        self._pressed_inside = False
 
-        self._default_style = (
-            f"ToolCard {{ background-color: {P['bg_card']}; border-radius: 8px; "
-            f"border: 1px solid {P['border']}; }}"
-        )
-        self._hover_style = (
-            f"ToolCard {{ background-color: {P['bg_card_hov']}; border-radius: 8px; "
-            f"border: 1px solid {P['border_hov']}; }}"
-        )
+        self._default_style = ss_tool_card(hover=False)
+        self._hover_style = ss_tool_card(hover=True)
         self.setStyleSheet(self._default_style)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.setFixedHeight(125)
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(10, 7, 10, 7)
+        row.setContentsMargins(10, 7, 70, 7)
         row.setSpacing(8)
         row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
@@ -120,21 +134,65 @@ class ToolCard(QFrame):
         texts.setSpacing(1)
         name_lbl = QLabel(label)
         name_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        name_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent; border: none;")
+        name_lbl.setStyleSheet(ss_main_label())
         name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         texts.addWidget(name_lbl)
 
         hint_lbl = QLabel(file_hint)
         hint_lbl.setFont(QFont("Consolas", 10))
-        hint_lbl.setStyleSheet(f"color: {P['text_file']}; background: transparent; border: none;")
+        hint_lbl.setStyleSheet(ss_tool_file_hint_label())
         hint_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         texts.addWidget(hint_lbl)
         row.addLayout(texts, 1)
 
+        self._favorite_btn = QPushButton(self)
+        self._favorite_btn.setCheckable(True)
+        self._favorite_btn.setChecked(favorite)
+        self._favorite_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._favorite_btn.setFixedSize(26, 26)
+        self._favorite_btn.setIcon(icon_favorite_star(filled=favorite))
+        self._favorite_btn.setIconSize(QSize(14, 14))
+        self._favorite_btn.setToolTip(favorite_tooltip)
+        self._favorite_btn.setStyleSheet(ss_tool_favorite_btn(checked=favorite))
+        self._favorite_btn.clicked.connect(self._toggle_favorite)
+        self._pin_btn = QPushButton(self)
+        self._pin_btn.setCheckable(True)
+        self._pin_btn.setChecked(pinned)
+        self._pin_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._pin_btn.setFixedSize(26, 26)
+        self._pin_btn.setIcon(icon_tool_pin(filled=pinned))
+        self._pin_btn.setIconSize(QSize(14, 14))
+        self._pin_btn.setToolTip(pin_tooltip)
+        self._pin_btn.setStyleSheet(ss_tool_favorite_btn(checked=pinned))
+        self._pin_btn.clicked.connect(self._toggle_pin)
+        self._position_action_btns()
+
+    def _position_action_btns(self):
+        self._favorite_btn.move(self.width() - self._favorite_btn.width() - 7, 7)
+        self._pin_btn.move(self._favorite_btn.x() - self._pin_btn.width() - 5, 7)
+
+    def resizeEvent(self, event):
+        self._position_action_btns()
+        super().resizeEvent(event)
+
+    def _toggle_favorite(self, checked):
+        self._favorite = checked
+        self._favorite_btn.setIcon(icon_favorite_star(filled=checked))
+        self._favorite_btn.setStyleSheet(ss_tool_favorite_btn(checked=checked))
+        if self._on_toggle_favorite:
+            self._on_toggle_favorite(self._tool_id)
+
+    def _toggle_pin(self, checked):
+        self._pinned = checked
+        self._pin_btn.setIcon(icon_tool_pin(filled=checked))
+        self._pin_btn.setStyleSheet(ss_tool_favorite_btn(checked=checked))
+        if self._on_toggle_pin:
+            self._on_toggle_pin(self._tool_id, self._pin_category_key)
+
     def enterEvent(self, event):
         self.setStyleSheet(self._hover_style)
         if self._on_hover_cb:
-            self._on_hover_cb(self._dlg_key)
+            self._on_hover_cb(self._dlg_key, self._category_key)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
@@ -144,9 +202,34 @@ class ToolCard(QFrame):
         super().leaveEvent(event)
 
     def mousePressEvent(self, event):
-        if self._app:
-            self._app._open_tool_inline(self._label, self._file_hint)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pressed_inside = True
+            event.accept()
+            return
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._pressed_inside:
+            self._pressed_inside = False
+            if self.rect().contains(event.position().toPoint()) and self._app:
+                self._app._open_tool_inline(self._label, self._file_hint, self._tool_id)
+            event.accept()
+            return
+        self._pressed_inside = False
+        super().mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._pressed_inside and not self.rect().contains(event.position().toPoint()):
+            self._pressed_inside = False
+        super().mouseMoveEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._app:
+            self._pressed_inside = False
+            self._app._open_tool_inline(self._label, self._file_hint, self._tool_id)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
 
 # Sidebar button
@@ -205,6 +288,34 @@ class _SidebarBtn(QFrame):
         super().mousePressEvent(event)
 
 
+class _UpdateCheckWorker(QThread):
+    finished = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def run(self):
+        try:
+            self.finished.emit(updater.check_for_update())
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class _UpdateDownloadWorker(QThread):
+    progress = pyqtSignal(int, int)
+    finished = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, update_info, parent=None):
+        super().__init__(parent)
+        self._update_info = update_info
+
+    def run(self):
+        try:
+            path = updater.download_asset(self._update_info, self.progress.emit)
+            self.finished.emit(path)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 # Main App
 class App(QMainWindow):
     _PORTRAIT_SIZE = 150
@@ -213,16 +324,31 @@ class App(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(ui_text("ui_ASBR-Tools_asbr_toolbox"))
-        self.resize(1920, 1080)
-        self.setMinimumSize(1920, 1080)
+        self.resize(1280, 720)
+        self.setMinimumSize(960, 540)
         _ico_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ArrowForgeIcon.ico")
         self._app_icon = QIcon(_ico_path)
         self.setWindowIcon(self._app_icon)
 
         self._settings = load_settings()
         self._lang = self._settings.get("language", "en")
-        self._theme_key = self._settings.get("theme", "star_platinum")
+        self._theme_key = normalize_theme_key(self._settings.get("theme"))
         apply_theme(self._theme_key)
+        if self._settings.get("theme") != self._theme_key:
+            self._settings["theme"] = self._theme_key
+            save_settings(self._settings)
+        self._favorite_tools = self._normalise_favorites(self._settings.get("favorite_tools", []))
+        self._recent_tools = self._normalise_recent_tools(self._settings.get("recent_tools", []))
+        self._pinned_tools = self._normalise_pinned_tools(self._settings.get("pinned_tools", {}))
+        if (
+            self._settings.get("favorite_tools", []) != self._favorite_tools
+            or self._settings.get("recent_tools", []) != self._recent_tools
+            or self._settings.get("pinned_tools", {}) != self._pinned_tools
+        ):
+            self._settings["favorite_tools"] = self._favorite_tools
+            self._settings["recent_tools"] = self._recent_tools
+            self._settings["pinned_tools"] = self._pinned_tools
+            save_settings(self._settings)
 
         self._current_cat = "CHARACTER"
         self._typing_job = None
@@ -239,6 +365,13 @@ class App(QMainWindow):
         self._cat_frames = {}
         self._cat_buttons = {}
         self._pending_cats = []
+        self._tool_search_query = ""
+        self._tool_search_entry = None
+        self._search_frame = None
+        self._update_check_worker = None
+        self._update_download_worker = None
+        self._update_progress_dialog = None
+        self._update_status_label = None
 
         self._central = QWidget()
         self.setCentralWidget(self._central)
@@ -247,10 +380,198 @@ class App(QMainWindow):
         self._root_layout.setSpacing(0)
 
         self._rebuild_ui()
+        QTimer.singleShot(1400, self._auto_check_for_updates)
+
+    def _tool_lookup(self):
+        lookup = {}
+        for cat_key in CAT_KEYS:
+            for fh, icon_fn, tk, dk in TOOLS[cat_key]:
+                lookup[dk] = (cat_key, fh, icon_fn, tk, dk)
+        return lookup
+
+    def _normalise_favorites(self, favorites):
+        lookup = self._tool_lookup()
+        result = []
+        seen = set()
+        if not isinstance(favorites, list):
+            return result
+        for tool_id in favorites:
+            if not isinstance(tool_id, str):
+                continue
+            if tool_id in lookup and tool_id not in seen:
+                result.append(tool_id)
+                seen.add(tool_id)
+        return result
+
+    def _normalise_recent_tools(self, recent_tools):
+        lookup = self._tool_lookup()
+        result = []
+        seen = set()
+        if not isinstance(recent_tools, list):
+            return result
+        for tool_id in recent_tools:
+            if not isinstance(tool_id, str):
+                continue
+            if tool_id in lookup and tool_id not in seen:
+                result.append(tool_id)
+                seen.add(tool_id)
+        return result
+
+    def _normalise_pinned_tools(self, pinned_tools):
+        lookup = self._tool_lookup()
+        valid_categories = set(CAT_KEYS) | {"FAVORITES"}
+        result = {}
+        if not isinstance(pinned_tools, dict):
+            return result
+        for cat_key, tool_ids in pinned_tools.items():
+            if cat_key not in valid_categories or not isinstance(tool_ids, list):
+                continue
+            clean_ids = []
+            seen = set()
+            for tool_id in tool_ids:
+                if not isinstance(tool_id, str) or tool_id in seen or tool_id not in lookup:
+                    continue
+                if cat_key == "FAVORITES":
+                    if tool_id not in self._favorite_tools:
+                        continue
+                elif lookup[tool_id][0] != cat_key:
+                    continue
+                clean_ids.append(tool_id)
+                seen.add(tool_id)
+            if clean_ids:
+                result[cat_key] = clean_ids
+        return result
+
+    def _sort_tool_rows_for_category(self, rows, cat_key):
+        pinned_rank = {
+            tool_id: idx for idx, tool_id in enumerate(self._pinned_tools.get(cat_key, []))
+        }
+        recent_rank = {tool_id: idx for idx, tool_id in enumerate(self._recent_tools)}
+        return [
+            row for _idx, row in sorted(
+                enumerate(rows),
+                key=lambda item: (
+                    0 if item[1][4] in pinned_rank else 1,
+                    pinned_rank.get(item[1][4], len(pinned_rank)),
+                    recent_rank.get(item[1][4], len(recent_rank)),
+                    item[0],
+                ),
+            )
+        ]
+
+    def _visible_cat_keys(self):
+        return (["FAVORITES"] if self._favorite_tools else []) + list(CAT_KEYS)
+
+    def _category_i18n_key(self, cat_key):
+        if cat_key == "FAVORITES":
+            return "cat_FAVORITES"
+        return CAT_META[cat_key][1]
+
+    def _category_speaker_key(self, cat_key):
+        if cat_key == "FAVORITES":
+            return "speaker_FAVORITES"
+        return CAT_META[cat_key][2]
+
+    def _favorite_tool_rows(self):
+        lookup = self._tool_lookup()
+        rows = [lookup[tool_id] for tool_id in self._favorite_tools if tool_id in lookup]
+        return self._sort_tool_rows_for_category(rows, "FAVORITES")
+
+    def _all_tool_rows(self):
+        rows = []
+        for cat_key in CAT_KEYS:
+            rows.extend((cat_key, fh, icon_fn, tk, dk) for fh, icon_fn, tk, dk in TOOLS[cat_key])
+        return rows
+
+    def _is_favorite_tool(self, tool_id):
+        return tool_id in self._favorite_tools
+
+    def _is_pinned_tool(self, tool_id, cat_key):
+        return tool_id in self._pinned_tools.get(cat_key, [])
+
+    def _rebuild_cat_frame_cache(self, cat_key):
+        old_frame = self._cat_frames.get(cat_key)
+        if old_frame:
+            old_frame.deleteLater()
+        self._cat_frames[cat_key] = self._build_cat_frame(cat_key)
+
+    def _mark_tool_used(self, tool_id):
+        lookup = self._tool_lookup()
+        if tool_id not in lookup:
+            return
+
+        recent_tools = [tool_id] + [
+            item for item in self._recent_tools
+            if item != tool_id and item in lookup
+        ]
+        if recent_tools == self._recent_tools:
+            return
+
+        self._recent_tools = recent_tools
+        self._settings["recent_tools"] = self._recent_tools
+        save_settings(self._settings)
+
+        cat_key = lookup[tool_id][0]
+        if cat_key in self._cat_frames:
+            self._rebuild_cat_frame_cache(cat_key)
+        if tool_id in self._favorite_tools and "FAVORITES" in self._cat_frames:
+            self._rebuild_cat_frame_cache("FAVORITES")
+
+    def _toggle_favorite_tool(self, tool_id):
+        if tool_id in self._favorite_tools:
+            self._favorite_tools = [item for item in self._favorite_tools if item != tool_id]
+            fav_pins = [item for item in self._pinned_tools.get("FAVORITES", []) if item != tool_id]
+            if fav_pins:
+                self._pinned_tools["FAVORITES"] = fav_pins
+            else:
+                self._pinned_tools.pop("FAVORITES", None)
+        else:
+            self._favorite_tools.append(tool_id)
+        self._settings["favorite_tools"] = self._favorite_tools
+        self._settings["pinned_tools"] = self._pinned_tools
+        save_settings(self._settings)
+        if self._current_cat == "FAVORITES" and not self._favorite_tools:
+            self._current_cat = "CHARACTER"
+        self._rebuild_ui()
+
+    def _toggle_pinned_tool(self, tool_id, cat_key):
+        lookup = self._tool_lookup()
+        valid_categories = set(CAT_KEYS) | {"FAVORITES"}
+        if cat_key not in valid_categories or tool_id not in lookup:
+            return
+        if cat_key == "FAVORITES":
+            if tool_id not in self._favorite_tools:
+                return
+        elif lookup[tool_id][0] != cat_key:
+            return
+
+        pinned = [item for item in self._pinned_tools.get(cat_key, []) if item in lookup]
+        if tool_id in pinned:
+            pinned = [item for item in pinned if item != tool_id]
+        else:
+            pinned.append(tool_id)
+
+        if pinned:
+            self._pinned_tools[cat_key] = pinned
+        else:
+            self._pinned_tools.pop(cat_key, None)
+        self._settings["pinned_tools"] = self._pinned_tools
+        save_settings(self._settings)
+
+        if self._tool_search_query:
+            self._show_tool_search_results()
+            return
+        if cat_key in self._cat_frames:
+            self._rebuild_cat_frame_cache(cat_key)
+        if self._current_cat == cat_key:
+            self._show_category(cat_key)
 
     def _rebuild_ui(self):
         self._typing_timer.stop()
         self._typing_job = None
+        self._update_status_label = None
+        if self._current_cat not in self._visible_cat_keys():
+            self._current_cat = "CHARACTER"
 
         _clear_layout(self._root_layout)
         if hasattr(self, "_avatar_label") and self._avatar_label is not None:
@@ -263,6 +584,7 @@ class App(QMainWindow):
         # Rebuild icon caches
         self._cat_icons = {}
         self._tool_icons_cache = {}
+        self._cat_icons["FAVORITES"] = icon_favorite_category(size=24)
         for cat, (icon_fn, *_) in CAT_META.items():
             self._cat_icons[cat] = icon_fn(size=24)
         self._settings_icon = icon_settings_gear(size=22)
@@ -292,13 +614,17 @@ class App(QMainWindow):
 
         # Build category frames incrementally
         self._cat_frames = {}
-        self._pending_cats = list(CAT_KEYS)
+        self._search_frame = None
+        self._pending_cats = self._visible_cat_keys()
         QTimer.singleShot(20, self._build_next_cat_frame)
 
     def _build_next_cat_frame(self):
         if not self._pending_cats:
             self._loading = False
-            self._show_category(self._current_cat)
+            if self._tool_search_query:
+                self._show_tool_search_results()
+            else:
+                self._show_category(self._current_cat)
             QTimer.singleShot(100, self._reposition_portrait)
             return
         cat_key = self._pending_cats.pop(0)
@@ -308,6 +634,159 @@ class App(QMainWindow):
     def t(self, key, **kw):
         text = TRANSLATIONS.get(self._lang, TRANSLATIONS["en"]).get(key, TRANSLATIONS["en"].get(key, key))
         return text.format(**kw) if kw else text
+
+    def _set_update_status(self, text):
+        if self._update_status_label is None:
+            return
+        try:
+            self._update_status_label.setText(text)
+        except RuntimeError:
+            self._update_status_label = None
+
+    def _auto_check_for_updates(self):
+        if not self._settings.get("check_updates_on_startup", True):
+            return
+        if not updater.should_check_today(self._settings.get("last_update_check")):
+            return
+        self._check_for_updates(manual=False)
+
+    def _check_for_updates(self, manual=False):
+        if self._update_check_worker and self._update_check_worker.isRunning():
+            if manual:
+                self._set_update_status(self.t("updates_checking"))
+            return
+
+        if manual:
+            self._set_update_status(self.t("updates_checking"))
+
+        worker = _UpdateCheckWorker(self)
+        worker.finished.connect(lambda info, m=manual: self._on_update_check_finished(info, m))
+        worker.failed.connect(lambda error, m=manual: self._on_update_check_failed(error, m))
+        worker.finished.connect(lambda _info, w=worker: w.deleteLater())
+        worker.failed.connect(lambda _error, w=worker: w.deleteLater())
+        self._update_check_worker = worker
+        worker.start()
+
+    def _on_update_check_finished(self, info, manual):
+        self._update_check_worker = None
+        self._settings["last_update_check"] = updater.today_string()
+        save_settings(self._settings)
+
+        if not info.get("update_available"):
+            status = self.t("updates_up_to_date", version=info.get("current_version", updater.APP_VERSION))
+            self._set_update_status(status)
+            if manual:
+                QMessageBox.information(self, self.t("updates_title"), status)
+            return
+
+        self._set_update_status(self.t(
+            "updates_available_status",
+            version=info.get("latest_version", ""),
+        ))
+        if manual:
+            self._prompt_for_update(info)
+
+    def _on_update_check_failed(self, error, manual):
+        self._update_check_worker = None
+        self._set_update_status(self.t("updates_failed"))
+        if manual:
+            QMessageBox.warning(self, self.t("updates_title"), self.t("updates_failed_details", error=error))
+
+    def _prompt_for_update(self, info):
+        asset_size = updater.human_size(info.get("asset_size", 0))
+        message = self.t(
+            "updates_available_message",
+            current=info.get("current_version", updater.APP_VERSION),
+            latest=info.get("latest_version", ""),
+            asset=info.get("asset_name", ""),
+            size=asset_size,
+        )
+
+        if not updater.can_self_update():
+            answer = QMessageBox.question(
+                self,
+                self.t("updates_title"),
+                message + "\n\n" + self.t("updates_source_mode"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                QDesktopServices.openUrl(QUrl(info.get("release_url", "")))
+            return
+
+        if not info.get("asset_url"):
+            QMessageBox.warning(self, self.t("updates_title"), self.t("updates_no_asset"))
+            return
+
+        answer = QMessageBox.question(
+            self,
+            self.t("updates_title"),
+            message + "\n\n" + self.t("updates_install_question"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._download_and_install_update(info)
+
+    def _download_and_install_update(self, info):
+        if self._update_download_worker and self._update_download_worker.isRunning():
+            return
+
+        progress = QProgressDialog(self.t("updates_downloading"), "", 0, 100, self)
+        progress.setWindowTitle(self.t("updates_title"))
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        progress.show()
+        self._update_progress_dialog = progress
+
+        worker = _UpdateDownloadWorker(info, self)
+        worker.progress.connect(self._on_update_download_progress)
+        worker.finished.connect(self._on_update_download_finished)
+        worker.failed.connect(self._on_update_download_failed)
+        worker.finished.connect(lambda _path, w=worker: w.deleteLater())
+        worker.failed.connect(lambda _error, w=worker: w.deleteLater())
+        self._update_download_worker = worker
+        worker.start()
+
+    def _on_update_download_progress(self, downloaded, total):
+        if not self._update_progress_dialog:
+            return
+        if total:
+            value = max(0, min(100, int(downloaded * 100 / total)))
+            self._update_progress_dialog.setValue(value)
+            self._update_progress_dialog.setLabelText(self.t(
+                "updates_downloading_progress",
+                downloaded=updater.human_size(downloaded),
+                total=updater.human_size(total),
+            ))
+        else:
+            self._update_progress_dialog.setRange(0, 0)
+            self._update_progress_dialog.setLabelText(self.t("updates_downloading"))
+
+    def _on_update_download_finished(self, package_path):
+        self._update_download_worker = None
+        if self._update_progress_dialog:
+            self._update_progress_dialog.close()
+            self._update_progress_dialog = None
+
+        try:
+            source_dir, source_exe = updater.stage_update_package(package_path)
+            updater.launch_self_update(source_dir, source_exe)
+        except Exception as exc:
+            QMessageBox.critical(self, self.t("updates_title"), self.t("updates_install_failed", error=exc))
+            return
+
+        QMessageBox.information(self, self.t("updates_title"), self.t("updates_restart_now"))
+        QApplication.instance().quit()
+
+    def _on_update_download_failed(self, error):
+        self._update_download_worker = None
+        if self._update_progress_dialog:
+            self._update_progress_dialog.close()
+            self._update_progress_dialog = None
+        QMessageBox.critical(self, self.t("updates_title"), self.t("updates_failed_details", error=error))
 
     # Header
     def _build_header(self):
@@ -328,17 +807,29 @@ class App(QMainWindow):
         app_icon_lbl.setFixedSize(32, 32)
         header_layout.addWidget(app_icon_lbl)
 
-        title_lbl = QLabel(self.t("app_title"))
-        title_lbl.setFont(QFont("Segoe UI", 22, QFont.Weight.Bold))
-        title_lbl.setStyleSheet(f"color: {P['accent']};")
-        header_layout.addWidget(title_lbl)
-
-        sub_lbl = QLabel("    " + self.t("app_sub"))
-        sub_lbl.setFont(QFont("Segoe UI", 12))
-        sub_lbl.setStyleSheet(f"color: {P['secondary']};")
-        header_layout.addWidget(sub_lbl)
+        self._header_title_lbl = QLabel(self.t("app_title"))
+        self._header_title_lbl.setFont(QFont("Segoe UI", 22, QFont.Weight.Bold))
+        self._header_title_lbl.setStyleSheet(f"color: {P['accent']};")
+        self._header_title_lbl.setMinimumWidth(self._header_title_lbl.sizeHint().width())
+        self._header_title_lbl.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        header_layout.addWidget(self._header_title_lbl)
 
         header_layout.addStretch()
+
+        self._tool_search_entry = QLineEdit()
+        self._tool_search_entry.setPlaceholderText(self.t("tool_search_placeholder"))
+        self._tool_search_entry.setMinimumWidth(120)
+        self._tool_search_entry.setMaximumWidth(360)
+        self._tool_search_entry.setFixedHeight(34)
+        self._tool_search_entry.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._tool_search_entry.setFont(QFont("Segoe UI", 13))
+        self._tool_search_entry.setStyleSheet(ss_search())
+        self._tool_search_entry.setClearButtonEnabled(True)
+        self._tool_search_entry.setText(self._tool_search_query)
+        self._tool_search_entry.textChanged.connect(self._on_tool_search_changed)
+        header_layout.addWidget(self._tool_search_entry, 1)
 
         unpack_btn = _make_styled_btn(
             "  " + self.t("cpk_unpack_btn"), P["mid"], P["bg_card_hov"], P["accent"],
@@ -359,6 +850,7 @@ class App(QMainWindow):
         header_layout.addWidget(settings_btn)
 
         self._root_layout.addWidget(header)
+        self._sync_header_layout()
 
         highlight_bar = QFrame()
         highlight_bar.setFixedHeight(1)
@@ -375,12 +867,12 @@ class App(QMainWindow):
         sidebar_layout.setSpacing(1)
 
         self._cat_buttons = {}
-        for cat_key in CAT_KEYS:
-            i18n_key = CAT_META[cat_key][1]
+        for cat_key in self._visible_cat_keys():
+            i18n_key = self._category_i18n_key(cat_key)
             btn = _SidebarBtn(
                 text=self.t(i18n_key),
                 icon=self._cat_icons.get(cat_key, QIcon()),
-                on_click=lambda c=cat_key: self._show_category(c),
+                on_click=lambda c=cat_key: self._select_category(c),
             )
             sidebar_layout.addWidget(btn)
             self._cat_buttons[cat_key] = btn
@@ -415,7 +907,12 @@ class App(QMainWindow):
         parent_layout.addWidget(self._content, 1)
 
     def _build_cat_frame(self, cat_key):
-        _, i18n_key, _ = CAT_META[cat_key]
+        i18n_key = self._category_i18n_key(cat_key)
+        tool_rows = self._favorite_tool_rows() if cat_key == "FAVORITES" else [
+            (cat_key, fh, icon_fn, tk, dk) for fh, icon_fn, tk, dk in TOOLS[cat_key]
+        ]
+        if cat_key != "FAVORITES":
+            tool_rows = self._sort_tool_rows_for_category(tool_rows, cat_key)
 
         frame = QWidget()
         frame_layout = QVBoxLayout(frame)
@@ -433,7 +930,7 @@ class App(QMainWindow):
 
         header_row.addStretch()
 
-        subtitle_lbl = QLabel(self.t("tools_avail", n=len(TOOLS[cat_key])))
+        subtitle_lbl = QLabel(self.t("tools_avail", n=len(tool_rows)))
         subtitle_lbl.setFont(QFont("Segoe UI", 12))
         subtitle_lbl.setStyleSheet(f"color: {P['text_dim']};")
         subtitle_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -445,19 +942,7 @@ class App(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet(
-            f"QScrollArea {{ background: transparent; border: none; }}"
-            f"QScrollBar:vertical {{"
-            f"  background: {P['bg_dark']}; width: 8px;"
-            f"  border-radius: 4px; margin: 0px;"
-            f"}}"
-            f"QScrollBar::handle:vertical {{"
-            f"  background: {P['mid']}; border-radius: 4px; min-height: 28px;"
-            f"}}"
-            f"QScrollBar::handle:vertical:hover {{ background: {P['secondary']}; }}"
-            f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; border: none; }}"
-            f"QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}"
-        )
+        scroll.setStyleSheet(ss_home_grid_scrollarea())
         scroll_content = QWidget()
         scroll_content.setStyleSheet("background: transparent;")
         grid = QGridLayout(scroll_content)
@@ -467,13 +952,178 @@ class App(QMainWindow):
         grid.setColumnStretch(1, 1)
         grid.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        for idx, (fh, icon_fn, tk, dk) in enumerate(TOOLS[cat_key]):
+        for idx, (tool_cat, fh, icon_fn, tk, dk) in enumerate(tool_rows):
+            hover_cat = tool_cat if cat_key != "FAVORITES" or tool_cat == "GALLERY" else "FAVORITES"
+            pin_cat = "FAVORITES" if cat_key == "FAVORITES" else tool_cat
             ck = f"{tk}_{fh}"
             if ck not in self._tool_icons_cache:
                 self._tool_icons_cache[ck] = icon_fn()
             card = ToolCard(scroll_content, self.t(tk), fh, self._tool_icons_cache[ck], dk,
-                            on_hover=self._on_hover, on_leave=self._on_leave, app=self)
+                            on_hover=self._on_hover, on_leave=self._on_leave, app=self,
+                            tool_id=dk, favorite=self._is_favorite_tool(dk),
+                            favorite_tooltip=self.t(
+                                "favorite_remove_tooltip" if self._is_favorite_tool(dk)
+                                else "favorite_add_tooltip"
+                            ),
+                            on_toggle_favorite=self._toggle_favorite_tool,
+                            pinned=self._is_pinned_tool(dk, pin_cat),
+                            pin_tooltip=self.t(
+                                "pin_remove_tooltip" if self._is_pinned_tool(dk, pin_cat)
+                                else "pin_add_tooltip"
+                            ),
+                            on_toggle_pin=self._toggle_pinned_tool,
+                            pin_category_key=pin_cat,
+                            category_key=hover_cat)
             grid.addWidget(card, idx // 2, idx % 2)
+
+        scroll.setWidget(scroll_content)
+        frame_layout.addWidget(scroll, 1)
+
+        return frame
+
+    def _select_category(self, cat_key):
+        self._current_cat = cat_key
+        if self._tool_search_query and self._tool_search_entry:
+            self._tool_search_entry.clear()
+            return
+        self._show_category(cat_key)
+
+    def _on_tool_search_changed(self, text):
+        self._tool_search_query = text.strip()
+        if self._loading:
+            return
+        if self._tool_search_query:
+            self._close_inline_panels_for_search()
+            self._show_tool_search_results()
+        else:
+            self._show_category(self._current_cat)
+
+    def _close_inline_panels_for_search(self):
+        if self._tool_frame:
+            self._tool_frame.deleteLater()
+            self._tool_frame = None
+        if self._settings_win:
+            self._settings_win.deleteLater()
+            self._settings_win = None
+        if self._cpk_editor_win:
+            self._cpk_editor_win.deleteLater()
+            self._cpk_editor_win = None
+        if self._settings.get("show_guide", True):
+            self._show_char_panel()
+
+    def _normalize_search_text(self, text):
+        text = str(text or "")
+        text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
+        text = text.replace("\\", " ")
+        return re.sub(r"\s+", " ", text.casefold()).strip()
+
+    def _tool_search_blob(self, row):
+        cat_key, file_hint, _icon_fn, title_key, dialog_key = row
+        en = TRANSLATIONS.get("en", {})
+        parts = [
+            file_hint,
+            file_hint.replace(".", " "),
+            file_hint.replace("_", " "),
+            title_key,
+            dialog_key,
+            cat_key,
+            self.t(title_key),
+            self.t(dialog_key),
+            self.t(self._category_i18n_key(cat_key)),
+            en.get(title_key, ""),
+            en.get(dialog_key, ""),
+            en.get(self._category_i18n_key(cat_key), ""),
+        ]
+        parts.extend(ext.lstrip(".") for ext in re.findall(r"\.[A-Za-z0-9]+", file_hint))
+        return self._normalize_search_text(" ".join(str(part) for part in parts if part))
+
+    def _tool_matches_search(self, row, query):
+        terms = [term for term in self._normalize_search_text(query).split(" ") if term]
+        if not terms:
+            return True
+        blob = self._tool_search_blob(row)
+        return all(term in blob for term in terms)
+
+    def _filtered_tool_rows(self):
+        return [row for row in self._all_tool_rows() if self._tool_matches_search(row, self._tool_search_query)]
+
+    def _show_tool_search_results(self):
+        if self._search_frame:
+            self._search_frame.deleteLater()
+            self._search_frame = None
+        self._search_frame = self._build_search_frame()
+        for btn in self._cat_buttons.values():
+            btn.set_active(False)
+        self._show_frame(self._search_frame)
+
+    def _build_search_frame(self):
+        tool_rows = self._filtered_tool_rows()
+
+        frame = QWidget()
+        frame_layout = QVBoxLayout(frame)
+        frame_layout.setContentsMargins(0, 0, 0, 0)
+        frame_layout.setSpacing(0)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(28, 16, 28, 4)
+        header_row.setSpacing(0)
+
+        title_lbl = QLabel(self.t("tool_search_results_title"))
+        title_lbl.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+        title_lbl.setStyleSheet(f"color: {P['accent']};")
+        header_row.addWidget(title_lbl)
+
+        header_row.addStretch()
+
+        subtitle_lbl = QLabel(self.t("tools_avail", n=len(tool_rows)))
+        subtitle_lbl.setFont(QFont("Segoe UI", 12))
+        subtitle_lbl.setStyleSheet(f"color: {P['text_dim']};")
+        subtitle_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        header_row.addWidget(subtitle_lbl)
+
+        frame_layout.addLayout(header_row)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet(ss_home_grid_scrollarea())
+        scroll_content = QWidget()
+        scroll_content.setStyleSheet("background: transparent;")
+        grid = QGridLayout(scroll_content)
+        grid.setContentsMargins(20, 8, 20, 16)
+        grid.setSpacing(6)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        grid.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        if tool_rows:
+            for idx, (tool_cat, fh, icon_fn, tk, dk) in enumerate(tool_rows):
+                ck = f"{tk}_{fh}"
+                if ck not in self._tool_icons_cache:
+                    self._tool_icons_cache[ck] = icon_fn()
+                card = ToolCard(scroll_content, self.t(tk), fh, self._tool_icons_cache[ck], dk,
+                                on_hover=self._on_hover, on_leave=self._on_leave, app=self,
+                                tool_id=dk, favorite=self._is_favorite_tool(dk),
+                                favorite_tooltip=self.t(
+                                    "favorite_remove_tooltip" if self._is_favorite_tool(dk)
+                                    else "favorite_add_tooltip"
+                                ),
+                                on_toggle_favorite=self._toggle_favorite_tool,
+                                pinned=self._is_pinned_tool(dk, tool_cat),
+                                pin_tooltip=self.t(
+                                    "pin_remove_tooltip" if self._is_pinned_tool(dk, tool_cat)
+                                    else "pin_add_tooltip"
+                                ),
+                                on_toggle_pin=self._toggle_pinned_tool,
+                                pin_category_key=tool_cat,
+                                category_key=tool_cat)
+                grid.addWidget(card, idx // 2, idx % 2)
+        else:
+            empty_lbl = QLabel(self.t("tool_search_no_results"))
+            empty_lbl.setFont(QFont("Segoe UI", 14))
+            empty_lbl.setStyleSheet(f"color: {P['text_dim']};")
+            empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(empty_lbl, 0, 0, 1, 2)
 
         scroll.setWidget(scroll_content)
         frame_layout.addWidget(scroll, 1)
@@ -584,7 +1234,18 @@ class App(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._sync_header_layout()
         self._reposition_portrait()
+
+    def _sync_header_layout(self):
+        if not hasattr(self, "_tool_search_entry") or self._tool_search_entry is None:
+            return
+
+        width = self.width()
+        compact = width < 1120
+
+        self._tool_search_entry.setMaximumWidth(240 if compact else 360)
+        self._tool_search_entry.setMinimumWidth(120 if compact else 180)
 
     def _reposition_portrait(self):
         if not (hasattr(self, "_avatar_label") and self._avatar_label is not None
@@ -624,7 +1285,8 @@ class App(QMainWindow):
             self._current_cat = cat_key
             return
         self._current_cat = cat_key
-        _, i18n_key, speaker = CAT_META[cat_key]
+        i18n_key = self._category_i18n_key(cat_key)
+        speaker = self._category_speaker_key(cat_key)
 
         for k, btn in self._cat_buttons.items():
             btn.set_active(k == cat_key)
@@ -659,12 +1321,14 @@ class App(QMainWindow):
             frame.show()
 
     # Open tool inline
-    def _open_tool_inline(self, name: str, file_hint: str):
+    def _open_tool_inline(self, name: str, file_hint: str, tool_id: str | None = None):
         if self._loading:
             return
         if self._tool_frame:
             self._tool_frame.deleteLater()
             self._tool_frame = None
+
+        self._hide_char_panel()
 
         tool_frame = QWidget()
         tool_layout = QVBoxLayout(tool_frame)
@@ -701,195 +1365,200 @@ class App(QMainWindow):
         tool_layout.addWidget(body, 1)
         self._tool_body = body
 
-        self._show_frame(tool_frame)
-
         if file_hint == "duelPlayerParam":
-            QTimer.singleShot(30, lambda: self._embed_editor(body, body_layout))
+            self._embed_editor(body, body_layout)
         elif file_hint == "characode.bin":
-            QTimer.singleShot(30, lambda: self._embed_characode_editor(body, body_layout))
+            self._embed_characode_editor(body, body_layout)
         elif file_hint == "info":
-            QTimer.singleShot(30, lambda: self._embed_info_editor(body, body_layout))
+            self._embed_info_editor(body, body_layout)
         elif file_hint == "PlayerColorParam.bin":
-            QTimer.singleShot(30, lambda: self._embed_costume_editor(body, body_layout))
+            self._embed_costume_editor(body, body_layout)
         elif "awb" in file_hint.lower():
-            QTimer.singleShot(30, lambda: self._embed_sound_editor(body, body_layout))
-        elif file_hint in ("Xcmn00prm.bin", "0xxx00prm.bin"):
-            QTimer.singleShot(30, lambda: self._embed_skill_editor(body, body_layout))
+            self._embed_sound_editor(body, body_layout)
+        elif file_hint in ("Xcmn00prm.bin", "0xxx00prm.bin", "0xxx00prm.bin, prm_gha.bin"):
+            self._embed_skill_editor(body, body_layout)
         elif file_hint == "effectprm.bin":
-            QTimer.singleShot(30, lambda: self._embed_effect_editor(body, body_layout))
+            self._embed_effect_editor(body, body_layout)
         elif file_hint == "0xxx00_SPM":
-            QTimer.singleShot(30, lambda: self._embed_spm_editor(body, body_layout))
+            self._embed_spm_editor(body, body_layout)
         elif file_hint == "0xxx00_x":
-            QTimer.singleShot(30, lambda: self._embed_projectile_editor(body, body_layout))
+            self._embed_projectile_editor(body, body_layout)
         elif file_hint == "0xxx00_constParam":
-            QTimer.singleShot(30, lambda: self._embed_constparam_editor(body, body_layout))
+            self._embed_constparam_editor(body, body_layout)
         elif file_hint == "SupportCharaParam.bin":
-            QTimer.singleShot(30, lambda: self._embed_assist_editor(body, body_layout))
+            self._embed_assist_editor(body, body_layout)
         elif file_hint == "damageprm.bin":
-            QTimer.singleShot(30, lambda: self._embed_damageprm_editor(body, body_layout))
+            self._embed_damageprm_editor(body, body_layout)
         elif file_hint == "damageeff.bin":
-            QTimer.singleShot(30, lambda: self._embed_damageeff_editor(body, body_layout))
+            self._embed_damageeff_editor(body, body_layout)
         elif file_hint == "btladjprm.bin":
-            QTimer.singleShot(30, lambda: self._embed_btladjprm_editor(body, body_layout))
+            self._embed_btladjprm_editor(body, body_layout)
         elif file_hint == "MainModeParam.bin":
-            QTimer.singleShot(30, lambda: self._embed_mainmodeparam_editor(body, body_layout))
+            self._embed_mainmodeparam_editor(body, body_layout)
         elif file_hint == "SpeakingLineParam.bin":
-            QTimer.singleShot(30, lambda: self._embed_speaking_editor(body, body_layout))
+            self._embed_speaking_editor(body, body_layout)
         elif file_hint == "messageinfo":
-            QTimer.singleShot(30, lambda: self._embed_messageinfo_editor(body, body_layout))
+            self._embed_messageinfo_editor(body, body_layout)
         elif file_hint == "DictionaryParam.xfbin":
-            QTimer.singleShot(30, lambda: self._embed_dictionaryparam_editor(body, body_layout))
+            self._embed_dictionaryparam_editor(body, body_layout)
         elif file_hint == "StageInfo.bin":
-            QTimer.singleShot(30, lambda: self._embed_stageinfo_editor(body, body_layout))
+            self._embed_stageinfo_editor(body, body_layout)
         elif file_hint == "Xcmnsfprm.bin":
-            QTimer.singleShot(30, lambda: self._embed_stagemotion_editor(body, body_layout))
+            self._embed_stagemotion_editor(body, body_layout)
         elif file_hint == "CustomCardParam.xfbin":
-            QTimer.singleShot(30, lambda: self._embed_customcardparam_editor(body, body_layout))
+            self._embed_customcardparam_editor(body, body_layout)
         elif file_hint == "CharViewerParam.xfbin":
-            QTimer.singleShot(30, lambda: self._embed_charviewer_editor(body, body_layout))
+            self._embed_charviewer_editor(body, body_layout)
         elif file_hint == "GuideCharParam.xfbin":
-            QTimer.singleShot(30, lambda: self._embed_guidecharparam_editor(body, body_layout))
+            self._embed_guidecharparam_editor(body, body_layout)
         elif file_hint == "CustomizeDefaultParam.xfbin":
-            QTimer.singleShot(30, lambda: self._embed_customizedefaultparam_editor(body, body_layout))
+            self._embed_customizedefaultparam_editor(body, body_layout)
         elif file_hint == "DlcInfoParam.xfbin":
-            QTimer.singleShot(30, lambda: self._embed_dlcinfoparam_editor(body, body_layout))
+            self._embed_dlcinfoparam_editor(body, body_layout)
         elif file_hint == "GalleryArtParam.xfbin":
-            QTimer.singleShot(30, lambda: self._embed_galleryartparam_editor(body, body_layout))
+            self._embed_galleryartparam_editor(body, body_layout)
         elif file_hint == "PlayerTitleParam.xfbin":
-            QTimer.singleShot(30, lambda: self._embed_playertitleparam_editor(body, body_layout))
+            self._embed_playertitleparam_editor(body, body_layout)
         elif file_hint in (".xfbin texures", ".xfbin textures"):
-            QTimer.singleShot(30, lambda: self._embed_texture_editor(body, body_layout))
+            self._embed_texture_editor(body, body_layout)
         elif file_hint == ".xfbin sounds":
-            QTimer.singleShot(30, lambda: self._embed_xfbin_audio_editor(body, body_layout))
+            self._embed_xfbin_audio_editor(body, body_layout)
         elif file_hint == "sndcmnparam.xfbin":
-            QTimer.singleShot(30, lambda: self._embed_sndcmnparam_editor(body, body_layout))
+            self._embed_sndcmnparam_editor(body, body_layout)
         elif file_hint == "SoundTestParam.xfbin":
-            QTimer.singleShot(30, lambda: self._embed_soundtestparam_editor(body, body_layout))
+            self._embed_soundtestparam_editor(body, body_layout)
         else:
-            QTimer.singleShot(30, lambda: self._embed_placeholder(body, body_layout, name, file_hint))
+            self._embed_placeholder(body, body_layout, name, file_hint)
+
+        self._show_frame(tool_frame)
+        self._mark_tool_used(tool_id)
 
     def _embed_editor(self, body, layout):
         editor = CharacterStatsEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_characode_editor(self, body, layout):
         editor = CharacodeEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_info_editor(self, body, layout):
         editor = InfoEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_costume_editor(self, body, layout):
         editor = CostumeEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_sound_editor(self, body, layout):
         editor = SoundEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_skill_editor(self, body, layout):
         editor = SkillEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_effect_editor(self, body, layout):
         editor = EffectEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_spm_editor(self, body, layout):
         editor = SpmEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_projectile_editor(self, body, layout):
         editor = ProjectileEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_constparam_editor(self, body, layout):
         editor = ConstParamEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_assist_editor(self, body, layout):
         editor = AssistEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_damageprm_editor(self, body, layout):
         editor = DamagePrmEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_damageeff_editor(self, body, layout):
         editor = DamageEffEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_btladjprm_editor(self, body, layout):
         editor = BtlAdjPrmEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_mainmodeparam_editor(self, body, layout):
         editor = MainModeParamEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_speaking_editor(self, body, layout):
         editor = SpeakingEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_messageinfo_editor(self, body, layout):
         editor = MessageInfoEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_dictionaryparam_editor(self, body, layout):
         editor = DictionaryParamEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_stageinfo_editor(self, body, layout):
         editor = StageInfoEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_stagemotion_editor(self, body, layout):
         editor = StageMotionEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_customcardparam_editor(self, body, layout):
         editor = CustomCardParamEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_charviewer_editor(self, body, layout):
         editor = CharViewerEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_guidecharparam_editor(self, body, layout):
         editor = GuideCharParamEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_customizedefaultparam_editor(self, body, layout):
         editor = CustomizeDefaultParamEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_dlcinfoparam_editor(self, body, layout):
         editor = DlcInfoParamEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_galleryartparam_editor(self, body, layout):
         editor = GalleryArtParamEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_playertitleparam_editor(self, body, layout):
         editor = PlayerTitleParamEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_texture_editor(self, body, layout):
         editor = TextureEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_xfbin_audio_editor(self, body, layout):
         editor = XfbinAudioEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_sndcmnparam_editor(self, body, layout):
         editor = SndCmnParamEditor(body, self.t, embedded=True)
-        layout.addWidget(editor, 1)
+        self._add_embedded_editor(editor, layout)
 
     def _embed_soundtestparam_editor(self, body, layout):
         editor = SoundTestParamEditor(body, self.t, embedded=True)
+        self._add_embedded_editor(editor, layout)
+
+    def _add_embedded_editor(self, editor, layout):
+        install_file_drop(editor)
         layout.addWidget(editor, 1)
 
     def _embed_placeholder(self, body, layout, name, file_hint):
@@ -903,6 +1572,11 @@ class App(QMainWindow):
         if self._tool_frame:
             self._tool_frame.deleteLater()
             self._tool_frame = None
+        if self._settings.get("show_guide", True):
+            self._show_char_panel()
+        if self._tool_search_query:
+            self._show_tool_search_results()
+            return
         cat_frame = self._cat_frames.get(self._current_cat)
         if cat_frame:
             self._show_frame(cat_frame)
@@ -922,10 +1596,11 @@ class App(QMainWindow):
         else:
             self._typing_timer.stop()
 
-    def _on_hover(self, dlg_key):
-        _, _, speaker_key = CAT_META[self._current_cat]
+    def _on_hover(self, dlg_key, cat_key=None):
+        cat_key = cat_key or self._current_cat
+        speaker_key = self._category_speaker_key(cat_key)
         speaker_name = self.t(speaker_key)
-        portrait = self._portrait_images.get(self._current_cat)
+        portrait = self._portrait_images.get(cat_key)
         if portrait:
             self._avatar_label.setPixmap(portrait)
             self._avatar_label.setText("")
@@ -1017,6 +1692,7 @@ class App(QMainWindow):
 
         # Embed the CPK editor widget
         editor = CpkEditor(panel, t_func=self.t)
+        install_file_drop(editor)
         panel_layout.addWidget(editor, 1)
 
         self._show_frame(panel)
@@ -1027,6 +1703,9 @@ class App(QMainWindow):
             self._cpk_editor_win = None
         if self._settings.get("show_guide", True):
             self._show_char_panel()
+        if self._tool_search_query:
+            self._show_tool_search_results()
+            return
         cat_frame = self._cat_frames.get(self._current_cat)
         if cat_frame:
             self._show_frame(cat_frame)
@@ -1179,6 +1858,149 @@ class App(QMainWindow):
         scroll_layout.addWidget(theme_card)
         scroll_layout.addSpacing(16)
 
+        # Game files folder section
+        game_dir_card = QFrame()
+        game_dir_card.setStyleSheet(
+            f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 12px; "
+            f"border: 1px solid {P['border']}; }}"
+        )
+        game_dir_layout = QVBoxLayout(game_dir_card)
+        game_dir_layout.setContentsMargins(20, 18, 20, 18)
+
+        game_dir_title = QLabel(self.t("game_files_dir_title"))
+        game_dir_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        game_dir_title.setStyleSheet(f"color: {P['accent']}; border: none;")
+        game_dir_layout.addWidget(game_dir_title)
+
+        game_dir_hint = QLabel(self.t("game_files_dir_hint"))
+        game_dir_hint.setFont(QFont("Segoe UI", 12))
+        game_dir_hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
+        game_dir_hint.setWordWrap(True)
+        game_dir_layout.addWidget(game_dir_hint)
+        game_dir_layout.addSpacing(8)
+
+        game_dir_row = QWidget()
+        game_dir_row.setStyleSheet("border: none;")
+        game_dir_row_layout = QHBoxLayout(game_dir_row)
+        game_dir_row_layout.setContentsMargins(0, 0, 0, 0)
+        game_dir_row_layout.setSpacing(8)
+
+        self._game_files_dir_edit = QLineEdit(self._settings.get("game_files_dir", ""))
+        self._game_files_dir_edit.setReadOnly(True)
+        self._game_files_dir_edit.setPlaceholderText(self.t("game_files_dir_placeholder"))
+        self._game_files_dir_edit.setFont(QFont("Segoe UI", 11))
+        self._game_files_dir_edit.setStyleSheet(
+            f"QLineEdit {{ background: {P['bg_dark']}; color: {P['text_main']}; "
+            f"border: 1px solid {P['border']}; border-radius: 8px; padding: 7px 9px; }}"
+        )
+        game_dir_row_layout.addWidget(self._game_files_dir_edit, 1)
+
+        browse_btn = _make_styled_btn(
+            self.t("browse"), P["mid"], P["bg_card_hov"], P["secondary"],
+            QFont("Segoe UI", 12), width=100, height=32)
+        browse_btn.clicked.connect(self._select_game_files_dir)
+        game_dir_row_layout.addWidget(browse_btn)
+
+        clear_btn = _make_styled_btn(
+            self.t("clear"), P["mid"], P["bg_card_hov"], P["secondary"],
+            QFont("Segoe UI", 12), width=90, height=32)
+        clear_btn.clicked.connect(self._clear_game_files_dir)
+        game_dir_row_layout.addWidget(clear_btn)
+
+        game_dir_layout.addWidget(game_dir_row)
+
+        scroll_layout.addWidget(game_dir_card)
+        scroll_layout.addSpacing(16)
+
+        # Backup section
+        backup_card = QFrame()
+        backup_card.setStyleSheet(
+            f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 12px; "
+            f"border: 1px solid {P['border']}; }}"
+        )
+        backup_layout = QVBoxLayout(backup_card)
+        backup_layout.setContentsMargins(20, 18, 20, 18)
+
+        backup_title = QLabel(self.t("backup_on_open_title"))
+        backup_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        backup_title.setStyleSheet(f"color: {P['accent']}; border: none;")
+        backup_layout.addWidget(backup_title)
+
+        backup_checkbox = QCheckBox(self.t("backup_on_open"))
+        backup_checkbox.setFont(QFont("Segoe UI", 14))
+        backup_checkbox.setChecked(self._settings.get("backup_on_open", True))
+        backup_checkbox.setStyleSheet(
+            f"QCheckBox {{ color: {P['text_main']}; border: none; spacing: 8px; }}"
+            f"QCheckBox::indicator {{ width: 14px; height: 14px; border-radius: 4px; border: 2px solid {P['secondary']}; background: transparent; }}"
+            f"QCheckBox::indicator:checked {{ background: {P['accent']}; border: 2px solid {P['accent']}; }}"
+        )
+        backup_checkbox.toggled.connect(self._set_backup_on_open)
+        backup_layout.addWidget(backup_checkbox)
+
+        backup_hint = QLabel(self.t("backup_on_open_hint"))
+        backup_hint.setFont(QFont("Segoe UI", 12))
+        backup_hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
+        backup_hint.setWordWrap(True)
+        backup_layout.addWidget(backup_hint)
+
+        scroll_layout.addWidget(backup_card)
+        scroll_layout.addSpacing(16)
+
+        # Updates section
+        updates_card = QFrame()
+        updates_card.setStyleSheet(
+            f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 12px; "
+            f"border: 1px solid {P['border']}; }}"
+        )
+        updates_layout = QVBoxLayout(updates_card)
+        updates_layout.setContentsMargins(20, 18, 20, 18)
+
+        updates_title = QLabel(self.t("updates_title"))
+        updates_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        updates_title.setStyleSheet(f"color: {P['accent']}; border: none;")
+        updates_layout.addWidget(updates_title)
+
+        updates_hint = QLabel(self.t("updates_hint", version=updater.APP_VERSION))
+        updates_hint.setFont(QFont("Segoe UI", 12))
+        updates_hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
+        updates_hint.setWordWrap(True)
+        updates_layout.addWidget(updates_hint)
+        updates_layout.addSpacing(8)
+
+        updates_checkbox = QCheckBox(self.t("updates_check_on_startup"))
+        updates_checkbox.setFont(QFont("Segoe UI", 14))
+        updates_checkbox.setChecked(self._settings.get("check_updates_on_startup", True))
+        updates_checkbox.setStyleSheet(
+            f"QCheckBox {{ color: {P['text_main']}; border: none; spacing: 8px; }}"
+            f"QCheckBox::indicator {{ width: 14px; height: 14px; border-radius: 4px; border: 2px solid {P['secondary']}; background: transparent; }}"
+            f"QCheckBox::indicator:checked {{ background: {P['accent']}; border: 2px solid {P['accent']}; }}"
+        )
+        updates_checkbox.toggled.connect(self._set_check_updates_on_startup)
+        updates_layout.addWidget(updates_checkbox)
+
+        updates_row = QWidget()
+        updates_row.setStyleSheet("border: none;")
+        updates_row_layout = QHBoxLayout(updates_row)
+        updates_row_layout.setContentsMargins(0, 8, 0, 0)
+        updates_row_layout.setSpacing(10)
+
+        check_updates_btn = _make_styled_btn(
+            self.t("updates_check_now"), P["mid"], P["bg_card_hov"], P["secondary"],
+            QFont("Segoe UI", 12), width=150, height=32)
+        check_updates_btn.clicked.connect(lambda: self._check_for_updates(manual=True))
+        updates_row_layout.addWidget(check_updates_btn)
+
+        self._update_status_label = QLabel(self.t("updates_idle", version=updater.APP_VERSION))
+        self._update_status_label.setFont(QFont("Segoe UI", 12))
+        self._update_status_label.setStyleSheet(f"color: {P['text_dim']}; border: none;")
+        self._update_status_label.setWordWrap(True)
+        updates_row_layout.addWidget(self._update_status_label, 1)
+
+        updates_layout.addWidget(updates_row)
+
+        scroll_layout.addWidget(updates_card)
+        scroll_layout.addSpacing(16)
+
         # Guide Character section
         guide_card = QFrame()
         guide_card.setStyleSheet(
@@ -1223,6 +2045,29 @@ class App(QMainWindow):
 
         self._show_frame(panel)
 
+    def _select_game_files_dir(self):
+        current_dir = self._settings.get("game_files_dir", "")
+        if not current_dir or not os.path.isdir(current_dir):
+            current_dir = os.path.expanduser("~")
+
+        folder = QFileDialog.getExistingDirectory(
+            self, self.t("game_files_dir_choose"), current_dir
+        )
+        if not folder:
+            return
+
+        folder = os.path.normpath(folder)
+        self._settings["game_files_dir"] = folder
+        save_settings(self._settings)
+        if hasattr(self, "_game_files_dir_edit"):
+            self._game_files_dir_edit.setText(folder)
+
+    def _clear_game_files_dir(self):
+        self._settings["game_files_dir"] = ""
+        save_settings(self._settings)
+        if hasattr(self, "_game_files_dir_edit"):
+            self._game_files_dir_edit.clear()
+
     def _set_show_guide(self, value: bool):
         self._settings["show_guide"] = value
         save_settings(self._settings)
@@ -1230,6 +2075,14 @@ class App(QMainWindow):
             self._show_char_panel()
         else:
             self._hide_char_panel()
+
+    def _set_backup_on_open(self, value: bool):
+        self._settings["backup_on_open"] = value
+        save_settings(self._settings)
+
+    def _set_check_updates_on_startup(self, value: bool):
+        self._settings["check_updates_on_startup"] = value
+        save_settings(self._settings)
 
     # Credits (inline panel)
     def _open_credits(self):
@@ -1384,6 +2237,9 @@ class App(QMainWindow):
             ("NexusMods", "https://www.nexusmods.com/profile/TheLeonX/mods"),
             ("YouTube",   "https://www.youtube.com/@TheLeonX/videos"),
         ], desc="for XFBIN_Lib, the idea of the toolbox, the talking character at the bottom and inspiration"))
+        card_layout.addWidget(_credit_entry("SutandoTsukai181", [
+            ("GitHub",    "https://github.com/mosamadeeb")
+        ], desc="for the groundwork on the CPK Unpacker"))
         card_layout.addWidget(_credit_entry("JoJo Modding Community", [
             ("Discord",   "https://discord.gg/bfWPHBwbr9"),
         ], desc="for the inspiration"))
@@ -1400,8 +2256,12 @@ class App(QMainWindow):
         if self._settings_win:
             self._settings_win.deleteLater()
             self._settings_win = None
+        self._update_status_label = None
         if self._settings.get("show_guide", True):
             self._show_char_panel()
+        if self._tool_search_query:
+            self._show_tool_search_results()
+            return
         cat_frame = self._cat_frames.get(self._current_cat)
         if cat_frame:
             self._show_frame(cat_frame)

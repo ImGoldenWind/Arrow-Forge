@@ -16,6 +16,7 @@ from parsers.speaking_parser import (
     INTERACTION_NAMES,
 )
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 def _clear_layout(layout):
@@ -577,6 +578,7 @@ class SpeakingEditor(QWidget):
     # File I/O
 
     def _load_file(self, filepath: str):
+        create_backup_on_open(filepath)
         try:
             data, version, entries = parse_speaking_xfbin(filepath)
         except Exception as exc:
@@ -599,7 +601,7 @@ class SpeakingEditor(QWidget):
 
     def _on_open(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_speaking_open_speakinglineparam_bin_xfbin"), "",
+            self, ui_text("ui_speaking_open_speakinglineparam_bin_xfbin"), game_files_dialog_dir(target_patterns="SpeakingLineParam.bin.xfbin"),
             "XFBIN Files (*.xfbin);;All Files (*)",
         )
         if path:

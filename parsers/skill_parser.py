@@ -267,8 +267,8 @@ def _parse_xfbin_header(data):
     pos += chunk_type_size - 1; pos += 1
     # FilePaths
     pos += file_path_size - 1; pos += 1
-    # ChunkNames (no final seek in C# code)
-    pos += chunk_name_size - 1
+    # ChunkNames
+    pos += chunk_name_size
     # 4-byte align
     if pos % 4: pos += 4 - (pos % 4)
     # ChunkMaps
@@ -291,7 +291,6 @@ def _iter_chunks(data, chunk_data_start):
         data_off  = pos + 12
         yield pos, size, data_off
         pos += 12 + size
-        if pos % 4: pos += 4 - (pos % 4)
         if pos >= len(data):
             break
 
@@ -327,7 +326,7 @@ def _find_chunks(data):
     pos += file_path_size-1; pos += 1
 
     # ChunkNames
-    name_bytes = data[pos:pos+chunk_name_size-1]; pos += chunk_name_size-1
+    name_bytes = data[pos:pos+chunk_name_size-1]; pos += chunk_name_size
     chunk_names = name_bytes.decode('utf-8', errors='replace').split('\x00')
 
     if pos % 4: pos += 4 - (pos % 4)
@@ -456,6 +455,7 @@ def parse_mot(raw):
         i = j + 1
 
     for idx, off in enumerate(offsets):
+        next_off = offsets[idx + 1] if idx + 1 < len(offsets) else len(raw)
         ev = _cstr(raw, off,      32)
         an = _cstr(raw, off+0x20, 32)
 
@@ -550,6 +550,8 @@ def parse_mot(raw):
 
         entries.append({
             'offset':     off,
+            'raw_size':   next_off - off,
+            'raw_n_subs': n_subs,
             'event_id':   ev,
             'anim_id':    an,
             'enable_face_animation': enable_face,
@@ -566,7 +568,9 @@ def parse_mot(raw):
 
 def write_mot_entry(raw_buf, entry):
     """Write back event_id, anim_id and header flags for one mot entry (in-place)."""
-    off = entry['offset']
+    off = entry.get('offset')
+    if off is None:
+        return
     _wstr(raw_buf, off,      entry['event_id'], 32)
     _wstr(raw_buf, off+0x20, entry['anim_id'],  32)
     if off+0x48 <= len(raw_buf):
@@ -577,13 +581,17 @@ def write_mot_entry(raw_buf, entry):
         _wu32le(raw_buf, off+0x4C, int(entry.get('fix_position', 0)))
     if off+0x68 <= len(raw_buf):
         _wu32le(raw_buf, off+0x64, int(entry.get('frame_skip', 0)))
+    if off+0x70 <= len(raw_buf):
+        _wu32le(raw_buf, off+0x6C, len(entry.get('subentries', [])))
     if off+0x9C <= len(raw_buf):
         _wu32le(raw_buf, off+0x98, int(entry.get('file_id', 0)))
 
 
 def write_mot_subentry(raw_buf, sub):
     """Write back subentry fields (in-place)."""
-    off = sub['sub_off']
+    off = sub.get('sub_off')
+    if off is None:
+        return
     _wstr(raw_buf, off+0x08, sub['bone'], 32)
     _wu32le(raw_buf, off+0x34, sub['dtype'])
     _wu8(raw_buf, off+0x6C, sub['dmg'])
@@ -599,6 +607,102 @@ def write_mot_subentry(raw_buf, sub):
             _wf32le(raw_buf, off+0x64, sub.get('y', 0.0))
         if off+0x6C <= len(raw_buf):
             struct.pack_into('<i', raw_buf, off+0x68, int(sub.get('push', 0)))
+
+
+def make_default_mot_entry(index=0):
+    """Return a safe blank PL_ANM entry dict for prm_mot/prm_gha."""
+    return {
+        'offset': None,
+        'event_id': f'PL_ANM_NEW_{index:03d}',
+        'anim_id': f'new_anim_{index:03d}',
+        'enable_face_animation': 0,
+        'no_frame_skip': 0,
+        'fix_position': 0,
+        'frame_skip': 0,
+        'file_id': 0,
+        'n_subs': 0,
+        'subentries': [],
+    }
+
+
+def make_default_mot_subentry(index=0):
+    """Return a safe blank prm_mot subentry dict."""
+    return {
+        'sub_off': None,
+        'bone': '',
+        'dtype': 0,
+        'dname': DATA_TYPE_MAP.get(0, '0'),
+        'func_name': FUNC_MAP_1B.get(0, 'ME_ENEMY_CTRL_ON'),
+        'frame_w': 0,
+        'frame_str': '0',
+        'dmg': 0,
+        'grd': 0,
+        'x': 0.0,
+        'y': 0.0,
+        'dmg_label': '',
+        'attack': '',
+        'push': 0,
+    }
+
+
+def write_mot(entries, original_raw):
+    """Serialise a full prm_mot/prm_gha chunk from entry dicts.
+
+    Existing entry bytes are used as templates so unknown fields survive.
+    New entries/subentries are zero-filled and then populated with editable
+    fields.
+    """
+    if original_raw and len(original_raw) >= MOT_GLOBAL_HDR:
+        out = bytearray(original_raw[:MOT_GLOBAL_HDR])
+    else:
+        out = bytearray(MOT_GLOBAL_HDR)
+
+    for entry in entries:
+        subs = entry.get('subentries', [])
+        old_off = entry.get('offset')
+        old_count = int(entry.get('raw_n_subs', entry.get('n_subs', len(subs))) or 0)
+        old_sub_len = MOT_HDR_SIZE + old_count * MOT_SUB_SIZE
+        old_len = max(int(entry.get('raw_size', old_sub_len) or old_sub_len), old_sub_len)
+        new_len = MOT_HDR_SIZE + len(subs) * MOT_SUB_SIZE
+
+        if (
+            old_off is not None
+            and original_raw
+            and 0 <= old_off
+            and old_off + old_len <= len(original_raw)
+        ):
+            old_block = bytearray(original_raw[old_off:old_off + old_len])
+            tail = old_block[old_sub_len:]
+            block = old_block[:min(len(old_block), old_sub_len)]
+        else:
+            block = bytearray()
+            tail = bytearray()
+
+        if len(block) < new_len:
+            block.extend(bytes(new_len - len(block)))
+        elif len(block) > new_len:
+            block = block[:new_len]
+        block.extend(tail)
+
+        new_off = len(out)
+        entry['offset'] = new_off
+        entry['raw_size'] = len(block)
+        entry['raw_n_subs'] = len(subs)
+        entry['n_subs'] = len(subs)
+        write_mot_entry(block, {**entry, 'offset': 0})
+
+        for i, sub in enumerate(subs):
+            sub_off = MOT_HDR_SIZE + i * MOT_SUB_SIZE
+            sub['sub_off'] = new_off + sub_off
+            if old_off is None or i >= old_count:
+                write_mot_subentry(block, {**sub, 'sub_off': sub_off})
+
+        out.extend(block)
+
+    struct.pack_into('>I', out, 0, len(out) - 4)
+    if len(out) >= 0x2C:
+        _wu32le(out, 0x28, len(entries) + 1)
+    return out
 
 
 # Top-level XFBIN API
@@ -644,6 +748,7 @@ def parse_prm_xfbin(filepath):
         result[key] = {
             'name':      name,
             'entries':   entries,
+            'hdr_off':   hdr_off,
             'data_off':  data_off,
             'data_size': size,
             'raw':       bytearray(chunk_raw),
@@ -658,6 +763,7 @@ def parse_prm_xfbin(filepath):
         result['gha'] = {
             'name':      name,
             'entries':   entries,
+            'hdr_off':   hdr_off,
             'data_off':  data_off,
             'data_size': size,
             'raw':       bytearray(chunk_raw),
@@ -666,49 +772,86 @@ def parse_prm_xfbin(filepath):
     return raw, result
 
 
+def _align4(n):
+    return n + ((4 - (n % 4)) % 4)
+
+
+def _replace_chunk(raw, hdr_off, old_size, new_bytes):
+    """Replace one XFBIN chunk payload and update its chunk-size field."""
+    old_end = hdr_off + 12 + old_size
+    new_size = len(new_bytes)
+
+    chunk = bytearray(raw[hdr_off:hdr_off + 12])
+    struct.pack_into('>I', chunk, 0, new_size)
+    chunk += new_bytes
+
+    old_len = old_end - hdr_off
+    raw[hdr_off:old_end] = chunk
+    return len(chunk) - old_len
+
+
 def save_prm_xfbin(filepath, raw, result):
     """Write back modified chunks into raw bytearray and save to disk.
 
-    Only sklslot and load chunks can change size (write_sklslot / write_load
-    return new bytes).  mot entries are written in-place so size stays the same.
+    Rebuild changed binary chunks and update their XFBIN chunk-size fields.
+    sklslot/load may grow or shrink when entries are added or removed; mot/gha
+    stay fixed-size payloads edited through their raw buffers.
     """
+    replacements = []
     for key in ('load', 'sklslot', 'mot', 'gha'):
         if key not in result:
             continue
         info = result[key]
-        data_off  = info['data_off']
-        data_size = info['data_size']
+        hdr_off = info.get('hdr_off', info['data_off'] - 12)
 
         if key in ('mot', 'gha'):
-            # In-place writes already done via write_mot_entry/write_mot_subentry
-            # Copy modified raw back
-            raw[data_off:data_off+data_size] = info['raw']
+            new_bytes = bytes(info['raw'])
 
         elif key == 'load':
             new_bytes = write_load(info['entries'])
             # Trailing zeros are normal padding — pad to original size if needed
-            if len(new_bytes) < data_size:
-                new_bytes = bytearray(new_bytes) + bytes(data_size - len(new_bytes))
-                # Correct header: data_size field = total bytes after the 4-byte header
-                struct.pack_into('>I', new_bytes, 0, data_size - 4)
-            if len(new_bytes) != data_size:
-                raise ValueError(
-                    f"Load chunk size changed {data_size} -> {len(new_bytes)}. "
-                    "XFBIN re-packing not supported; keep same entry count."
-                )
-            raw[data_off:data_off+data_size] = new_bytes
 
         elif key == 'sklslot':
             new_bytes = write_sklslot(info['entries'])
             # Trailing zeros are normal padding — pad to original size if needed
-            if len(new_bytes) < data_size:
-                new_bytes = new_bytes + bytes(data_size - len(new_bytes))
-            if len(new_bytes) != data_size:
-                raise ValueError(
-                    f"Sklslot chunk size changed {data_size} -> {len(new_bytes)}. "
-                    "XFBIN re-packing not supported; keep same entry count."
+
+        old_size = info['data_size']
+        entry_size = (
+            LOAD_ENTRY_SZ if key == 'load'
+            else SKL_ENTRY_SIZE if key == 'sklslot'
+            else None
+        )
+        if entry_size is not None and 0 < old_size - len(new_bytes) < entry_size:
+            tail = bytes(info.get('raw', b''))[len(new_bytes):old_size]
+            pad_len = old_size - len(new_bytes)
+            new_bytes += tail if len(tail) == pad_len else bytes(pad_len)
+            if key == 'load':
+                struct.pack_into('>I', new_bytes, 0, old_size - LOAD_HDR_SZ)
+
+        replacements.append((hdr_off, key, new_bytes))
+
+    for hdr_off, key, new_bytes in sorted(replacements, reverse=True):
+        info = result[key]
+        old_size = info['data_size']
+        delta = _replace_chunk(raw, hdr_off, old_size, new_bytes)
+
+        info['hdr_off'] = hdr_off
+        info['data_off'] = hdr_off + 12
+        info['data_size'] = len(new_bytes)
+        if key in ('mot', 'gha'):
+            info['raw'] = bytearray(new_bytes)
+
+        if delta:
+            for other_key, other_info in result.items():
+                if other_key == key or not isinstance(other_info, dict):
+                    continue
+                other_hdr = other_info.get(
+                    'hdr_off',
+                    other_info.get('data_off', 12) - 12,
                 )
-            raw[data_off:data_off+data_size] = new_bytes
+                if other_hdr > hdr_off:
+                    other_info['hdr_off'] = other_hdr + delta
+                    other_info['data_off'] = other_info.get('data_off', other_hdr + 12) + delta
 
     with open(filepath, 'wb') as f:
         f.write(raw)

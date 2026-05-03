@@ -10,9 +10,11 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_toolbar, ss_accent_sep, ss_sep, ss_input, ss_scrollarea,
+    ss_btn, ss_toolbar, ss_accent_sep, ss_sep, ss_input, ss_scrollarea, ss_file_label,
 )
+from core.editor_file_state import set_file_label, set_file_label_empty
 from core.skeleton import SkeletonListRow, SkeletonBar
+from core.settings import create_backup_on_open, game_files_dialog_dir
 from parsers.characode_parser import (
     parse_characode_xfbin, save_characode_xfbin,
     suggest_next_slot,
@@ -47,6 +49,8 @@ class CharacodeEditor(QWidget):
         self._current_entry = None
         self._entry_buttons = []
         self._fields = {}
+        self._filepath = None
+        self._dirty = False
 
         self._load_done_signal.connect(self._on_load_done)
         self._load_error_signal.connect(self._on_load_error)
@@ -91,7 +95,7 @@ class CharacodeEditor(QWidget):
 
         self._file_label = QLabel(self.t("no_file_loaded"), top)
         self._file_label.setFont(QFont("Consolas", 12))
-        self._file_label.setStyleSheet(f"color: {P['text_dim']};")
+        self._file_label.setStyleSheet(ss_file_label())
         top_layout.addWidget(self._file_label)
 
         top_layout.addStretch()
@@ -224,12 +228,13 @@ class CharacodeEditor(QWidget):
 
     def _load_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, self.t("file_open_characode"), "",
+            self, self.t("file_open_characode"), game_files_dialog_dir(target_patterns="characode.bin.xfbin"),
             "XFBIN files (*.xfbin);;All files (*.*)")
         if not path:
             return
 
-        self._file_label.setText(self.t("loading"))
+        create_backup_on_open(path)
+        set_file_label_empty(self._file_label, self.t("loading"))
         self._show_list_skeleton()
         self._show_editor_skeleton()
 
@@ -298,16 +303,20 @@ class CharacodeEditor(QWidget):
         self._placeholder.setContentsMargins(0, 60, 0, 60)
         self._editor_layout.addWidget(self._placeholder)
         self._editor_layout.addStretch()
-        self._file_label.setText(self.t("no_file_loaded"))
+        self._filepath = None
+        self._dirty = False
+        set_file_label_empty(self._file_label, self.t("no_file_loaded"))
         QMessageBox.critical(self, self.t("dlg_title_error"), self.t("msg_load_error", error=msg))
 
     def _on_load_done(self, path, raw_data, entries, meta):
         self._raw_data = raw_data
         self._entries = entries
         self._meta = meta
+        self._filepath = path
+        self._dirty = False
         for entry in self._entries:
             entry['name'] = self.t(f"char_{entry['char_code']}")
-        self._file_label.setText(os.path.basename(path))
+        set_file_label(self._file_label, path)
         self._count_label.setText(self.t("entries_count", n=len(entries)))
 
         self._save_btn.setEnabled(True)
@@ -320,13 +329,13 @@ class CharacodeEditor(QWidget):
         if not self._raw_data:
             return
         self._apply_fields()
-        path, _ = QFileDialog.getSaveFileName(
-            self, self.t("file_save_characode"), "",
-            "XFBIN files (*.xfbin);;All files (*.*)")
-        if not path:
+        if not self._filepath:
             return
         try:
+            path = self._filepath
             save_characode_xfbin(path, self._raw_data, self._entries, self._meta)
+            self._dirty = False
+            set_file_label(self._file_label, path)
             QMessageBox.information(self, self.t("dlg_title_success"),
                                     self.t("msg_save_success", path=os.path.basename(path)))
         except Exception as e:
@@ -485,6 +494,7 @@ class CharacodeEditor(QWidget):
             f"color: {P['text_main']}; border-radius: 4px; padding: 2px 6px; }}"
         )
         e_code.setText(entry['char_code'])
+        e_code.textEdited.connect(self._mark_dirty)
         code_lay.addWidget(e_code)
         self._fields['char_code'] = e_code
         hdr_grid.addWidget(code_frame, 0, 1)
@@ -509,6 +519,7 @@ class CharacodeEditor(QWidget):
             f"color: {P['accent']}; border-radius: 4px; padding: 2px 6px; }}"
         )
         e_slot.setText(str(entry['slot_index']))
+        e_slot.textEdited.connect(self._mark_dirty)
         slot_lay.addWidget(e_slot)
         self._fields['slot_index'] = e_slot
         hdr_grid.addWidget(slot_frame, 0, 2)
@@ -532,6 +543,7 @@ class CharacodeEditor(QWidget):
         self._count_label.setText(self.t("entries_count", n=len(self._entries)))
         self._populate_list()
         self._select_entry(entry)
+        self._mark_dirty()
 
     def _duplicate_entry(self):
         if self._raw_data is None or not self._current_entry:
@@ -545,6 +557,7 @@ class CharacodeEditor(QWidget):
         self._count_label.setText(self.t("entries_count", n=len(self._entries)))
         self._populate_list()
         self._select_entry(entry)
+        self._mark_dirty()
 
     def _delete_entry(self):
         if self._raw_data is None or not self._current_entry:
@@ -564,3 +577,11 @@ class CharacodeEditor(QWidget):
         self._current_entry = None
         self._count_label.setText(self.t("entries_count", n=len(self._entries)))
         self._populate_list()
+        self._mark_dirty()
+
+    def _mark_dirty(self, *_):
+        if self._dirty:
+            return
+        self._dirty = True
+        if self._filepath:
+            set_file_label(self._file_label, self._filepath, dirty=True)

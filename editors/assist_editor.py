@@ -16,11 +16,13 @@ from core.style_helpers import (
     ss_field_label, ss_section_label, ss_sidebar_btn, ss_file_label,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.editor_file_state import set_file_label
 from parsers.assist_parser import (
     parse_assist_xfbin, save_assist_xfbin, make_default_entry,
     FIELD_NAMES, FIELD_TOOLTIPS,
 )
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 # Character display names (fallback when translation key not found)
@@ -341,6 +343,7 @@ class AssistEditor(QWidget):
     # Data
 
     def _load_file(self, filepath):
+        create_backup_on_open(filepath)
         try:
             data, entries = parse_assist_xfbin(filepath)
         except Exception as exc:
@@ -355,8 +358,7 @@ class AssistEditor(QWidget):
         self._current_entry = None
         self._fields = {}
 
-        self._file_lbl.setText(os.path.basename(filepath))
-        self._file_lbl.setStyleSheet(f"color: {P['text_file']}; background: transparent;")
+        set_file_label(self._file_lbl, filepath)
         self._btn_save.setEnabled(True)
         self._btn_add.setEnabled(True)
         self._btn_dup.setEnabled(True)
@@ -530,12 +532,14 @@ class AssistEditor(QWidget):
     def _mark_dirty(self):
         self._dirty = True
         self._btn_save.setEnabled(True)
+        if self._filepath:
+            set_file_label(self._file_lbl, self._filepath, dirty=True)
 
     # File I/O
 
     def _on_open(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_assist_open_supportcharaparam_bin_xfbin"), "",
+            self, ui_text("ui_assist_open_supportcharaparam_bin_xfbin"), game_files_dialog_dir(target_patterns="SupportCharaParam.bin.xfbin"),
             "XFBIN Files (*.xfbin);;All Files (*)"
         )
         if path:
@@ -549,8 +553,7 @@ class AssistEditor(QWidget):
             save_assist_xfbin(self._filepath, self._original_data, self._entries)
             self._dirty = False
             name = os.path.basename(self._filepath)
-            self._file_lbl.setText(name)
-            self._file_lbl.setStyleSheet(f"color: {P['text_file']}; background: transparent;")
+            set_file_label(self._file_lbl, self._filepath)
             QMessageBox.information(self, ui_text("ui_assist_saved"), ui_text("ui_assist_file_saved_value", p0=name))
         except Exception as exc:
             QMessageBox.critical(self, ui_text("ui_assist_save_error"), ui_text("ui_assist_failed_to_save_value", p0=exc))
