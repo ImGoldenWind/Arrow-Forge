@@ -16,12 +16,14 @@ from PyQt6.QtGui import QFont
 from core.themes import P
 from core.style_helpers import (
     ss_btn, ss_input, ss_search, ss_sidebar_btn,
-    ss_section_label, ss_field_label, ss_scrollarea, ss_sep,
+    ss_section_label, ss_field_label, ss_file_label, ss_scrollarea, ss_sep,
     ss_panel, ss_scrollarea_transparent,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.editor_file_state import set_file_label
 from parsers.spm_parser import parse_spm_xfbin, save_spm_xfbin, get_moves
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 # Constants
@@ -176,6 +178,7 @@ def _make_sidebar(width=240):
 
 class _AttrForm(QScrollArea):
     """Scrollable attribute form for any ET.Element."""
+    changed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -235,6 +238,7 @@ class _AttrForm(QScrollArea):
     def _set(self, attr, val):
         if self._elem is not None:
             self._elem.set(attr, val)
+            self.changed.emit()
 
 
 # _CommandsTab
@@ -835,7 +839,7 @@ class SpmEditor(QWidget):
 
         self._path_lbl = QLabel(ui_text("xfa_no_file"))
         self._path_lbl.setFont(QFont("Consolas", 12))
-        self._path_lbl.setStyleSheet(f"color: {P['text_dim']};")
+        self._path_lbl.setStyleSheet(ss_file_label())
         bl.addWidget(self._path_lbl)
         bl.addStretch()
         return bar
@@ -887,6 +891,7 @@ class SpmEditor(QWidget):
         )
 
         self._info_form = _AttrForm()
+        self._info_form.changed.connect(self._mark_dirty)
         self._tabs.addTab(self._info_form, ui_text("ui_spm_move_info"))
 
         self._cmd_tab = _CommandsTab()
@@ -905,10 +910,11 @@ class SpmEditor(QWidget):
 
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_spm_open_spm_xfbin"), "",
+            self, ui_text("ui_spm_open_spm_xfbin"), game_files_dialog_dir(target_patterns="*_SPM.xfbin"),
             "SPM XFBIN Files (*_SPM.xfbin);;XFBIN Files (*.xfbin);;All Files (*)")
         if not path:
             return
+        create_backup_on_open(path)
         try:
             raw, result = parse_spm_xfbin(path)
         except Exception as e:
@@ -920,7 +926,7 @@ class SpmEditor(QWidget):
         self._filepath = path
         self._moves    = get_moves(result['root'])
 
-        self._path_lbl.setText(os.path.basename(path))
+        set_file_label(self._path_lbl, path)
         self._save_btn.setEnabled(True)
         self._add_move_btn.setEnabled(True)
         self._dup_move_btn.setEnabled(True)
@@ -933,8 +939,14 @@ class SpmEditor(QWidget):
             return
         try:
             save_spm_xfbin(self._filepath, self._raw, self._result)
+            set_file_label(self._path_lbl, self._filepath)
         except Exception as e:
             QMessageBox.critical(self, ui_text("ui_assist_save_error"), ui_text("ui_spm_save_failed_value", p0=e))
+
+    def _mark_dirty(self):
+        self._save_btn.setEnabled(True)
+        if self._filepath:
+            set_file_label(self._path_lbl, self._filepath, dirty=True)
 
     # Move list
 
@@ -1029,6 +1041,7 @@ class SpmEditor(QWidget):
              'spm_elem': elem, 'entry_elem': None, 'decorator_elems': []}
         self._moves.append(m)
         self._refresh_move_list(keep_idx=len(self._moves) - 1)
+        self._mark_dirty()
 
     def _dup_move(self):
         if self._cur_idx < 0 or self._cur_idx >= len(self._moves) or self._result is None:
@@ -1061,6 +1074,7 @@ class SpmEditor(QWidget):
              'spm_elem': new_elem, 'entry_elem': new_entry, 'decorator_elems': new_decs}
         self._moves.append(m)
         self._refresh_move_list(keep_idx=len(self._moves) - 1)
+        self._mark_dirty()
 
     def _del_move(self):
         row = self._cur_idx
@@ -1077,3 +1091,4 @@ class SpmEditor(QWidget):
         self._moves.pop(row)
         self._cur_idx = -1
         self._refresh_move_list(keep_idx=min(row, len(self._moves) - 1))
+        self._mark_dirty()

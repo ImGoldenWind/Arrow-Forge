@@ -12,11 +12,13 @@ from PyQt6.QtCore import Qt, QSize, pyqtSignal
 from core.themes import P
 from core.style_helpers import (
     ss_btn, ss_toolbar, ss_accent_sep, ss_sep, ss_input,
-    ss_scrollarea, ss_scrollarea_transparent,
+    ss_scrollarea, ss_scrollarea_transparent, ss_file_label,
 )
+from core.editor_file_state import set_file_label, set_file_label_empty
 from core.skeleton import SkeletonListRow, SkeletonBar
 from parsers.costume_parser import parse_costume_xfbin, save_costume_xfbin
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 def _clear_layout(layout):
@@ -45,6 +47,7 @@ class CostumeEditor(QWidget):
         self._current_char = None
         self._color_widgets = []  # list of (costume_idx, color_idx, frame, r_entry, g_entry, b_entry)
         self._filepath = None
+        self._dirty = False
         self._char_buttons = []
         self._notes = b''
         self._costume_frames = []  # list of QFrame, one per costume section
@@ -84,7 +87,7 @@ class CostumeEditor(QWidget):
 
         self._file_label = QLabel(self.t("no_file_loaded"), top)
         self._file_label.setFont(QFont("Consolas", 12))
-        self._file_label.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        self._file_label.setStyleSheet(ss_file_label())
         top_layout.addWidget(self._file_label)
         top_layout.addStretch()
 
@@ -210,12 +213,13 @@ class CostumeEditor(QWidget):
 
     def _load_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, self.t("file_open_costume"), "",
+            self, self.t("file_open_costume"), game_files_dialog_dir(target_patterns="PlayerColorParam.bin.xfbin"),
             "XFBIN files (*.xfbin);;All files (*.*)")
         if not path:
             return
 
-        self._file_label.setText(self.t("loading"))
+        create_backup_on_open(path)
+        set_file_label_empty(self._file_label, self.t("loading"))
         self._show_list_skeleton()
         self._show_editor_skeleton()
 
@@ -282,7 +286,9 @@ class CostumeEditor(QWidget):
         self._editor_layout.addSpacing(60)
         self._editor_layout.addWidget(self._placeholder, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
-        self._file_label.setText(self.t("no_file_loaded"))
+        self._filepath = None
+        self._dirty = False
+        set_file_label_empty(self._file_label, self.t("no_file_loaded"))
         QMessageBox.critical(self, self.t("dlg_title_error"), self.t("msg_load_error", error=msg))
 
     def _on_load_done(self, path, raw, characters, binary_offset, notes):
@@ -291,12 +297,13 @@ class CostumeEditor(QWidget):
         self._binary_offset = binary_offset
         self._notes = notes
         self._filepath = path
+        self._dirty = False
         for char in self._characters:
             key = f"char_{char['char_id']}"
             translated = self.t(key)
             if translated != key:
                 char['name'] = translated
-        self._file_label.setText(os.path.basename(path))
+        set_file_label(self._file_label, path)
         self._save_btn.setEnabled(True)
         self._add_btn.setEnabled(True)
         self._dup_btn.setEnabled(True)
@@ -309,13 +316,13 @@ class CostumeEditor(QWidget):
         if not self._raw_data:
             return
         self._apply_colors()
-        path, _ = QFileDialog.getSaveFileName(
-            self, self.t("file_save_costume"), "",
-            "XFBIN files (*.xfbin);;All files (*.*)")
-        if not path:
+        if not self._filepath:
             return
         try:
+            path = self._filepath
             save_costume_xfbin(path, self._raw_data, self._characters, self._binary_offset, self._notes)
+            self._dirty = False
+            set_file_label(self._file_label, path)
             QMessageBox.information(self, self.t("dlg_title_success"),
                                     self.t("msg_save_success", path=os.path.basename(path)))
         except Exception as e:
@@ -733,6 +740,10 @@ class CostumeEditor(QWidget):
             g_entry.textChanged.connect(rgb_cb)
             b_entry.textChanged.connect(rgb_cb)
             hex_entry.textChanged.connect(hex_cb)
+            r_entry.textEdited.connect(self._mark_dirty)
+            g_entry.textEdited.connect(self._mark_dirty)
+            b_entry.textEdited.connect(self._mark_dirty)
+            hex_entry.textEdited.connect(self._mark_dirty)
 
             # Color picker on swatch click
             def _make_pick_color(re, ge, be, he, sw):
@@ -747,6 +758,7 @@ class CostumeEditor(QWidget):
                         re.setText(str(color.red()))
                         ge.setText(str(color.green()))
                         be.setText(str(color.blue()))
+                        self._mark_dirty()
                 return handler
 
             swatch.mousePressEvent = _make_pick_color(r_entry, g_entry, b_entry, hex_entry, swatch)
@@ -810,6 +822,7 @@ class CostumeEditor(QWidget):
             ]
         })
         self._build_editor(char)
+        self._mark_dirty()
 
     def _add_color_entry(self, char, ci):
         self._apply_colors()
@@ -817,6 +830,7 @@ class CostumeEditor(QWidget):
             return
         char['costumes'][ci]['colors'].append({'r': 128, 'g': 128, 'b': 128})
         self._build_editor(char)
+        self._mark_dirty()
 
     def _remove_costume(self, costume_idx):
         if not self._current_char:
@@ -829,6 +843,7 @@ class CostumeEditor(QWidget):
         self._apply_colors()
         del char['costumes'][costume_idx]
         self._build_editor(char)
+        self._mark_dirty()
 
     def _remove_color(self, costume_idx, color_idx):
         if not self._current_char:
@@ -842,6 +857,7 @@ class CostumeEditor(QWidget):
         self._apply_colors()
         del costume['colors'][color_idx]
         self._build_editor(char)
+        self._mark_dirty()
 
     # Character management
 
@@ -867,6 +883,7 @@ class CostumeEditor(QWidget):
         self._characters.append(char)
         self._populate_list()
         self._select_char(char)
+        self._mark_dirty()
 
     def _duplicate_char(self):
         if not self._raw_data or not self._current_char:
@@ -877,6 +894,7 @@ class CostumeEditor(QWidget):
         self._characters.append(char)
         self._populate_list()
         self._select_char(char)
+        self._mark_dirty()
 
     def _delete_char(self):
         if not self._raw_data or not self._current_char:
@@ -897,3 +915,11 @@ class CostumeEditor(QWidget):
         self._characters.remove(self._current_char)
         self._current_char = None
         self._populate_list()
+        self._mark_dirty()
+
+    def _mark_dirty(self, *_):
+        if self._dirty:
+            return
+        self._dirty = True
+        if self._filepath:
+            set_file_label(self._file_label, self._filepath, dirty=True)

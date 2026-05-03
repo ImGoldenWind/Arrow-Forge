@@ -20,6 +20,7 @@ from core.style_helpers import (
     ss_section_label, ss_field_label, ss_tab_widget,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.editor_file_state import set_file_label
 from parsers.stageinfo_parser import (
     parse_stageinfo_xfbin, save_stageinfo_xfbin,
     STAGE_PARAM_SIZE,
@@ -30,6 +31,7 @@ from parsers.stageinfo_parser import (
     clump_get_skip_flag, clump_get_skip_float,
 )
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 # Local UI helpers
@@ -843,13 +845,14 @@ class StageInfoEditor(QWidget):
 
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_stageinfo_open_stageinfo_bin_xfbin"), "",
+            self, ui_text("ui_stageinfo_open_stageinfo_bin_xfbin"), game_files_dialog_dir(target_patterns="StageInfo.bin.xfbin"),
             "XFBIN Files (*.xfbin);;All Files (*)"
         )
         if path:
             self._load(path)
 
     def _load(self, path):
+        create_backup_on_open(path)
         try:
             raw, result = parse_stageinfo_xfbin(path)
         except Exception as exc:
@@ -862,8 +865,7 @@ class StageInfoEditor(QWidget):
         self._dirty    = False
         self._current_idx = -1
 
-        self._file_lbl.setText(os.path.basename(path))
-        self._file_lbl.setStyleSheet(f"color: {P['text_file']}; background: transparent;")
+        set_file_label(self._file_lbl, path)
         self._btn_save.setEnabled(True)
         self._btn_add.setEnabled(True)
         self._btn_dup.setEnabled(True)
@@ -882,8 +884,7 @@ class StageInfoEditor(QWidget):
         try:
             save_stageinfo_xfbin(self._filepath, self._raw, self._result)
             self._dirty = False
-            self._file_lbl.setText(os.path.basename(self._filepath))
-            self._file_lbl.setStyleSheet(f"color: {P['text_file']}; background: transparent;")
+            set_file_label(self._file_lbl, self._filepath)
         except Exception as exc:
             QMessageBox.critical(self, ui_text("ui_assist_save_error"), str(exc))
 
@@ -1009,6 +1010,4 @@ class StageInfoEditor(QWidget):
     def _mark_dirty(self):
         self._dirty = True
         self._btn_save.setEnabled(True)
-        name = os.path.basename(self._filepath) if self._filepath else ''
-        self._file_lbl.setText(ui_text("ui_effect_value", p0=name))
-        self._file_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+        set_file_label(self._file_lbl, self._filepath, dirty=True)

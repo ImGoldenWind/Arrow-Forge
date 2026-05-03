@@ -13,6 +13,7 @@ from core.style_helpers import (
     ss_btn, ss_sep, ss_input, ss_search, ss_tab_widget, ss_scrollarea,
     ss_tab_bar, TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.editor_file_state import set_file_label
 from core.skeleton import SkeletonListRow
 from parsers.info_parser import (
     parse_info_xfbin, save_info_xfbin,
@@ -20,6 +21,7 @@ from parsers.info_parser import (
     analyze_char_select, COLLISION_FIELDS, INT_FIELDS,
 )
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 # Helpers
@@ -833,11 +835,12 @@ class InfoEditor(QWidget):
 
     def _load_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, self.t("file_open_info"), "",
+            self, self.t("file_open_info"), game_files_dialog_dir(target_patterns="info.xfbin"),
             "XFBIN files (*.xfbin);;All files (*.*)")
         if not path:
             return
 
+        create_backup_on_open(path)
         self._file_label.setText(self.t("loading"))
         self._show_set_skeleton()
 
@@ -866,9 +869,7 @@ class InfoEditor(QWidget):
     def _mark_dirty(self):
         self._dirty = True
         self._save_btn.setEnabled(True)
-        name = os.path.basename(self._filepath) if self._filepath else self.t("no_file_loaded")
-        self._file_label.setText(ui_text("ui_effect_value", p0=name))
-        self._file_label.setStyleSheet(f"color: {P['accent']};")
+        set_file_label(self._file_label, self._filepath, dirty=True)
 
     def _on_load_done(self, path, raw_data, sets, meta):
         self._raw_data = raw_data
@@ -878,8 +879,7 @@ class InfoEditor(QWidget):
         self._dirty = False
         self._current_set = None
         self._current_coll = None
-        self._file_label.setText(os.path.basename(path))
-        self._file_label.setStyleSheet(f"color: {P['text_file']};")
+        set_file_label(self._file_label, path)
         self._info_label.setText(self.t("scenes_count", n=len(sets)))
         self._save_btn.setEnabled(True)
         self._add_set_btn.setEnabled(True)
@@ -893,8 +893,7 @@ class InfoEditor(QWidget):
         try:
             save_info_xfbin(self._filepath, self._raw_data, self._sets, self._meta)
             self._dirty = False
-            self._file_label.setText(os.path.basename(self._filepath))
-            self._file_label.setStyleSheet(f"color: {P['text_file']};")
+            set_file_label(self._file_label, self._filepath)
         except Exception as e:
             QMessageBox.critical(self, self.t("dlg_title_error"),
                                  self.t("msg_save_error", error=e))

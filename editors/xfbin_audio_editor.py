@@ -39,8 +39,9 @@ from core.style_helpers import (
     ss_placeholder, ss_scrollarea, ss_scrollarea_transparent, ss_search,
     ss_section_label, ss_sep, ss_sidebar_btn, ss_slider,
 )
+from core.editor_file_state import set_file_label, set_file_label_empty
 from core.skeleton import SkeletonListRow
-from core.settings import load_settings, save_settings
+from core.settings import create_backup_on_open, load_settings, save_settings, game_files_dialog_dir
 from parsers.nus3bank_parser import (
     parse_xfbin_audio, save_xfbin_audio,
     get_tone_bnsf, set_tone_bnsf,
@@ -540,6 +541,7 @@ class XfbinAudioEditor(QWidget):
         self._cur_tone = -1
         self._tone_btns = []
         self._wav_cache = {}
+        self._dirty = False
         self._decode_and_play = False
         self._playing = False
         self._stop_flag = threading.Event()
@@ -561,7 +563,7 @@ class XfbinAudioEditor(QWidget):
         self._sig_play_done.connect(self._on_play_done)
         self._sig_convert_done.connect(self._on_convert_done)
         self._sig_convert_err.connect(self._on_convert_err)
-        self._sig_save_done.connect(lambda path: QMessageBox.information(self, ui_text("ui_xfbin_audio_ok"), ui_text("ui_xfbin_audio_saved_value", p0=os.path.basename(path))))
+        self._sig_save_done.connect(self._on_save_done)
         self._sig_save_err.connect(lambda msg: QMessageBox.critical(self, ui_text("dlg_title_error"), msg))
         self._sig_batch_done.connect(lambda msg: QMessageBox.information(self, ui_text("ui_xfbin_audio_ok"), msg))
         self._sig_batch_err.connect(lambda msg: QMessageBox.critical(self, ui_text("dlg_title_error"), msg))
@@ -696,12 +698,13 @@ class XfbinAudioEditor(QWidget):
         self._editor_layout.addStretch()
 
     def _load_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, self.t("xfa_open_dlg", default=ui_text("xfa_open_dlg")), "", "XFBIN files (*.xfbin);;All files (*.*)")
+        path, _ = QFileDialog.getOpenFileName(self, self.t("xfa_open_dlg", default=ui_text("xfa_open_dlg")), game_files_dialog_dir(target_patterns=("battle.xfbin", "*.xfbin")), "XFBIN files (*.xfbin);;All files (*.*)")
         if not path:
             return
+        create_backup_on_open(path)
         self._stop_playback()
         self._wav_cache.clear()
-        self._file_lbl.setText(self.t("loading", default=ui_text("loading")))
+        set_file_label_empty(self._file_lbl, self.t("loading", default=ui_text("loading")))
         self._show_list_skeleton()
         def worker():
             try:
@@ -720,7 +723,9 @@ class XfbinAudioEditor(QWidget):
     def _on_load_err(self, msg):
         _clear_layout(self._tone_list_layout)
         self._tone_list_layout.addStretch()
-        self._file_lbl.setText(self.t("no_file_loaded", default=ui_text("cpk_no_file")))
+        self._filepath = None
+        self._dirty = False
+        set_file_label_empty(self._file_lbl, self.t("no_file_loaded", default=ui_text("cpk_no_file")))
         self._show_placeholder()
         QMessageBox.critical(self, ui_text("ui_charviewer_load_error"), msg)
 
@@ -731,7 +736,8 @@ class XfbinAudioEditor(QWidget):
         self._cur_bank = 0
         self._cur_tone = -1
         self._wav_cache.clear()
-        self._file_lbl.setText(os.path.basename(path))
+        self._dirty = False
+        set_file_label(self._file_lbl, path)
         self._save_btn.setEnabled(bool(banks))
         self._bank_combo.blockSignals(True)
         self._bank_combo.clear()
@@ -1043,6 +1049,7 @@ class XfbinAudioEditor(QWidget):
         if refresh_list and hasattr(self, '_tone_btns'):
             self._populate_tone_list()
             self._select_tone(tone_idx)
+        self._mark_dirty()
 
     # Decode / waveform
 
@@ -1364,7 +1371,7 @@ class XfbinAudioEditor(QWidget):
             return
 
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("xfa_import_replacement_audio"), "", _AUDIO_OPEN_FILTER)
+            self, ui_text("xfa_import_replacement_audio"), game_files_dialog_dir(), _AUDIO_OPEN_FILTER)
         if not path:
             return
 
@@ -1392,6 +1399,7 @@ class XfbinAudioEditor(QWidget):
 
         self._populate_tone_list()
         self._select_tone(tone_idx)
+        self._mark_dirty()
 
         QMessageBox.information(self, ui_text("ui_xfbin_audio_ok"), ui_text("ui_xfbin_audio_value_3", p0=tone.name))
 
@@ -1411,7 +1419,7 @@ class XfbinAudioEditor(QWidget):
             return
 
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("xfa_import_new_tone_audio"), "", _AUDIO_OPEN_FILTER)
+            self, ui_text("xfa_import_new_tone_audio"), game_files_dialog_dir(), _AUDIO_OPEN_FILTER)
         if not path:
             return
 
@@ -1455,6 +1463,7 @@ class XfbinAudioEditor(QWidget):
         self._wav_cache.pop((bank_idx, new_idx), None)
         self._populate_tone_list()
         self._select_tone(new_idx)
+        self._mark_dirty()
 
         QMessageBox.information(self, ui_text("ui_xfbin_audio_ok"), ui_text("ui_xfbin_audio_value_4", p0=t.name))
 
@@ -1483,6 +1492,7 @@ class XfbinAudioEditor(QWidget):
                           if k != (self._cur_bank, self._cur_tone)}
         self._cur_tone = -1
         self._populate_tone_list()
+        self._mark_dirty()
 
     # Duplicate tone
 
@@ -1502,6 +1512,7 @@ class XfbinAudioEditor(QWidget):
         new_idx = len(bank.tones) - 1
         self._populate_tone_list()
         self._select_tone(new_idx)
+        self._mark_dirty()
 
     # Batch export
 
@@ -1577,7 +1588,7 @@ class XfbinAudioEditor(QWidget):
             return
 
         paths, _ = QFileDialog.getOpenFileNames(
-            self, ui_text("xfa_import_audio_files"), "", _AUDIO_OPEN_FILTER)
+            self, ui_text("xfa_import_audio_files"), game_files_dialog_dir(), _AUDIO_OPEN_FILTER)
         if not paths:
             return
 
@@ -1621,6 +1632,7 @@ class XfbinAudioEditor(QWidget):
             except Exception:
                 pass
             self._populate_tone_list()
+            self._mark_dirty()
         self._sig_batch_done.connect(_refresh_once)
 
     # Batch progress helper
@@ -1636,18 +1648,29 @@ class XfbinAudioEditor(QWidget):
                 total = sum(t.pack_size for t in tones)
                 self._info_lbl.setText(ui_text("ui_xfbin_audio_value_value_2", p0=n, p1=_fmt_size(total)))
 
+    def _on_save_done(self, path: str):
+        if self._filepath and os.path.abspath(path) == os.path.abspath(self._filepath):
+            self._dirty = False
+            set_file_label(self._file_lbl, self._filepath)
+        QMessageBox.information(
+            self,
+            ui_text("ui_xfbin_audio_ok"),
+            ui_text("ui_xfbin_audio_saved_value", p0=os.path.basename(path)),
+        )
+
+    def _mark_dirty(self):
+        if self._dirty:
+            return
+        self._dirty = True
+        if self._filepath:
+            set_file_label(self._file_lbl, self._filepath, dirty=True)
+
     # Save
 
     def _save_file(self):
         if self._filepath is None or self._raw is None:
             return
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            ui_text("ui_xfbin_audio_xfbin"),
-            self._filepath,
-            "XFBIN files (*.xfbin);;All files (*.*)")
-        if not path:
-            return
+        path = self._filepath
 
         raw = self._raw
         banks = self._banks

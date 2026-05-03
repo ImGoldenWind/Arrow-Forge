@@ -14,12 +14,14 @@ from core.style_helpers import (
     ss_scrollarea, ss_scrollarea_transparent, ss_panel, ss_section_label,
     ss_field_label, ss_dim_label, ss_placeholder, TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.editor_file_state import set_file_label
 from parsers.customcardparam_parser import (
     parse_customcardparam_xfbin,
     save_customcardparam_xfbin,
     make_default_entry,
 )
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 _PART_NAMES = {
@@ -237,7 +239,7 @@ class CustomCardParamEditor(QWidget):
         self._editor_scroll.setWidget(self._editor_widget)
         main_l.addWidget(self._editor_scroll, 1)
 
-        self._show_placeholder(ui_text("ui_customcardparam_select_a_card_to_edit"))
+        self._show_placeholder(ui_text("ui_customcardparam_open_a_customcardparam_bin_xfbin_file_to_begin_editing"))
         root.addWidget(main, 1)
 
     def _show_placeholder(self, text):
@@ -487,9 +489,7 @@ class CustomCardParamEditor(QWidget):
     def _mark_dirty(self):
         self._dirty = True
         self._btn_save.setEnabled(self._filepath is not None)
-        name = os.path.basename(self._filepath) if self._filepath else self._tr("no_file_loaded", ui_text("cpk_no_file"))
-        self._lbl_file.setText(ui_text("ui_customcardparam_value", p0=name))
-        self._lbl_file.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+        set_file_label(self._lbl_file, self._filepath, dirty=True)
 
     def _on_filter_changed(self):
         self._filter_text = self._search_box.text()
@@ -497,11 +497,12 @@ class CustomCardParamEditor(QWidget):
 
     def _on_open(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_customcardparam_open_customcardparam_bin_xfbin"), "",
+            self, ui_text("ui_customcardparam_open_customcardparam_bin_xfbin"), game_files_dialog_dir(target_patterns="CustomCardParam.bin.xfbin"),
             "XFBIN files (*.xfbin);;All files (*.*)"
         )
         if not path:
             return
+        create_backup_on_open(path)
         try:
             raw, version, entries = parse_customcardparam_xfbin(path)
         except Exception as ex:
@@ -516,9 +517,7 @@ class CustomCardParamEditor(QWidget):
         self._current_index = None
         self._btn_add.setEnabled(True)
         self._btn_save.setEnabled(False)
-        self._lbl_file.setText(os.path.basename(path))
-        self._lbl_file.setStyleSheet(f"color: {P['text_file']}; background: transparent;")
-        self._lbl_file.setToolTip(path)
+        set_file_label(self._lbl_file, path)
         self._search_box.setText("")
         self._filter_text = ""
         self._populate_list()
@@ -532,8 +531,7 @@ class CustomCardParamEditor(QWidget):
                 self._raw = bytearray(fh.read())
             self._dirty = False
             self._btn_save.setEnabled(False)
-            self._lbl_file.setText(os.path.basename(self._filepath))
-            self._lbl_file.setStyleSheet(f"color: {P['text_file']}; background: transparent;")
+            set_file_label(self._lbl_file, self._filepath)
         except Exception as ex:
             QMessageBox.critical(self, ui_text("ui_assist_save_error"), ui_text("ui_customcardparam_failed_to_save_file_value", p0=ex))
 

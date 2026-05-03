@@ -16,8 +16,10 @@ from core.style_helpers import (
     ss_panel, ss_scrollarea, ss_placeholder, ss_dim_label, ss_input,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.editor_file_state import set_file_label
 from parsers.btladjprm_parser import parse_btladjprm_xfbin, save_btladjprm_xfbin
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 # Parameter groups
 
@@ -351,6 +353,7 @@ class BtlAdjPrmEditor(QWidget):
                     e['value'] = value
                     self._dirty = True
                     self._btn_save.setEnabled(True)
+                    set_file_label(self._file_lbl, self._filepath, dirty=True)
                     break
         return _handler
 
@@ -360,6 +363,7 @@ class BtlAdjPrmEditor(QWidget):
     # File I/O
 
     def _load_file(self, filepath):
+        create_backup_on_open(filepath)
         try:
             raw, result = parse_btladjprm_xfbin(filepath)
         except Exception as e:
@@ -372,12 +376,12 @@ class BtlAdjPrmEditor(QWidget):
         self._dirty    = False
 
         self._populate_cards(self._search.text())
-        self._file_lbl.setText(os.path.basename(filepath))
+        set_file_label(self._file_lbl, filepath)
         self._btn_save.setEnabled(True)
 
     def _on_open(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_btladjprm_open_btladjprm_bin_xfbin"), "",
+            self, ui_text("ui_btladjprm_open_btladjprm_bin_xfbin"), game_files_dialog_dir(target_patterns="btladjprm.bin.xfbin"),
             "XFBIN Files (btladjprm.bin.xfbin);;All Files (*.*)"
         )
         if path:
@@ -392,6 +396,7 @@ class BtlAdjPrmEditor(QWidget):
         try:
             save_btladjprm_xfbin(filepath, self._raw, self._result)
             self._dirty = False
+            set_file_label(self._file_lbl, filepath)
             QMessageBox.information(self, ui_text("ui_assist_saved"),
                                     ui_text("ui_assist_file_saved_value", p0=os.path.basename(filepath)))
         except Exception as e:

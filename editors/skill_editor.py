@@ -1,3 +1,4 @@
+import copy
 import os
 import threading
 
@@ -13,16 +14,19 @@ from core.themes import P
 from core.style_helpers import (
     ss_btn, ss_input, ss_search, ss_sidebar_btn,
     ss_section_label, ss_field_label, ss_file_label, ss_scrollarea, ss_sep,
-    ss_tab_widget, ss_tab_bar,
+    ss_scrollarea_transparent, ss_tab_widget, ss_tab_bar,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.editor_file_state import set_file_label, set_file_label_empty
 from parsers.skill_parser import (
     parse_prm_xfbin, save_prm_xfbin,
     parse_prmload_xfbin, save_prmload_xfbin,
     write_mot_entry, write_mot_subentry,
+    make_default_mot_entry, make_default_mot_subentry, write_mot,
     DATA_TYPE_MAP, FUNC_MAP_1B, PRMLOAD_TYPE_NAMES,
 )
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 # Shared helpers
@@ -107,7 +111,7 @@ def _sidebar_scroll():
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setFrameShape(QFrame.Shape.NoFrame)
-    scroll.setStyleSheet(ui_text("ui_skill_qscrollarea_value"))
+    scroll.setStyleSheet(ss_scrollarea_transparent())
     inner = QWidget()
     inner.setStyleSheet("background: transparent;")
     layout = QVBoxLayout(inner)
@@ -209,6 +213,8 @@ class _SklslotTab(QWidget):
         self._new_btn.setFixedHeight(28)
         self._new_btn.setFont(bf)
         self._new_btn.setStyleSheet(ss_btn())
+        self._new_btn.setEnabled(False)
+        self._new_btn.setToolTip(ui_text("ui_skill_add_slot_tooltip"))
         self._new_btn.clicked.connect(self._add_slot)
         abl.addWidget(self._new_btn, 1)
 
@@ -216,6 +222,8 @@ class _SklslotTab(QWidget):
         self._dup_btn.setFixedHeight(28)
         self._dup_btn.setFont(bf)
         self._dup_btn.setStyleSheet(ss_btn())
+        self._dup_btn.setEnabled(False)
+        self._dup_btn.setToolTip(ui_text("ui_skill_duplicate_slot_tooltip"))
         self._dup_btn.clicked.connect(self._dup_slot)
         abl.addWidget(self._dup_btn, 1)
 
@@ -223,6 +231,8 @@ class _SklslotTab(QWidget):
         self._del_btn.setFixedHeight(28)
         self._del_btn.setFont(bf)
         self._del_btn.setStyleSheet(ss_btn(danger=True))
+        self._del_btn.setEnabled(False)
+        self._del_btn.setToolTip(ui_text("ui_skill_delete_slot_tooltip"))
         self._del_btn.clicked.connect(self._del_slot)
         abl.addWidget(self._del_btn, 1)
         sl.addWidget(abf)
@@ -241,16 +251,69 @@ class _SklslotTab(QWidget):
         self._editor_layout.addStretch()
         root.addWidget(self._editor_scroll, 1)
 
+    def _set_action_state(self, loaded, has_selection=False):
+        self._new_btn.setEnabled(loaded)
+        self._dup_btn.setEnabled(loaded and has_selection)
+        self._del_btn.setEnabled(loaded and has_selection)
+
+    def set_placeholder(self, text, loaded=False):
+        self._entries = []
+        self._selected = -1
+        self._rebuild_list()
+        self._set_action_state(loaded, False)
+        _clear_layout(self._editor_layout)
+        self._editor_layout.addWidget(_placeholder_label(text))
+        self._editor_layout.addStretch()
+
     def load(self, entries):
         self._entries = [dict(e) for e in entries]
         self._selected = -1
         self._rebuild_list()
+        self._set_action_state(True, False)
         _clear_layout(self._editor_layout)
         self._editor_layout.addWidget(_placeholder_label(ui_text("ui_skill_select_a_slot_2")))
         self._editor_layout.addStretch()
 
     def get_entries(self):
         return [dict(e) for e in self._entries]
+
+    @staticmethod
+    def _is_end_entry(entry):
+        return entry.get('xfbin', '').strip().upper() == 'END'
+
+    def _non_end_entries(self):
+        return [e for e in self._entries if not self._is_end_entry(e)]
+
+    def _insert_index(self):
+        if self._entries and self._is_end_entry(self._entries[-1]):
+            return len(self._entries) - 1
+        return len(self._entries)
+
+    def _make_default_slot(self):
+        usable = self._non_end_entries()
+        prefix = 'NEW'
+        max_num = len(usable)
+        xfbin = 'char_x.xfbin'
+
+        for entry in usable:
+            name = entry.get('slot_name', '')
+            if '_SLOT_' in name:
+                candidate_prefix, candidate_num = name.rsplit('_SLOT_', 1)
+                if candidate_prefix:
+                    prefix = candidate_prefix
+                if candidate_num.isdigit():
+                    max_num = max(max_num, int(candidate_num))
+            if entry.get('xfbin'):
+                xfbin = entry['xfbin']
+
+        next_num = max_num + 1
+        slot_name = f"{prefix}_SLOT_{next_num:02d}"
+        skill_prefix = prefix.lower()
+        return {
+            'slot_name': slot_name,
+            'xfbin': xfbin,
+            'skill_id': f"{skill_prefix}_skl_new_{next_num:02d}",
+        }
 
     def _rebuild_list(self):
         _clear_layout(self._list_layout)
@@ -277,11 +340,14 @@ class _SklslotTab(QWidget):
         self._selected = idx
         for btn, i in self._slot_btns:
             btn.setStyleSheet(ss_sidebar_btn(selected=(i == idx)))
+        can_edit = 0 <= idx < len(self._entries) and not self._is_end_entry(self._entries[idx])
+        self._set_action_state(True, can_edit)
         self._build_editor(idx)
 
     def _build_editor(self, idx):
         _clear_layout(self._editor_layout)
         e = self._entries[idx]
+        is_end = self._is_end_entry(e)
 
         card = _card_frame()
         inner = QWidget(card)
@@ -300,11 +366,13 @@ class _SklslotTab(QWidget):
             ('skill_id',  ui_text("ui_projectile_skill_id")),
         ]):
             fw, field = _make_field(label, e[key])
+            field.setReadOnly(is_end)
             grid.addWidget(fw, 0, ci)
             grid.setColumnStretch(ci, 1)
-            field.editingFinished.connect(
-                lambda k=key, f=field, i=idx: self._commit(i, k, f)
-            )
+            if not is_end:
+                field.editingFinished.connect(
+                    lambda k=key, f=field, i=idx: self._commit(i, k, f)
+                )
 
         self._editor_layout.addWidget(card)
         self._editor_layout.addStretch()
@@ -313,35 +381,62 @@ class _SklslotTab(QWidget):
         if idx >= len(self._entries):
             return
         self._entries[idx][key] = field.text()
-        if key == 'slot_name' and idx < len(self._slot_btns):
+        if key in ('slot_name', 'skill_id') and idx < len(self._slot_btns):
             btn = self._slot_btns[idx][0]
             lbls = btn.findChildren(QLabel)
-            if lbls:
+            if key == 'slot_name' and lbls:
                 lbls[0].setText(field.text())
+            elif key == 'skill_id' and len(lbls) > 1:
+                lbls[1].setText(field.text())
+        self._set_action_state(True, not self._is_end_entry(self._entries[idx]))
         self.changed.emit()
 
     def _add_slot(self):
-        self._entries.append({'slot_name': 'NEW_SLOT', 'xfbin': 'char_x.xfbin', 'skill_id': 'skl_new'})
+        insert_at = self._insert_index()
+        self._entries.insert(insert_at, self._make_default_slot())
         self._rebuild_list()
-        self._select_slot(len(self._entries) - 1)
+        self._select_slot(insert_at)
         self.changed.emit()
 
     def _dup_slot(self):
         if self._selected < 0 or self._selected >= len(self._entries):
             return
+        if self._is_end_entry(self._entries[self._selected]):
+            QMessageBox.warning(
+                self,
+                ui_text("dlg_title_warning"),
+                ui_text("ui_skill_cannot_modify_end_slot"),
+            )
+            return
         new_e = dict(self._entries[self._selected])
         new_e['slot_name'] += '_copy'
-        self._entries.append(new_e)
+        insert_at = self._insert_index()
+        self._entries.insert(insert_at, new_e)
         self._rebuild_list()
-        self._select_slot(len(self._entries) - 1)
+        self._select_slot(insert_at)
         self.changed.emit()
 
     def _del_slot(self):
         if self._selected < 0 or self._selected >= len(self._entries):
             return
+        if self._is_end_entry(self._entries[self._selected]):
+            QMessageBox.warning(
+                self,
+                ui_text("dlg_title_warning"),
+                ui_text("ui_skill_cannot_modify_end_slot"),
+            )
+            return
+        if len(self._non_end_entries()) <= 1:
+            QMessageBox.warning(
+                self,
+                ui_text("dlg_title_warning"),
+                ui_text("msg_cannot_delete_last_entry"),
+            )
+            return
         self._entries.pop(self._selected)
         self._selected = -1
         self._rebuild_list()
+        self._set_action_state(True, False)
         _clear_layout(self._editor_layout)
         self._editor_layout.addWidget(_placeholder_label(ui_text("ui_skill_select_a_slot")))
         self._editor_layout.addStretch()
@@ -532,6 +627,10 @@ class _MotTab(QWidget):
         self._mot_raw = None
         self._cur_entry = None
         self._entry_btns = []  # list of (btn, entry)
+        self._structural_dirty = False
+        self._entry_add_btn = None
+        self._entry_dup_btn = None
+        self._entry_del_btn = None
         self._build_ui()
 
     def _build_ui(self):
@@ -551,6 +650,41 @@ class _MotTab(QWidget):
         self._search.textChanged.connect(self._filter_entries)
         sl.addWidget(self._search)
 
+        abf = QWidget()
+        abf.setStyleSheet("background: transparent;")
+        abl = QHBoxLayout(abf)
+        abl.setContentsMargins(0, 2, 0, 4)
+        abl.setSpacing(4)
+        bf = QFont("Segoe UI", 10)
+
+        self._entry_add_btn = QPushButton(ui_text("btn_new"))
+        self._entry_add_btn.setFixedHeight(28)
+        self._entry_add_btn.setFont(bf)
+        self._entry_add_btn.setStyleSheet(ss_btn())
+        self._entry_add_btn.setEnabled(False)
+        self._entry_add_btn.setToolTip(ui_text("ui_skill_add_motion_entry_tooltip"))
+        self._entry_add_btn.clicked.connect(self._add_entry)
+        abl.addWidget(self._entry_add_btn, 1)
+
+        self._entry_dup_btn = QPushButton(ui_text("btn_duplicate"))
+        self._entry_dup_btn.setFixedHeight(28)
+        self._entry_dup_btn.setFont(bf)
+        self._entry_dup_btn.setStyleSheet(ss_btn())
+        self._entry_dup_btn.setEnabled(False)
+        self._entry_dup_btn.setToolTip(ui_text("ui_skill_duplicate_motion_entry_tooltip"))
+        self._entry_dup_btn.clicked.connect(self._dup_entry)
+        abl.addWidget(self._entry_dup_btn, 1)
+
+        self._entry_del_btn = QPushButton(ui_text("btn_delete"))
+        self._entry_del_btn.setFixedHeight(28)
+        self._entry_del_btn.setFont(bf)
+        self._entry_del_btn.setStyleSheet(ss_btn(danger=True))
+        self._entry_del_btn.setEnabled(False)
+        self._entry_del_btn.setToolTip(ui_text("ui_skill_delete_motion_entry_tooltip"))
+        self._entry_del_btn.clicked.connect(self._del_entry)
+        abl.addWidget(self._entry_del_btn, 1)
+        sl.addWidget(abf)
+
         self._list_scroll, self._list_widget, self._list_layout = _sidebar_scroll()
         sl.addWidget(self._list_scroll)
         root.addWidget(sidebar)
@@ -565,11 +699,20 @@ class _MotTab(QWidget):
         self._editor_layout.addStretch()
         root.addWidget(self._editor_scroll, 1)
 
+    def _set_action_state(self):
+        loaded = self._mot_raw is not None
+        selected = self._cur_entry is not None
+        self._entry_add_btn.setEnabled(loaded)
+        self._entry_dup_btn.setEnabled(loaded and selected)
+        self._entry_del_btn.setEnabled(loaded and selected and len(self._entries) > 1)
+
     def load(self, entries, mot_raw):
         self._entries = entries
         self._mot_raw = mot_raw
         self._cur_entry = None
+        self._structural_dirty = False
         self._populate_list(entries)
+        self._set_action_state()
 
     def _populate_list(self, entries):
         _clear_layout(self._list_layout)
@@ -598,7 +741,69 @@ class _MotTab(QWidget):
         self._cur_entry = entry
         for btn, e in self._entry_btns:
             btn.setStyleSheet(ss_sidebar_btn(selected=(e is entry)))
+        self._set_action_state()
         self._show_entry(entry)
+
+    def get_entries(self):
+        return self._entries
+
+    def get_raw(self):
+        if self._mot_raw is None:
+            return None
+        if self._structural_dirty:
+            self._mot_raw = write_mot(self._entries, self._mot_raw)
+            self._structural_dirty = False
+        return self._mot_raw
+
+    def _refresh_list(self):
+        self._filter_entries(self._search.text())
+        self._set_action_state()
+
+    def _clear_editor_placeholder(self):
+        _clear_layout(self._editor_layout)
+        self._editor_layout.addWidget(_placeholder_label(ui_text("ui_skill_select_an_animation_entry")))
+        self._editor_layout.addStretch()
+
+    def _add_entry(self):
+        new_entry = make_default_mot_entry(len(self._entries) + 1)
+        self._entries.append(new_entry)
+        self._cur_entry = new_entry
+        self._structural_dirty = True
+        self._refresh_list()
+        self._show_entry(new_entry)
+        self.changed.emit()
+
+    def _dup_entry(self):
+        if self._cur_entry is None:
+            return
+        new_entry = copy.deepcopy(self._cur_entry)
+        new_entry['offset'] = None
+        new_entry['event_id'] = f"{new_entry.get('event_id', 'PL_ANM')}_copy"
+        for sub in new_entry.get('subentries', []):
+            sub['sub_off'] = None
+        self._entries.append(new_entry)
+        self._cur_entry = new_entry
+        self._structural_dirty = True
+        self._refresh_list()
+        self._show_entry(new_entry)
+        self.changed.emit()
+
+    def _del_entry(self):
+        if self._cur_entry is None:
+            return
+        if len(self._entries) <= 1:
+            QMessageBox.warning(
+                self,
+                ui_text("dlg_title_warning"),
+                ui_text("msg_cannot_delete_last_entry"),
+            )
+            return
+        self._entries = [e for e in self._entries if e is not self._cur_entry]
+        self._cur_entry = None
+        self._structural_dirty = True
+        self._refresh_list()
+        self._clear_editor_placeholder()
+        self.changed.emit()
 
     def _show_entry(self, entry):
         _clear_layout(self._editor_layout)
@@ -644,6 +849,39 @@ class _MotTab(QWidget):
 
         self._editor_layout.addWidget(card)
 
+        action_row = QWidget()
+        action_row.setStyleSheet("background: transparent;")
+        action_layout = QHBoxLayout(action_row)
+        action_layout.setContentsMargins(20, 0, 20, 0)
+        action_layout.setSpacing(6)
+        bf = QFont("Segoe UI", 10)
+
+        add_sub_btn = QPushButton(ui_text("ui_skill_add_subentry"))
+        add_sub_btn.setFixedHeight(28)
+        add_sub_btn.setFont(bf)
+        add_sub_btn.setStyleSheet(ss_btn())
+        add_sub_btn.clicked.connect(lambda _, e=entry: self._add_subentry(e))
+        action_layout.addWidget(add_sub_btn)
+
+        dup_sub_btn = QPushButton(ui_text("ui_skill_duplicate_last_subentry"))
+        dup_sub_btn.setFixedHeight(28)
+        dup_sub_btn.setFont(bf)
+        dup_sub_btn.setStyleSheet(ss_btn())
+        dup_sub_btn.setEnabled(bool(entry.get('subentries')))
+        dup_sub_btn.clicked.connect(lambda _, e=entry: self._dup_last_subentry(e))
+        action_layout.addWidget(dup_sub_btn)
+
+        del_sub_btn = QPushButton(ui_text("ui_skill_delete_last_subentry"))
+        del_sub_btn.setFixedHeight(28)
+        del_sub_btn.setFont(bf)
+        del_sub_btn.setStyleSheet(ss_btn(danger=True))
+        del_sub_btn.setEnabled(bool(entry.get('subentries')))
+        del_sub_btn.clicked.connect(lambda _, e=entry: self._del_last_subentry(e))
+        action_layout.addWidget(del_sub_btn)
+
+        action_layout.addStretch()
+        self._editor_layout.addWidget(action_row)
+
         # Subentry cards
         subs = entry.get('subentries', [])
         if subs:
@@ -652,6 +890,39 @@ class _MotTab(QWidget):
                 self._editor_layout.addWidget(self._make_sub_card(r, s))
 
         self._editor_layout.addStretch()
+
+    def _add_subentry(self, entry):
+        subs = entry.setdefault('subentries', [])
+        subs.append(make_default_mot_subentry(len(subs) + 1))
+        entry['n_subs'] = len(subs)
+        self._structural_dirty = True
+        self._refresh_list()
+        self._show_entry(entry)
+        self.changed.emit()
+
+    def _dup_last_subentry(self, entry):
+        subs = entry.setdefault('subentries', [])
+        if not subs:
+            return
+        new_sub = copy.deepcopy(subs[-1])
+        new_sub['sub_off'] = None
+        subs.append(new_sub)
+        entry['n_subs'] = len(subs)
+        self._structural_dirty = True
+        self._refresh_list()
+        self._show_entry(entry)
+        self.changed.emit()
+
+    def _del_last_subentry(self, entry):
+        subs = entry.setdefault('subentries', [])
+        if not subs:
+            return
+        subs.pop()
+        entry['n_subs'] = len(subs)
+        self._structural_dirty = True
+        self._refresh_list()
+        self._show_entry(entry)
+        self.changed.emit()
 
     def _make_sub_card(self, r, s):
         card = _card_frame()
@@ -754,7 +1025,7 @@ class _MotTab(QWidget):
                 s['func_name'] = FUNC_MAP_1B.get(s['dtype'], s.get('func_name', ''))
             s['dname'] = DATA_TYPE_MAP.get(s['dtype'], str(s['dtype']))
             hdr_lbl.setText(ui_text("ui_skill_value_value_value", p0=r, p1=s['bone'], p2=s.get('func_name', '')))
-            if self._mot_raw is not None:
+            if self._mot_raw is not None and s.get('sub_off') is not None:
                 write_mot_subentry(self._mot_raw, s)
             self.changed.emit()
 
@@ -779,20 +1050,20 @@ class _MotTab(QWidget):
                 if lbls:
                     lbls[0].setText(text)
                 break
-        if self._mot_raw is not None:
+        if self._mot_raw is not None and entry.get('offset') is not None:
             write_mot_entry(self._mot_raw, entry)
         self.changed.emit()
 
     def _on_an_edited(self, text, entry):
         entry['anim_id'] = text
-        if self._mot_raw is not None:
+        if self._mot_raw is not None and entry.get('offset') is not None:
             write_mot_entry(self._mot_raw, entry)
         self.changed.emit()
 
     def _on_flag_edited(self, key, field, entry):
         try:
             entry[key] = int(field.text())
-            if self._mot_raw is not None:
+            if self._mot_raw is not None and entry.get('offset') is not None:
                 write_mot_entry(self._mot_raw, entry)
             self.changed.emit()
         except Exception:
@@ -846,7 +1117,7 @@ class SkillEditor(QWidget):
         self._save_btn.clicked.connect(self._save_file)
         tl.addWidget(self._save_btn)
 
-        self._file_lbl = QLabel(ui_text("xfa_no_file"))
+        self._file_lbl = QLabel(ui_text("no_file_loaded"))
         self._file_lbl.setFont(QFont("Consolas", 12))
         self._file_lbl.setStyleSheet(ss_file_label())
         tl.addWidget(self._file_lbl)
@@ -860,18 +1131,7 @@ class SkillEditor(QWidget):
         root.addWidget(sep)
 
         # Content area
-        self._stack = QWidget()
-        stack_l = QVBoxLayout(self._stack)
-        stack_l.setContentsMargins(0, 0, 0, 0)
-        stack_l.setSpacing(0)
-
-        self._placeholder_w = QLabel(ui_text("ui_skill_open_a_prm_bin_xfbin_file_to_begin_editing"))
-        self._placeholder_w.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._placeholder_w.setFont(QFont("Segoe UI", 16))
-        self._placeholder_w.setStyleSheet(f"color: {P['text_dim']};")
-        stack_l.addWidget(self._placeholder_w)
-
-        self._tabs = QTabWidget()
+        self._tabs = QTabWidget(self)
         self._tabs.setFont(QFont("Segoe UI", 11))
         self._tabs.setStyleSheet(ss_tab_widget())
         self._tabs.setDocumentMode(True)
@@ -879,7 +1139,6 @@ class SkillEditor(QWidget):
         self._tabs.tabBar().setExpanding(False)
         self._tabs.tabBar().setDrawBase(False)
         self._tabs.tabBar().setStyleSheet(ss_tab_bar())
-        self._tabs.setVisible(False)
 
         self._sklslot_tab = _SklslotTab()
         self._sklslot_tab.changed.connect(self._mark_dirty)
@@ -893,8 +1152,17 @@ class SkillEditor(QWidget):
         self._prmload_tab = _PrmLoadStandaloneTab()
         self._prmload_tab.changed.connect(self._mark_dirty)
 
-        stack_l.addWidget(self._tabs)
-        root.addWidget(self._stack, 1)
+        root.addWidget(self._tabs, 1)
+        self._show_empty_state()
+
+    def _show_empty_state(self, text=None):
+        self._tabs.clear()
+        self._sklslot_tab.set_placeholder(
+            text or ui_text("ui_skill_open_a_prm_bin_xfbin_file_to_begin_editing"),
+            loaded=False,
+        )
+        self._tabs.addTab(self._sklslot_tab, ui_text("ui_skill_skill_slots"))
+        self._tabs.setVisible(True)
 
     # File I/O
 
@@ -907,19 +1175,18 @@ class SkillEditor(QWidget):
 
     def _load_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_skill_open_prm_xfbin"), "",
+            self, ui_text("ui_skill_open_prm_xfbin"), game_files_dialog_dir(target_patterns="*prm*.bin.xfbin"),
             "PRM XFBIN files (*prm*.bin.xfbin *.xfbin);;All files (*.*)"
         )
         if not path:
             return
+        create_backup_on_open(path)
         self._filepath = path
         self._file_type = self._detect_file_type(path)
         name = os.path.basename(path)
         self._file_lbl.setText(ui_text("ui_effect_loading_value", p0=name))
         self._file_lbl.setStyleSheet(ss_file_label())
-        self._tabs.setVisible(False)
-        self._placeholder_w.setText(ui_text("ui_effect_loading"))
-        self._placeholder_w.setVisible(True)
+        self._show_empty_state(ui_text("ui_effect_loading"))
 
         file_type = self._file_type
 
@@ -939,10 +1206,7 @@ class SkillEditor(QWidget):
         self._raw    = raw
         self._result = result
         self._dirty  = False
-        name = os.path.basename(path)
-
-        self._file_lbl.setText(name)
-        self._file_lbl.setStyleSheet(f"color: {P['text_file']}; background: transparent;")
+        set_file_label(self._file_lbl, path)
 
         self._tabs.clear()
         errors = []
@@ -983,21 +1247,23 @@ class SkillEditor(QWidget):
         if errors:
             QMessageBox.warning(self, ui_text("ui_skill_parse_warnings"), "\n".join(errors))
 
-        self._placeholder_w.setVisible(False)
         self._tabs.setVisible(True)
         self._save_btn.setEnabled(True)
 
     def _on_load_error(self, msg):
-        self._placeholder_w.setText(ui_text("ui_effect_error_loading_file"))
-        self._placeholder_w.setVisible(True)
+        self._filepath = None
+        self._raw = None
+        self._result = None
+        self._dirty = False
+        self._save_btn.setEnabled(False)
+        set_file_label_empty(self._file_lbl, ui_text("no_file_loaded"))
+        self._show_empty_state(ui_text("ui_effect_error_loading_file"))
         QMessageBox.critical(self, ui_text("ui_charviewer_load_error"), msg)
 
     def _mark_dirty(self):
         if not self._dirty:
             self._dirty = True
-            name = os.path.basename(self._filepath) if self._filepath else ''
-            self._file_lbl.setText(name)
-            self._file_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+            set_file_label(self._file_lbl, self._filepath, dirty=True)
 
     def _save_file(self):
         if self._filepath is None:
@@ -1014,11 +1280,14 @@ class SkillEditor(QWidget):
                     self._result['sklslot']['entries'] = self._sklslot_tab.get_entries()
                 if 'load' in self._result:
                     self._result['load']['entries'] = self._load_tab.get_entries()
+                for mot_key in ('mot', 'gha'):
+                    if mot_key in self._result:
+                        self._result[mot_key]['entries'] = self._mot_tab.get_entries()
+                        self._result[mot_key]['raw'] = self._mot_tab.get_raw()
+                        break
                 save_prm_xfbin(path, self._raw, self._result)
 
             self._dirty = False
-            name = os.path.basename(path)
-            self._file_lbl.setText(name)
-            self._file_lbl.setStyleSheet(f"color: {P['text_file']}; background: transparent;")
+            set_file_label(self._file_lbl, path)
         except Exception as e:
             QMessageBox.critical(self, ui_text("ui_assist_save_error"), str(e))

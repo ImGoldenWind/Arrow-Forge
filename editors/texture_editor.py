@@ -36,14 +36,18 @@ from core.style_helpers import (
     ss_scrollarea, ss_scrollarea_transparent, ss_section_label, ss_slider,
     ss_search, ss_sep, ss_sidebar_btn, ss_sidebar_frame, ss_toggle_btn, ss_transparent,
 )
+from core.editor_file_state import set_file_label
 from core.icons import _pil_to_qpixmap
 from parsers.texture_xfbin_parser import (
     TextureEntry, load_xfbin, save_xfbin,
     replace_texture_from_file, apply_pil_edits_to_entry,
     export_entry_dds, export_entry_png,
     load_xfbin_for_port, port_entries_into_xfbin,
+    add_texture_from_file, duplicate_texture_entry,
+    delete_texture_entry, refresh_texture_entries,
 )
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 THUMB_SIZE    = 100
 THUMB_PADDING = 6
@@ -278,12 +282,16 @@ class _ThumbnailGrid(QWidget):
 
 class _TextureList(QWidget):
     texture_selected = pyqtSignal(object)
+    sig_new = pyqtSignal()
+    sig_duplicate = pyqtSignal()
+    sig_delete = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._entries: list[TextureEntry] = []
         self._thumbs: list[QPushButton] = []
         self._active_entry: TextureEntry | None = None
+        self._file_loaded = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 4)
@@ -297,6 +305,39 @@ class _TextureList(QWidget):
         self._search_entry.setStyleSheet(ss_search())
         self._search_entry.textChanged.connect(self._filter_list)
         root.addWidget(self._search_entry)
+
+        btn_row = QWidget()
+        btn_row.setStyleSheet(ss_transparent())
+        btn_layout = QHBoxLayout(btn_row)
+        btn_layout.setContentsMargins(0, 2, 0, 4)
+        btn_layout.setSpacing(4)
+        btn_font = QFont("Segoe UI", 10)
+
+        self._new_btn = QPushButton(ui_text("btn_new"))
+        self._new_btn.setFixedHeight(28)
+        self._new_btn.setFont(btn_font)
+        self._new_btn.setStyleSheet(ss_btn())
+        self._new_btn.setEnabled(False)
+        self._new_btn.clicked.connect(self.sig_new)
+        btn_layout.addWidget(self._new_btn, 1)
+
+        self._dup_btn = QPushButton(ui_text("btn_duplicate"))
+        self._dup_btn.setFixedHeight(28)
+        self._dup_btn.setFont(btn_font)
+        self._dup_btn.setStyleSheet(ss_btn())
+        self._dup_btn.setEnabled(False)
+        self._dup_btn.clicked.connect(self.sig_duplicate)
+        btn_layout.addWidget(self._dup_btn, 1)
+
+        self._del_btn = QPushButton(ui_text("btn_delete"))
+        self._del_btn.setFixedHeight(28)
+        self._del_btn.setFont(btn_font)
+        self._del_btn.setStyleSheet(ss_btn(danger=True))
+        self._del_btn.setEnabled(False)
+        self._del_btn.clicked.connect(self.sig_delete)
+        btn_layout.addWidget(self._del_btn, 1)
+
+        root.addWidget(btn_row)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
@@ -327,10 +368,15 @@ class _TextureList(QWidget):
             self._list_layout.insertWidget(self._list_layout.count() - 1, row)
             self._thumbs.append(row)
         self._filter_list()
+        self._update_action_state()
 
     def refresh_active_thumb(self):
         if self._active_entry is not None:
             self._refresh_row(self._active_entry)
+
+    def set_file_loaded(self, loaded: bool):
+        self._file_loaded = loaded
+        self._update_action_state()
 
     def select_entry(self, entry: TextureEntry):
         self._select(entry, emit=True)
@@ -378,8 +424,15 @@ class _TextureList(QWidget):
         self._active_entry = entry
         for row in self._thumbs:
             row.setStyleSheet(ss_sidebar_btn(row._entry is entry))
+        self._update_action_state()
         if emit:
             self.texture_selected.emit(entry)
+
+    def _update_action_state(self):
+        has_selection = self._active_entry is not None
+        self._new_btn.setEnabled(self._file_loaded)
+        self._dup_btn.setEnabled(has_selection)
+        self._del_btn.setEnabled(has_selection)
 
     def _refresh_row(self, entry: TextureEntry):
         for row in self._thumbs:
@@ -1215,6 +1268,9 @@ class TextureEditor(QWidget):
 
         self._grid = _TextureList()
         self._grid.texture_selected.connect(self._on_select)
+        self._grid.sig_new.connect(self._new_texture)
+        self._grid.sig_duplicate.connect(self._duplicate_texture)
+        self._grid.sig_delete.connect(self._delete_texture)
         list_layout.addWidget(self._grid)
         main_layout.addWidget(list_frame)
 
@@ -1260,10 +1316,11 @@ class TextureEditor(QWidget):
     # Open / Save
     def _open_xfbin(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("xfa_btn_open"), "", "XFBIN Files (*.xfbin);;All Files (*)"
+            self, ui_text("xfa_btn_open"), game_files_dialog_dir(target_patterns="*.xfbin"), "XFBIN Files (*.xfbin);;All Files (*)"
         )
         if not path:
             return
+        create_backup_on_open(path)
         self._status(ui_text("ui_effect_loading"))
         QTimer.singleShot(30, lambda: self._do_load(path))
 
@@ -1282,13 +1339,13 @@ class TextureEditor(QWidget):
         self._unsaved    = False
 
         self._grid.load(entries)
+        self._grid.set_file_loaded(True)
         self._preview.show_image(None)
         self._right.set_entry(None)
         self._save_btn.setEnabled(True)
 
         fname = os.path.basename(path)
-        self._file_label.setText(fname)
-        self._file_label.setStyleSheet(ss_file_label_loaded())
+        set_file_label(self._file_label, path)
         n_tex = len(entries)
         self._status(f"Loaded  {fname}  —  {n_tex} texture{'s' if n_tex != 1 else ''}")
 
@@ -1298,8 +1355,7 @@ class TextureEditor(QWidget):
         try:
             save_xfbin(self._xfbin, self._xfbin_path)
             self._unsaved = False
-            self._file_label.setText(os.path.basename(self._xfbin_path))
-            self._file_label.setStyleSheet(ss_file_label_loaded())
+            set_file_label(self._file_label, self._xfbin_path)
             self._status(f"Saved  {os.path.basename(self._xfbin_path)}")
         except Exception as exc:
             QMessageBox.critical(self, ui_text("ui_assist_save_error"), str(exc))
@@ -1317,11 +1373,42 @@ class TextureEditor(QWidget):
             save_xfbin(self._xfbin, path)
             self._xfbin_path = path
             self._unsaved    = False
-            self._file_label.setText(os.path.basename(path))
-            self._file_label.setStyleSheet(ss_file_label_loaded())
+            set_file_label(self._file_label, path)
             self._status(f"Saved  {os.path.basename(path)}")
         except Exception as exc:
             QMessageBox.critical(self, ui_text("ui_assist_save_error"), str(exc))
+
+    def _mark_dirty(self):
+        self._unsaved = True
+        if self._xfbin_path:
+            set_file_label(self._file_label, self._xfbin_path, dirty=True)
+
+    def _reload_entries(self, select_entry: TextureEntry | None = None):
+        if self._xfbin is None:
+            return
+        self._entries = refresh_texture_entries(self._xfbin)
+        self._grid.load(self._entries)
+        self._grid.set_file_loaded(True)
+
+        if select_entry is not None:
+            match = self._find_matching_entry(select_entry)
+            if match is not None:
+                self._grid.select_entry(match)
+                return
+
+        self._cur_entry = None
+        self._orig_pil = None
+        self._preview.show_image(None)
+        self._right.set_entry(None)
+
+    def _find_matching_entry(self, target: TextureEntry) -> TextureEntry | None:
+        for entry in self._entries:
+            if entry.chunk is target.chunk:
+                return entry
+        for entry in self._entries:
+            if entry.name == target.name and entry.file_path == target.file_path:
+                return entry
+        return None
 
     # Selection
     def _on_select(self, entry: TextureEntry):
@@ -1360,7 +1447,7 @@ class TextureEditor(QWidget):
         if self._cur_entry.pixel_format != 17:
             fmt_note = ui_text("ui_texture_converted_to_rgba8888")
         self._status(f"Edits applied to  {self._cur_entry.name}{fmt_note}")
-        self._unsaved = True
+        self._mark_dirty()
 
     def _reset_edits(self):
         if self._cur_entry is None or self._orig_pil is None:
@@ -1397,7 +1484,7 @@ class TextureEditor(QWidget):
         self._grid.refresh_active_thumb()
         self._right.set_entry(self._cur_entry)
         self._show_preview(img)
-        self._unsaved = True
+        self._mark_dirty()
 
     # Export single
     def _export_dds(self):
@@ -1511,7 +1598,7 @@ class TextureEditor(QWidget):
             return
         path, _ = QFileDialog.getOpenFileName(
             self, ui_text("ui_texture_replace_texture"),
-            os.path.dirname(self._xfbin_path or ''),
+            game_files_dialog_dir(os.path.dirname(self._xfbin_path or '')),
             "Texture Files (*.dds *.png *.jpg *.bmp *.tga *.nut);;All Files (*)"
         )
         if not path:
@@ -1524,7 +1611,7 @@ class TextureEditor(QWidget):
         self._grid.refresh_active_thumb()
         self._right.set_entry(self._cur_entry)
         self._show_preview(self._cur_entry.pil_image)
-        self._unsaved = True
+        self._mark_dirty()
         self._status(f"Replaced  {self._cur_entry.name}  ←  {os.path.basename(path)}")
 
     # Port
@@ -1533,7 +1620,7 @@ class TextureEditor(QWidget):
             return
         path, _ = QFileDialog.getOpenFileName(
             self, ui_text("ui_texture_port_from_xfbin"),
-            os.path.dirname(self._xfbin_path or ''),
+            game_files_dialog_dir(os.path.dirname(self._xfbin_path or '')),
             "XFBIN Files (*.xfbin);;All Files (*)"
         )
         if not path:
@@ -1555,18 +1642,74 @@ class TextureEditor(QWidget):
             return
 
         added = port_entries_into_xfbin(self._xfbin, selected)
-        # Reload entries from the (now modified) xfbin
-        from parsers.texture_xfbin_parser import _chunk_to_entry
-        new_entries = []
-        for pidx, page in enumerate(self._xfbin.pages):
-            for chunk in page.chunks:
-                e = _chunk_to_entry(chunk, pidx)
-                if e:
-                    new_entries.append(e)
-        self._entries = new_entries
-        self._grid.load(new_entries)
-        self._unsaved = True
+        self._reload_entries()
+        self._mark_dirty()
         self._status(f"Ported {added} texture{'s' if added != 1 else ''}  ←  {os.path.basename(path)}")
+
+    # Add / Duplicate / Delete
+    def _new_texture(self):
+        if self._xfbin is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, ui_text("ui_texture_new_texture"),
+            game_files_dialog_dir(os.path.dirname(self._xfbin_path or '')),
+            "Texture Files (*.dds *.png *.jpg *.bmp *.tga *.nut);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            template = self._cur_entry or (self._entries[0] if self._entries else None)
+            new_entry = add_texture_from_file(self._xfbin, path, template)
+        except Exception as exc:
+            QMessageBox.critical(self, ui_text("ui_texture_add_error"), str(exc))
+            return
+        self._reload_entries(new_entry)
+        self._mark_dirty()
+        self._status(f"Added  {new_entry.name}  <-  {os.path.basename(path)}")
+
+    def _duplicate_texture(self):
+        if self._xfbin is None or self._cur_entry is None:
+            return
+        old_name = self._cur_entry.name
+        try:
+            new_entry = duplicate_texture_entry(self._xfbin, self._cur_entry)
+        except Exception as exc:
+            QMessageBox.critical(self, ui_text("ui_texture_duplicate_error"), str(exc))
+            return
+        self._reload_entries(new_entry)
+        self._mark_dirty()
+        self._status(f"Duplicated  {old_name}  ->  {new_entry.name}")
+
+    def _delete_texture(self):
+        if self._xfbin is None or self._cur_entry is None:
+            return
+        if len(self._entries) <= 1:
+            QMessageBox.warning(
+                self,
+                ui_text("dlg_title_warning"),
+                ui_text("ui_texture_cannot_delete_last_texture"),
+            )
+            return
+
+        entry = self._cur_entry
+        old_idx = self._entries.index(entry) if entry in self._entries else 0
+        result = QMessageBox.question(
+            self,
+            ui_text("dlg_title_confirm_delete"),
+            ui_text("ui_texture_delete_texture_value", p0=entry.name),
+        )
+        if result != QMessageBox.StandardButton.Yes:
+            return
+
+        if not delete_texture_entry(self._xfbin, entry):
+            QMessageBox.warning(self, ui_text("dlg_title_warning"), ui_text("ui_texture_delete_failed"))
+            return
+
+        self._entries = refresh_texture_entries(self._xfbin)
+        next_entry = self._entries[min(old_idx, len(self._entries) - 1)] if self._entries else None
+        self._reload_entries(next_entry)
+        self._mark_dirty()
+        self._status(f"Deleted  {entry.name}")
 
     # Copy name
     def _copy_name(self):
@@ -1592,7 +1735,7 @@ class TextureEditor(QWidget):
                 thumb._name_lbl.setText(_truncate(name, 14))
                 break
         self._right.set_entry(self._cur_entry)
-        self._unsaved = True
+        self._mark_dirty()
         self._status(f'Renamed  \u201c{old_name}\u201d  \u2192  \u201c{name}\u201d')
 
     # Add Text Overlay

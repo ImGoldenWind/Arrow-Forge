@@ -9,13 +9,14 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QTreeWidget, QTreeWidgetItem, QLabel, QPushButton, QProgressBar,
     QTextEdit, QFileDialog, QMessageBox, QFrame,
-    QApplication,
+    QApplication, QSizePolicy,
 )
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 
 from core.themes import P
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 # Worker thread for long operations
@@ -203,14 +204,31 @@ class CpkEditor(QWidget):
 
         # button toolbar
         tb = QFrame()
+        self._toolbar = tb
+        self._toolbar_compact = None
         tb.setFixedHeight(52)
         tb.setStyleSheet(f"background-color: {P['bg_panel']};")
-        tb_l = QHBoxLayout(tb)
+        tb_l = QVBoxLayout(tb)
         tb_l.setContentsMargins(12, 8, 12, 8)
-        tb_l.setSpacing(8)
+        tb_l.setSpacing(6)
+        self._toolbar_l = tb_l
+
+        unpack_l = QHBoxLayout()
+        unpack_l.setContentsMargins(0, 0, 0, 0)
+        unpack_l.setSpacing(8)
+        self._toolbar_top_l = unpack_l
+
+        pack_l = QHBoxLayout()
+        pack_l.setContentsMargins(0, 0, 0, 0)
+        pack_l.setSpacing(8)
+        self._toolbar_bottom_l = pack_l
 
         self._path_lbl = _label(self.t("cpk_no_file"), size=10, color=P["text_dim"])
         self._path_lbl.setMaximumWidth(400)
+        self._path_lbl.setMinimumWidth(0)
+        self._path_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._path_lbl.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._path_lbl.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse)
 
@@ -220,56 +238,62 @@ class CpkEditor(QWidget):
             self.t("cpk_btn_open"), P["accent"], P["secondary"],
             P["bg_dark"], font_btn, w=140)
         self._btn_open.clicked.connect(self._open_cpk)
-        tb_l.addWidget(self._btn_open)
+        unpack_l.addWidget(self._btn_open)
 
-        tb_l.addWidget(self._vsep())
+        self._sep_after_open = self._vsep()
+        unpack_l.addWidget(self._sep_after_open)
 
         self._btn_unpack_all = _make_btn(
             self.t("cpk_btn_unpack_all"), P["mid"], P["bg_card_hov"],
             P["secondary"], font_btn, w=150)
         self._btn_unpack_all.clicked.connect(self._unpack_all)
         self._btn_unpack_all.setEnabled(False)
-        tb_l.addWidget(self._btn_unpack_all)
+        unpack_l.addWidget(self._btn_unpack_all)
 
         self._btn_unpack_dir = _make_btn(
             self.t("cpk_btn_unpack_dir"), P["mid"], P["bg_card_hov"],
             P["secondary"], font_btn, w=180)
         self._btn_unpack_dir.clicked.connect(self._unpack_selected_dir)
         self._btn_unpack_dir.setEnabled(False)
-        tb_l.addWidget(self._btn_unpack_dir)
+        unpack_l.addWidget(self._btn_unpack_dir)
 
         self._btn_unpack_file = _make_btn(
             self.t("cpk_btn_unpack_file"), P["mid"], P["bg_card_hov"],
             P["secondary"], font_btn, w=180)
         self._btn_unpack_file.clicked.connect(self._unpack_selected_file)
         self._btn_unpack_file.setEnabled(False)
-        tb_l.addWidget(self._btn_unpack_file)
+        unpack_l.addWidget(self._btn_unpack_file)
 
-        tb_l.addWidget(self._vsep())
+        unpack_l.addStretch()
+        tb_l.addLayout(unpack_l)
+
+        self._sep_before_pack = self._vsep()
 
         self._btn_repack_dir = _make_btn(
             self.t("cpk_btn_repack_dir"), P["mid"], P["bg_card_hov"],
             P["secondary"], font_btn, w=200)
         self._btn_repack_dir.clicked.connect(self._replace_dir)
         self._btn_repack_dir.setEnabled(False)
-        tb_l.addWidget(self._btn_repack_dir)
+        pack_l.addWidget(self._btn_repack_dir)
 
         self._btn_replace_file = _make_btn(
             self.t("cpk_btn_replace_file"), P["mid"], P["bg_card_hov"],
             P["secondary"], font_btn, w=200)
         self._btn_replace_file.clicked.connect(self._replace_file)
         self._btn_replace_file.setEnabled(False)
-        tb_l.addWidget(self._btn_replace_file)
+        pack_l.addWidget(self._btn_replace_file)
 
         self._btn_save_as = _make_btn(
             self.t("cpk_btn_save_as"), P["mid"], P["bg_card_hov"],
             P["secondary"], font_btn)
         self._btn_save_as.clicked.connect(self._save_as)
         self._btn_save_as.setEnabled(False)
-        tb_l.addWidget(self._btn_save_as)
+        pack_l.addWidget(self._btn_save_as)
 
-        tb_l.addStretch()
-        tb_l.addWidget(self._path_lbl)
+        pack_l.addStretch()
+        pack_l.addWidget(self._path_lbl)
+        tb_l.addLayout(pack_l)
+        self._set_toolbar_compact(False)
         root.addWidget(tb)
 
         # main splitter
@@ -343,6 +367,69 @@ class CpkEditor(QWidget):
         self._clear_log_btn.clicked.disconnect()
         self._clear_log_btn.clicked.connect(self._log_widget.clear)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "_toolbar"):
+            self._set_toolbar_compact(self.width() < self._toolbar_one_row_min_width())
+
+    @staticmethod
+    def _take_all(layout):
+        while layout.count():
+            layout.takeAt(0)
+
+    def _set_toolbar_compact(self, compact: bool):
+        if self._toolbar_compact == compact:
+            return
+        self._toolbar_compact = compact
+
+        self._take_all(self._toolbar_top_l)
+        self._take_all(self._toolbar_bottom_l)
+
+        if compact:
+            self._toolbar.setFixedHeight(88)
+            self._toolbar_l.setContentsMargins(12, 6, 12, 6)
+
+            for widget in (
+                self._btn_open, self._sep_after_open, self._btn_unpack_all,
+                self._btn_unpack_dir, self._btn_unpack_file,
+            ):
+                self._toolbar_top_l.addWidget(widget)
+            self._toolbar_top_l.addStretch()
+
+            for widget in (
+                self._btn_repack_dir, self._btn_replace_file,
+                self._btn_save_as,
+            ):
+                self._toolbar_bottom_l.addWidget(widget)
+            self._toolbar_bottom_l.addStretch()
+            self._toolbar_bottom_l.addWidget(self._path_lbl)
+            return
+
+        self._toolbar.setFixedHeight(52)
+        self._toolbar_l.setContentsMargins(12, 8, 12, 8)
+
+        for widget in (
+            self._btn_open, self._sep_after_open, self._btn_unpack_all,
+            self._btn_unpack_dir, self._btn_unpack_file, self._sep_before_pack,
+            self._btn_repack_dir, self._btn_replace_file, self._btn_save_as,
+        ):
+            self._toolbar_top_l.addWidget(widget)
+        self._toolbar_top_l.addStretch()
+        self._toolbar_top_l.addWidget(self._path_lbl)
+
+    def _toolbar_one_row_min_width(self):
+        widgets = (
+            self._btn_open, self._sep_after_open, self._btn_unpack_all,
+            self._btn_unpack_dir, self._btn_unpack_file, self._sep_before_pack,
+            self._btn_repack_dir, self._btn_replace_file, self._btn_save_as,
+        )
+        margins = self._toolbar_l.contentsMargins()
+        spacing = self._toolbar_top_l.spacing() * (len(widgets) - 1)
+        return (
+            margins.left() + margins.right() + spacing
+            + sum(max(w.minimumSizeHint().width(), w.sizeHint().width(), w.minimumWidth()) for w in widgets)
+        )
+
     @staticmethod
     def _vsep():
         sep = QFrame()
@@ -362,9 +449,10 @@ class CpkEditor(QWidget):
 
     def _open_cpk(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, self.t("cpk_open_dialog"), "", "CPK Archives (*.cpk);;All Files (*)")
+            self, self.t("cpk_open_dialog"), game_files_dialog_dir(target_patterns="*.cpk"), "CPK Archives (*.cpk);;All Files (*)")
         if not path:
             return
+        create_backup_on_open(path)
         self._load_cpk(path)
 
     def load_file(self, path: str):
@@ -519,7 +607,7 @@ class CpkEditor(QWidget):
         src_file, _ = QFileDialog.getOpenFileName(
             self,
             self.t("cpk_choose_src_file_replace", file_name=entry.file_name),
-            "", ui_text("ui_cpk_all_files"))
+            game_files_dialog_dir(target_patterns=os.path.basename(entry.file_name)), ui_text("ui_cpk_all_files"))
         if not src_file:
             return
 

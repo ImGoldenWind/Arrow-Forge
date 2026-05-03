@@ -49,6 +49,15 @@ def icon_cpk_unpack(size=24, color=None):
 def icon_credits_star(size=24, color=None):
     return qta.icon("fa6s.star", color=color or P["secondary"])
 
+def icon_favorite_category(size=24, color=None):
+    return qta.icon("fa6s.star", color=color or P["accent"])
+
+def icon_favorite_star(filled=False, size=16, color=None):
+    return qta.icon("fa6s.star", color=color or (P["accent"] if filled else P["text_dim"]))
+
+def icon_tool_pin(filled=False, size=16, color=None):
+    return qta.icon("fa6s.thumbtack", color=color or (P["accent"] if filled else P["text_dim"]))
+
 
 # Tool card icons
 def icon_stats():

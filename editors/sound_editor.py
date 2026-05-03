@@ -19,8 +19,9 @@ from core.style_helpers import (
     ss_placeholder, ss_scrollarea, ss_scrollarea_transparent, ss_search,
     ss_section_label, ss_sep, ss_sidebar_btn, ss_slider,
 )
+from core.editor_file_state import set_file_label, set_file_label_empty
 from core.skeleton import SkeletonListRow
-from core.settings import load_settings, save_settings
+from core.settings import create_backup_on_open, load_settings, save_settings, game_files_dialog_dir
 from parsers.awb_parser import (
     parse_awb, extract_entry, rebuild_awb, save_awb,
     add_entry, delete_entry, get_entry_label, _detect_format,
@@ -269,6 +270,7 @@ class SoundEditor(QWidget):
         self._entry_buttons = []
         self._filepath = None
         self._fields = {}
+        self._dirty = False
 
         # Audio playback state
         self._wav_cache = {}       # idx -> wav bytes
@@ -464,12 +466,13 @@ class SoundEditor(QWidget):
     def _load_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, self.t("file_open_sound"),
-            "", "AWB files (*.awb);;All files (*.*)")
+            game_files_dialog_dir(target_patterns=("*.awb", "*.acb")), "AWB files (*.awb);;All files (*.*)")
         if not path:
             return
+        create_backup_on_open(path)
         self._stop_playback()
         self._wav_cache.clear()
-        self._file_label.setText(self.t("loading"))
+        set_file_label_empty(self._file_label, self.t("loading"))
         self._show_list_skeleton()
         self._show_editor_skeleton()
 
@@ -532,7 +535,9 @@ class SoundEditor(QWidget):
         self._editor_layout.addStretch()
         self._editor_layout.addWidget(self._placeholder)
         self._editor_layout.addStretch()
-        self._file_label.setText(self.t("no_file_loaded"))
+        self._filepath = None
+        self._dirty = False
+        set_file_label_empty(self._file_label, self.t("no_file_loaded"))
         QMessageBox.critical(self, self.t("dlg_title_error"),
                              self.t("msg_load_error", error=msg))
 
@@ -541,7 +546,8 @@ class SoundEditor(QWidget):
         self._entries = entries
         self._meta = meta
         self._filepath = path
-        self._file_label.setText(os.path.basename(path))
+        self._dirty = False
+        set_file_label(self._file_label, path)
 
         self._save_btn.setEnabled(True)
         self._add_btn.setEnabled(True)
@@ -555,18 +561,18 @@ class SoundEditor(QWidget):
     def _save_file(self):
         if self._raw_data is None:
             return
-        path, _ = QFileDialog.getSaveFileName(
-            self, self.t("file_save_sound"),
-            "", "AWB files (*.awb);;All files (*.*)")
-        if not path:
+        if not self._filepath:
             return
         try:
+            path = self._filepath
             new_raw, new_entries, new_meta = rebuild_awb(
                 self._entries, self._meta, self._raw_data)
             save_awb(path, new_raw)
             self._raw_data = bytearray(new_raw)
             self._entries = new_entries
             self._meta = new_meta
+            self._dirty = False
+            set_file_label(self._file_label, path)
             self._wav_cache.clear()
             QMessageBox.information(self, self.t("dlg_title_success"),
                                     self.t("msg_save_success", path=os.path.basename(path)))
@@ -1229,6 +1235,7 @@ class SoundEditor(QWidget):
             entry['size'] = len(modified)
             # Clear cached WAV so next play uses new volume
             self._wav_cache.pop(idx, None)
+            self._mark_dirty()
             if notify:
                 QMessageBox.information(self, self.t("dlg_title_success"),
                                         self.t("sound_volume_applied", vol=f"{new_vol:.2f}"))
@@ -1309,7 +1316,7 @@ class SoundEditor(QWidget):
     def _replace_single(self, idx):
         """Open a file dialog and replace the entry at *idx* with the chosen audio."""
         path, _ = QFileDialog.getOpenFileName(
-            self, self.t("sound_replace_title"), "", _AUDIO_OPEN_FILTER)
+            self, self.t("sound_replace_title"), game_files_dialog_dir(), _AUDIO_OPEN_FILTER)
         if not path:
             return
 
@@ -1359,6 +1366,7 @@ class SoundEditor(QWidget):
         self._wav_cache.pop(idx, None)
         self._populate_list()
         self._select_entry(idx)
+        self._mark_dirty()
         QMessageBox.information(
             self, self.t("dlg_title_success"),
             self.t("sound_replace_success",
@@ -1371,7 +1379,7 @@ class SoundEditor(QWidget):
         if self._entries is None:
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, self.t("sound_add_title"), "", _AUDIO_OPEN_FILTER)
+            self, self.t("sound_add_title"), game_files_dialog_dir(), _AUDIO_OPEN_FILTER)
         if not path:
             return
 
@@ -1421,6 +1429,7 @@ class SoundEditor(QWidget):
         self._wav_cache.clear()
         self._populate_list()
         self._select_entry(len(self._entries) - 1)
+        self._mark_dirty()
 
     def _on_convert_error(self, msg: str) -> None:
         """Show a conversion error and restore the UI."""
@@ -1449,6 +1458,7 @@ class SoundEditor(QWidget):
         self._wav_cache.clear()
         self._populate_list()
         self._select_entry(len(self._entries) - 1)
+        self._mark_dirty()
 
     def _delete_entry(self):
         if self._current_entry is None or not self._entries:
@@ -1471,3 +1481,11 @@ class SoundEditor(QWidget):
         self._current_entry = None
         self._wav_cache.clear()
         self._populate_list()
+        self._mark_dirty()
+
+    def _mark_dirty(self):
+        if self._dirty:
+            return
+        self._dirty = True
+        if self._filepath:
+            set_file_label(self._file_label, self._filepath, dirty=True)

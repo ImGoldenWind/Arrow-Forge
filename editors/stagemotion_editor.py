@@ -18,10 +18,12 @@ from core.style_helpers import (
     ss_section_label, ss_field_label,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.editor_file_state import set_file_label
 from parsers.stagemotion_parser import (
     parse_stagemotion_xfbin, save_stagemotion_xfbin,
 )
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 # Type-code catalogue
@@ -303,13 +305,14 @@ class StageMotionEditor(QWidget):
 
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_stagemotion_open_stage_motion_file"), "",
+            self, ui_text("ui_stagemotion_open_stage_motion_file"), game_files_dialog_dir(target_patterns="Xcmnsfprm.bin.xfbin"),
             "XFBIN Files (*.xfbin);;All Files (*)"
         )
         if path:
             self._load(path)
 
     def _load(self, path):
+        create_backup_on_open(path)
         try:
             raw, result = parse_stagemotion_xfbin(path)
         except Exception as e:
@@ -320,8 +323,7 @@ class StageMotionEditor(QWidget):
         self._result = result
         self._current_stage_idx = -1
 
-        self._file_lbl.setText(os.path.basename(path))
-        self._file_lbl.setStyleSheet(f"color: {P['text_file']}; background: transparent;")
+        set_file_label(self._file_lbl, path)
         self._btn_save.setEnabled(True)
         self._btn_add.setEnabled(True)
         self._btn_dup.setEnabled(True)
@@ -338,8 +340,7 @@ class StageMotionEditor(QWidget):
             return
         try:
             save_stagemotion_xfbin(self._filepath, self._raw, self._result)
-            self._file_lbl.setText(os.path.basename(self._filepath))
-            self._file_lbl.setStyleSheet(f"color: {P['text_file']}; background: transparent;")
+            set_file_label(self._file_lbl, self._filepath)
         except Exception as e:
             QMessageBox.critical(self, ui_text("dlg_title_error"), ui_text("ui_spm_save_failed_value", p0=e))
 
@@ -653,6 +654,4 @@ class StageMotionEditor(QWidget):
 
     def _mark_dirty(self):
         self._btn_save.setEnabled(True)
-        name = os.path.basename(self._filepath) if self._filepath else ''
-        self._file_lbl.setText(ui_text("ui_effect_value", p0=name))
-        self._file_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+        set_file_label(self._file_lbl, self._filepath, dirty=True)

@@ -16,10 +16,12 @@ from core.style_helpers import (
     ss_btn, ss_sep, ss_file_label, ss_check,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.editor_file_state import set_file_label
 from parsers.dictionaryparam_parser import (
     parse_dictionaryparam_xfbin, save_dictionaryparam_xfbin, make_default_entry,
 )
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 def _clear_layout(layout):
@@ -76,6 +78,7 @@ class DictionaryParamEditor(QWidget):
         self._current_entry: dict | None = None
         self._entry_buttons: list[tuple] = []
         self._fields: dict[str, QWidget] = {}
+        self._dirty = False
 
         self._build_ui()
 
@@ -216,7 +219,7 @@ class DictionaryParamEditor(QWidget):
         self._editor_layout.setSpacing(0)
         self._editor_scroll.setWidget(self._editor_widget)
 
-        self._placeholder = QLabel(ui_text("ui_dictionaryparam_select_an_entry_to_edit"))
+        self._placeholder = QLabel(ui_text("ui_dictionaryparam_open_a_dictionaryparam_xfbin_file_to_begin_editing"))
         self._placeholder.setFont(QFont("Segoe UI", 16))
         self._placeholder.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -247,13 +250,14 @@ class DictionaryParamEditor(QWidget):
 
     def _on_open(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_dictionaryparam_open_dictionaryparam_xfbin"), "",
+            self, ui_text("ui_dictionaryparam_open_dictionaryparam_xfbin"), game_files_dialog_dir(target_patterns=("DictionaryParam.xfbin", "DictionaryParam.bin.xfbin")),
             "XFBIN Files (*.xfbin);;All Files (*.*)",
         )
         if path:
             self._load_file(path)
 
     def _load_file(self, filepath: str):
+        create_backup_on_open(filepath)
         try:
             data, version, entries = parse_dictionaryparam_xfbin(filepath)
         except Exception as exc:
@@ -267,8 +271,8 @@ class DictionaryParamEditor(QWidget):
         self._current_entry = None
         self._fields        = {}
 
-        self._file_lbl.setText(os.path.basename(filepath))
-        self._file_lbl.setStyleSheet(f"color: {P['text_file']}; background: transparent;")
+        self._dirty = False
+        set_file_label(self._file_lbl, filepath)
         self._save_btn.setEnabled(True)
         self._add_btn.setEnabled(True)
         self._dup_btn.setEnabled(True)
@@ -280,19 +284,13 @@ class DictionaryParamEditor(QWidget):
         if not self._filepath or self._original_data is None:
             return
         self._apply_fields()
-        path, _ = QFileDialog.getSaveFileName(
-            self, ui_text("ui_dictionaryparam_save_dictionaryparam_xfbin"), self._filepath,
-            "XFBIN Files (*.xfbin);;All Files (*.*)",
-        )
-        if not path:
-            return
+        path = self._filepath
         try:
             save_dictionaryparam_xfbin(path, self._original_data, self._version, self._entries)
             with open(path, "rb") as fh:
                 self._original_data = bytearray(fh.read())
-            self._filepath = path
-            self._file_lbl.setText(os.path.basename(path))
-            self._file_lbl.setStyleSheet(f"color: {P['text_file']}; background: transparent;")
+            self._dirty = False
+            set_file_label(self._file_lbl, path)
             QMessageBox.information(self, ui_text("ui_assist_saved"), ui_text("ui_dictionaryparam_saved_to_value", p0=os.path.basename(path)))
         except Exception as exc:
             QMessageBox.critical(self, ui_text("ui_assist_save_error"), ui_text("ui_assist_failed_to_save_value", p0=exc))
@@ -655,11 +653,24 @@ class DictionaryParamEditor(QWidget):
 
         self._editor_layout.addWidget(adv_frame)
 
+        for widget in self._fields.values():
+            if isinstance(widget, QLineEdit):
+                widget.textEdited.connect(self._mark_dirty)
+            elif isinstance(widget, QCheckBox):
+                widget.stateChanged.connect(self._mark_dirty)
+
         spacer = QWidget()
         spacer.setFixedHeight(20)
         spacer.setStyleSheet("background: transparent;")
         self._editor_layout.addWidget(spacer)
         self._editor_layout.addStretch()
+
+    def _mark_dirty(self, *_):
+        if self._dirty:
+            return
+        self._dirty = True
+        if self._filepath:
+            set_file_label(self._file_lbl, self._filepath, dirty=True)
 
     # Add / Duplicate / Delete
 
@@ -671,6 +682,7 @@ class DictionaryParamEditor(QWidget):
         self._entries.append(new_entry)
         self._populate_list()
         self._select_entry(new_entry)
+        self._mark_dirty()
 
     def _duplicate_entry(self):
         if not self._current_entry:
@@ -682,6 +694,7 @@ class DictionaryParamEditor(QWidget):
         self._entries.append(new_entry)
         self._populate_list()
         self._select_entry(new_entry)
+        self._mark_dirty()
 
     def _delete_entry(self):
         if not self._current_entry:
@@ -701,3 +714,4 @@ class DictionaryParamEditor(QWidget):
         self._entries.remove(self._current_entry)
         self._current_entry = None
         self._populate_list()
+        self._mark_dirty()

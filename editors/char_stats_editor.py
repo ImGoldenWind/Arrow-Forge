@@ -12,10 +12,12 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
 from core.themes import P
-from core.style_helpers import ss_btn, ss_toolbar, ss_accent_sep, ss_sep, ss_input
+from core.style_helpers import ss_btn, ss_toolbar, ss_accent_sep, ss_sep, ss_input, ss_file_label
+from core.editor_file_state import set_file_label, set_file_label_empty
 from core.skeleton import SkeletonListRow, SkeletonBar
 from parsers.xfbin_parser import parse_xfbin, save_xfbin, CHUNK_SIZE
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 def _clear_layout(layout):
@@ -42,6 +44,8 @@ class CharacterStatsEditor(QWidget):
         self._current_char = None
         self._fields = {}
         self._char_buttons = []
+        self._filepath = None
+        self._dirty = False
 
         self._load_done_signal.connect(self._on_load_done)
         self._load_error_signal.connect(self._on_load_error)
@@ -78,7 +82,7 @@ class CharacterStatsEditor(QWidget):
 
         self._file_label = QLabel(self.t("no_file_loaded"))
         self._file_label.setFont(QFont("Consolas", 12))
-        self._file_label.setStyleSheet(f"color: {P['text_dim']};")
+        self._file_label.setStyleSheet(ss_file_label())
         top_layout.addWidget(self._file_label)
         top_layout.addStretch()
 
@@ -216,12 +220,13 @@ class CharacterStatsEditor(QWidget):
 
     def _load_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, self.t("file_open_char_stats"), "",
+            self, self.t("file_open_char_stats"), game_files_dialog_dir(target_patterns="duelPlayerParam.xfbin"),
             "XFBIN files (*.xfbin);;All files (*.*)")
         if not path:
             return
 
-        self._file_label.setText(self.t("loading"))
+        create_backup_on_open(path)
+        set_file_label_empty(self._file_label, self.t("loading"))
         self._show_list_skeleton()
         self._show_editor_skeleton()
 
@@ -306,14 +311,18 @@ class CharacterStatsEditor(QWidget):
         self._editor_layout.addStretch()
         self._editor_layout.addWidget(self._placeholder)
         self._editor_layout.addStretch()
-        self._file_label.setText(self.t("no_file_loaded"))
+        self._filepath = None
+        self._dirty = False
+        set_file_label_empty(self._file_label, self.t("no_file_loaded"))
         QMessageBox.critical(self, self.t("dlg_title_error"),
                              self.t("msg_load_error", error=msg))
 
     def _on_load_done(self, path, xfbin_data, characters):
         self._xfbin_data = xfbin_data
         self._characters = characters
-        self._file_label.setText(os.path.basename(path))
+        self._filepath = path
+        self._dirty = False
+        set_file_label(self._file_label, path)
 
         self._save_btn.setEnabled(True)
         self._add_btn.setEnabled(True)
@@ -325,16 +334,16 @@ class CharacterStatsEditor(QWidget):
         if not self._xfbin_data:
             return
         self._apply_fields()
-        path, _ = QFileDialog.getSaveFileName(
-            self, self.t("file_save_char_stats"), "",
-            "XFBIN files (*.xfbin);;All files (*.*)")
-        if not path:
+        if not self._filepath:
             return
         try:
+            path = self._filepath
             save_xfbin(path, self._xfbin_data, self._characters)
             labels = {char['char_id']: char['name'] for char in self._characters}
             with open(self._labels_path(path), 'w', encoding='utf-8') as f:
                 json.dump(labels, f, ensure_ascii=False, indent=2)
+            self._dirty = False
+            set_file_label(self._file_label, path)
             QMessageBox.information(self, self.t("dlg_title_success"),
                                     self.t("msg_save_success", path=os.path.basename(path)))
         except Exception as e:
@@ -859,11 +868,21 @@ class CharacterStatsEditor(QWidget):
         self._editor_layout.addWidget(sf)
 
         # Bottom padding
+        for field in self._fields.values():
+            field.textEdited.connect(self._mark_dirty)
+
         spacer = QWidget()
         spacer.setFixedHeight(20)
         spacer.setStyleSheet("background: transparent;")
         self._editor_layout.addWidget(spacer)
         self._editor_layout.addStretch()
+
+    def _mark_dirty(self, *_):
+        if self._dirty:
+            return
+        self._dirty = True
+        if self._filepath:
+            set_file_label(self._file_label, self._filepath, dirty=True)
 
     # Add / Duplicate / Delete
 
@@ -936,6 +955,7 @@ class CharacterStatsEditor(QWidget):
         self._characters.append(char)
         self._populate_list()
         self._select_char(char)
+        self._mark_dirty()
 
     def _duplicate_char(self):
         if not self._xfbin_data or not self._current_char:
@@ -949,6 +969,7 @@ class CharacterStatsEditor(QWidget):
         self._characters.append(char)
         self._populate_list()
         self._select_char(char)
+        self._mark_dirty()
 
     def _delete_char(self):
         if not self._xfbin_data or not self._current_char:
@@ -966,6 +987,7 @@ class CharacterStatsEditor(QWidget):
         self._characters.remove(self._current_char)
         self._current_char = None
         self._populate_list()
+        self._mark_dirty()
 
     def _add_section(self, title):
         lbl = QLabel(title)

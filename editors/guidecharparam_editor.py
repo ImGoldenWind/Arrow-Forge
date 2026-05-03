@@ -17,6 +17,7 @@ from core.style_helpers import (
     ss_scrollarea, ss_section_label, ss_field_label,
     ss_placeholder, TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.editor_file_state import set_file_label
 from parsers.guidecharparam_parser import (
     parse_guidecharparam_xfbin,
     save_guidecharparam_xfbin,
@@ -24,6 +25,7 @@ from parsers.guidecharparam_parser import (
     KNOWN_CHARACTERS,
 )
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 _CHAR_LABELS = {
     "guide_chara_speedwagon": ui_text("ui_guidecharparam_speedwagon_p1"),
@@ -461,7 +463,7 @@ class GuideCharParamEditor(QWidget):
             e[f"msg{j}_name"]   = _txt(f"msg{j}_name")
             e[f"msg{j}_string"] = _txt(f"msg{j}_string")
 
-        self._dirty = True
+        self._mark_dirty()
 
         for btn, bi in self._entry_buttons:
             if bi == self._current_idx:
@@ -475,11 +477,12 @@ class GuideCharParamEditor(QWidget):
 
     def _on_open(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_guidecharparam_open_guidecharparam_bin_xfbin"), "",
+            self, ui_text("ui_guidecharparam_open_guidecharparam_bin_xfbin"), game_files_dialog_dir(target_patterns="GuideCharParam.bin.xfbin"),
             "XFBIN Files (*.xfbin);;All Files (*)"
         )
         if not path:
             return
+        create_backup_on_open(path)
         try:
             raw, version, entries = parse_guidecharparam_xfbin(path)
         except Exception as ex:
@@ -491,7 +494,7 @@ class GuideCharParamEditor(QWidget):
         self._entries     = entries
         self._dirty       = False
         self._current_idx = -1
-        self._lbl_file.setText(os.path.basename(path))
+        set_file_label(self._lbl_file, path)
         self._btn_save.setEnabled(True)
         self._btn_add.setEnabled(True)
         self._rebuild_list()
@@ -510,12 +513,13 @@ class GuideCharParamEditor(QWidget):
             if not path:
                 return
             self._filepath = path
-            self._lbl_file.setText(os.path.basename(path))
+            set_file_label(self._lbl_file, path)
         try:
             save_guidecharparam_xfbin(self._filepath, self._raw, self._version, self._entries)
             with open(self._filepath, "rb") as fh:
                 self._raw = bytearray(fh.read())
             self._dirty = False
+            set_file_label(self._lbl_file, self._filepath)
             QMessageBox.information(self, ui_text("ui_assist_saved"),
                                     ui_text("ui_charviewer_saved_value_entries_to_value", p0=len(self._entries), p1=self._filepath))
         except Exception as ex:
@@ -523,10 +527,15 @@ class GuideCharParamEditor(QWidget):
 
     # Add / Duplicate / Delete
 
+    def _mark_dirty(self):
+        self._dirty = True
+        if self._filepath:
+            set_file_label(self._lbl_file, self._filepath, dirty=True)
+
     def _on_add(self):
         new_e = make_default_entry(len(self._entries))
         self._entries.append(new_e)
-        self._dirty = True
+        self._mark_dirty()
         self._rebuild_list()
         self._select_entry(len(self._entries) - 1)
 
@@ -537,7 +546,7 @@ class GuideCharParamEditor(QWidget):
         new_e["event"] = new_e["event"] + "_COPY"
         insert_at = self._current_idx + 1
         self._entries.insert(insert_at, new_e)
-        self._dirty = True
+        self._mark_dirty()
         self._rebuild_list()
         self._select_entry(insert_at)
 
@@ -554,7 +563,7 @@ class GuideCharParamEditor(QWidget):
             return
         old_idx = self._current_idx
         del self._entries[old_idx]
-        self._dirty       = True
+        self._mark_dirty()
         self._current_idx = -1
         self._rebuild_list()
         if self._visible_indices:

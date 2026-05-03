@@ -13,6 +13,12 @@ import os
 import math
 import zlib
 
+_UTF_XOR_SEED = 0x0000655F
+_UTF_XOR_MULT = 0x00004115
+_CPK_OFFSET_SENTINEL = 0xFFFFFFFFFFFFFFFF
+_ASBR_UNENCRYPTED_CPKS = {"adx2.cpk", "movie.cpk", "sound.cpk"}
+_TOC_OFFSET_FALLBACK_BASE = 0x800
+
 # @UTF table parser
 
 _UTF_MAGIC = b"@UTF"
@@ -133,34 +139,104 @@ def parse_utf(data: bytes) -> list[dict]:
     return rows
 
 
+# CPK / ASBR encryption helpers
+
+def decrypt_utf_packet(data: bytes) -> bytes:
+    """Decrypt CRI's simple @UTF table obfuscation."""
+    out = bytearray(len(data))
+    mask = _UTF_XOR_SEED
+    for i, value in enumerate(data):
+        out[i] = value ^ (mask & 0xFF)
+        mask = (mask * _UTF_XOR_MULT) & 0xFFFFFFFF
+    return bytes(out)
+
+
+def crypt_jojo_asbr(data: bytes) -> bytes:
+    """Apply ASBR's per-file XOR stream. The operation is symmetric."""
+    out = bytearray(data)
+    size = len(out)
+    remaining = size
+    pos = 0
+
+    def u32(value: int) -> int:
+        return value & 0xFFFFFFFF
+
+    v1 = u32(size * 0x5F64 + 0x5DEC219F)
+    v1 = u32((v1 // 32) ^ u32(v1 * 0x1DA597))
+    v2 = u32((v1 // 32 + 0x85C9C2) ^ u32(v1 * 0x1DA597))
+    v3 = u32((v2 // 32 + 0x10B9384) ^ u32(v2 * 0x1DA597))
+    v4 = u32((v3 // 32 + 0x1915D46) ^ u32(v3 * 0x1DA597))
+
+    while remaining > 0:
+        v1 = u32(u32(v1 * 2048) ^ v1)
+        v5 = u32(v4 ^ (((v4 // 2048) ^ v1) // 256) ^ v1)
+        key = (
+            v5 & 0xFF,
+            (v5 >> 8) & 0xFF,
+            (v5 >> 16) & 0xFF,
+            (v5 >> 24) & 0xFF,
+        )
+
+        take = min(4, remaining)
+        for i in range(take):
+            out[pos + i] ^= key[i]
+
+        remaining -= take
+        pos += 4
+        v1, v2, v3, v4 = v2, v3, v4, v5
+
+    return bytes(out)
+
+
+def _cpk_uses_asbr_file_encryption(path: str, header: dict) -> bool:
+    """Match CriPakTools' ASBR rule while avoiding archives built by this app."""
+    if str(header.get("Tvers", "")) == "ArrowForge1.0":
+        return False
+    return os.path.basename(path).lower() not in _ASBR_UNENCRYPTED_CPKS
+
+
+def _toc_add_offset(content_offset: int, toc_offset: int) -> int:
+    """Compute the absolute-file offset base used by TOC FileOffset values."""
+    content_offset = int(content_offset or 0)
+    toc_offset = int(toc_offset or 0)
+    toc_base = toc_offset
+    if toc_base > _TOC_OFFSET_FALLBACK_BASE:
+        toc_base = _TOC_OFFSET_FALLBACK_BASE
+    if content_offset and content_offset < toc_base:
+        return content_offset
+    return toc_base
+
+
 # CRILAYLA decompression
 
 def decompress_crilayla(comp_data: bytes, uncomp_size: int) -> bytes:
     """
     Decompress CRILAYLA-compressed data.
 
-    *comp_data*  - the raw compressed bytes (as stored in CPK, WITHOUT any
-                   16-byte CRILAYLA header).
+    *comp_data*  - the compressed bytes as stored in CPK. Standard CRILAYLA
+                   streams include a 16-byte header and a 0x100-byte raw prefix.
     *uncomp_size* - expected output size (ExtractSize from TOC).
 
     Returns decompressed bytes, or the original *comp_data* if decompression
     fails (callers should check len(result) == uncomp_size).
     """
-    # Some CPK variants embed the 16-byte header inside the stored data.
     if comp_data[:8] == b"CRILAYLA":
-        uncomp_size = struct.unpack_from("<I", comp_data, 8)[0]
-        comp_data = comp_data[16:]
+        try:
+            result = _crilayla_decompress_with_header(comp_data)
+            if not uncomp_size or len(result) == uncomp_size:
+                return result
+        except Exception:
+            pass
 
-    # Try standard CRILAYLA (reversed bitstream, LZSS)
+    # Headerless payload fallback for uncommon CPK variants.
     try:
         result = _crilayla_decompress(comp_data, uncomp_size)
-        # Sanity-check: first 4 bytes must not be all-zero for a real file
-        if len(result) == uncomp_size and any(result[:4]):
+        if len(result) == uncomp_size:
             return result
     except Exception:
         pass
 
-    # Try zlib deflate with header, then raw deflate
+    # Try zlib deflate with header, then raw deflate.
     for wbits in (15, -15):
         try:
             result = zlib.decompress(comp_data, wbits)
@@ -169,8 +245,84 @@ def decompress_crilayla(comp_data: bytes, uncomp_size: int) -> bytes:
         except Exception:
             pass
 
-    # Cannot decompress — return raw bytes so the file can still be written
+    # Cannot decompress; return raw bytes so the file can still be written.
     return comp_data
+
+
+def _crilayla_decompress_with_header(data: bytes) -> bytes:
+    """Decompress standard CRILAYLA data, including the embedded 0x100 prefix."""
+    if len(data) < 0x110 or data[:8] != b"CRILAYLA":
+        raise ValueError("Not a complete CRILAYLA stream")
+
+    uncompressed_size = struct.unpack_from("<I", data, 8)[0]
+    header_offset = struct.unpack_from("<I", data, 12)[0]
+    prefix_pos = 0x10 + header_offset
+    prefix_end = prefix_pos + 0x100
+    if prefix_end > len(data):
+        raise ValueError("Invalid CRILAYLA header offset")
+
+    result = bytearray(uncompressed_size + 0x100)
+    result[:0x100] = data[prefix_pos:prefix_end]
+
+    input_offset = len(data) - 0x100 - 1
+    output_end = len(result) - 1
+    bit_pool = 0
+    bits_left = 0
+    bytes_output = 0
+    vle_lens = (2, 3, 5, 8)
+
+    def get_next_bits(bit_count: int) -> int:
+        nonlocal input_offset, bit_pool, bits_left
+        out_bits = 0
+        produced = 0
+        while produced < bit_count:
+            if bits_left == 0:
+                if input_offset < 0:
+                    raise ValueError("CRILAYLA bitstream underrun")
+                bit_pool = data[input_offset]
+                bits_left = 8
+                input_offset -= 1
+
+            bits_this_round = min(bits_left, bit_count - produced)
+            out_bits <<= bits_this_round
+            out_bits |= (
+                bit_pool >> (bits_left - bits_this_round)
+            ) & ((1 << bits_this_round) - 1)
+            bits_left -= bits_this_round
+            produced += bits_this_round
+        return out_bits
+
+    while bytes_output < uncompressed_size:
+        if get_next_bits(1) > 0:
+            backreference_offset = (
+                output_end - bytes_output + get_next_bits(13) + 3
+            )
+            backreference_length = 3
+
+            for bit_count in vle_lens:
+                this_level = get_next_bits(bit_count)
+                backreference_length += this_level
+                if this_level != ((1 << bit_count) - 1):
+                    break
+            else:
+                this_level = 0xFF
+                while this_level == 0xFF:
+                    this_level = get_next_bits(8)
+                    backreference_length += this_level
+
+            for _ in range(backreference_length):
+                if bytes_output >= uncompressed_size:
+                    break
+                if not 0 <= backreference_offset < len(result):
+                    raise ValueError("CRILAYLA backreference out of bounds")
+                result[output_end - bytes_output] = result[backreference_offset]
+                backreference_offset -= 1
+                bytes_output += 1
+        else:
+            result[output_end - bytes_output] = get_next_bits(8)
+            bytes_output += 1
+
+    return bytes(result)
 
 
 def _crilayla_decompress(comp_data: bytes, uncomp_size: int) -> bytes:
@@ -233,7 +385,7 @@ class CpkEntry:
                  "file_offset", "id", "user_string",
                  "absolute_offset", "is_compressed")
 
-    def __init__(self, row: dict, content_offset: int):
+    def __init__(self, row: dict, offset_base: int):
         self.dir_name      = row.get("DirName", "") or ""
         self.file_name     = row.get("FileName", "") or ""
         self.file_size     = row.get("FileSize", 0) or 0
@@ -242,7 +394,7 @@ class CpkEntry:
         self.id            = row.get("ID", 0) or 0
         self.user_string   = row.get("UserString", "") or ""
 
-        self.absolute_offset = content_offset + self.file_offset
+        self.absolute_offset = offset_base + self.file_offset
         self.is_compressed   = (self.file_size != self.extract_size
                                  and self.extract_size > 0)
 
@@ -271,6 +423,7 @@ class CpkReader:
         self.entries : list[CpkEntry] = []
         self._header : dict           = {}
         self._file   = None           # kept open for lazy extraction
+        self._file_data_encrypted = False
 
         self._parse()
 
@@ -278,44 +431,44 @@ class CpkReader:
 
     def _parse(self):
         with open(self.path, "rb") as f:
-            # Verify CPK magic
-            magic = f.read(4)
-            if magic != self._CPK_MAGIC:
-                raise ValueError(f"Not a CPK file (magic={magic!r})")
-
-            # CPK header @UTF is at offset 0x10
-            f.seek(0x10)
-            cpk_utf_data = self._read_section_utf(f, 0x10)
+            cpk_utf_data = self._read_section_utf(f, 0, self._CPK_MAGIC)
             hdr_rows = parse_utf(cpk_utf_data)
             if not hdr_rows:
                 raise ValueError("Empty CPK header @UTF table")
             self._header = hdr_rows[0]
+            self._file_data_encrypted = _cpk_uses_asbr_file_encryption(
+                self.path, self._header)
 
             content_offset = self._header.get("ContentOffset", 0) or 0
             toc_offset     = self._header.get("TocOffset", 0) or 0
             # toc_size       = self._header.get("TocSize", 0) or 0
 
-            if not toc_offset:
+            if not toc_offset or toc_offset == _CPK_OFFSET_SENTINEL:
                 raise ValueError("CPK has no TOC (TocOffset = 0)")
 
-            # TOC @UTF is at toc_offset + SECTION_HEADER_SIZE
-            toc_utf_data = self._read_section_utf(
-                f, toc_offset + self._SECTION_HEADER_SIZE)
+            toc_utf_data = self._read_section_utf(f, toc_offset, self._TOC_MAGIC)
             toc_rows = parse_utf(toc_utf_data)
+            offset_base = _toc_add_offset(content_offset, toc_offset)
 
-            self.entries = [CpkEntry(row, content_offset) for row in toc_rows]
+            self.entries = [CpkEntry(row, offset_base) for row in toc_rows]
 
     @staticmethod
-    def _read_section_utf(f, utf_offset: int) -> bytes:
-        """Read the @UTF blob starting at *utf_offset* in the file."""
-        f.seek(utf_offset)
+    def _read_section_utf(f, section_offset: int, expected_magic: bytes) -> bytes:
+        """Read and decrypt a CPK section's @UTF payload."""
+        f.seek(section_offset)
         magic = f.read(4)
-        if magic != _UTF_MAGIC:
+        if magic != expected_magic:
             raise ValueError(
-                f"Expected @UTF at 0x{utf_offset:x}, got {magic!r}")
-        table_size = struct.unpack(">I", f.read(4))[0]
-        f.seek(utf_offset)
-        return f.read(8 + table_size)
+                f"Expected {expected_magic!r} at 0x{section_offset:x}, got {magic!r}")
+        f.read(4)  # flags / unknown
+        payload_size = struct.unpack("<Q", f.read(8))[0]
+        payload = f.read(payload_size)
+        if payload[:4] != _UTF_MAGIC:
+            payload = decrypt_utf_packet(payload)
+        if payload[:4] != _UTF_MAGIC:
+            raise ValueError(
+                f"Expected @UTF payload at 0x{section_offset + 0x10:x}, got {payload[:4]!r}")
+        return payload
 
     # public API
 
@@ -347,6 +500,9 @@ class CpkReader:
         with open(self.path, "rb") as f:
             f.seek(entry.absolute_offset)
             raw = f.read(entry.file_size)
+
+        if self._file_data_encrypted:
+            raw = crypt_jojo_asbr(raw)
 
         if decompress and entry.is_compressed:
             return decompress_crilayla(raw, entry.extract_size)
@@ -598,29 +754,30 @@ def build_cpk(entries: list[tuple[str, str, bytes]],
 
     total_content_size = current
 
-    # Step 2: build TOC @UTF
-    toc = UtfBuilder("CpkTocInfo")
-    toc.add_column("DirName",     _ST_PERROW, _DT_STRING)
-    toc.add_column("FileName",    _ST_PERROW, _DT_STRING)
-    toc.add_column("FileSize",    _ST_PERROW, _DT_UINT32)
-    toc.add_column("ExtractSize", _ST_PERROW, _DT_UINT32)
-    toc.add_column("FileOffset",  _ST_PERROW, _DT_UINT64)
-    toc.add_column("ID",          _ST_PERROW, _DT_UINT16)
-    toc.add_column("UserString",  _ST_CONSTANT, _DT_STRING, "<NULL>")
+    def make_toc(stored_file_offsets: list[int]) -> bytes:
+        toc = UtfBuilder("CpkTocInfo")
+        toc.add_column("DirName",     _ST_PERROW, _DT_STRING)
+        toc.add_column("FileName",    _ST_PERROW, _DT_STRING)
+        toc.add_column("FileSize",    _ST_PERROW, _DT_UINT32)
+        toc.add_column("ExtractSize", _ST_PERROW, _DT_UINT32)
+        toc.add_column("FileOffset",  _ST_PERROW, _DT_UINT64)
+        toc.add_column("ID",          _ST_PERROW, _DT_UINT16)
+        toc.add_column("UserString",  _ST_CONSTANT, _DT_STRING, "<NULL>")
 
-    for i, (dir_name, file_name, data) in enumerate(entries):
-        toc.add_row(
-            DirName    = dir_name,
-            FileName   = file_name,
-            FileSize   = len(data),
-            ExtractSize= len(data),
-            FileOffset = file_offsets[i],
-            ID         = i,
-        )
+        for i, (dir_name, file_name, data) in enumerate(entries):
+            toc.add_row(
+                DirName    = dir_name,
+                FileName   = file_name,
+                FileSize   = len(data),
+                ExtractSize= len(data),
+                FileOffset = stored_file_offsets[i],
+                ID         = i,
+            )
+        return _make_section(b"TOC ", toc.build())
 
-    toc_utf_bytes = toc.build()
-    toc_section   = _make_section(b"TOC ", toc_utf_bytes)
-    toc_size      = len(toc_section)
+    # Step 2: build a provisional TOC so ContentOffset can be computed.
+    toc_section = make_toc(file_offsets)
+    toc_size = len(toc_section)
 
     # Step 3: compute section offsets
     # CPK header section is at offset 0; it occupies 0x800 bytes (2048)
@@ -628,6 +785,10 @@ def build_cpk(entries: list[tuple[str, str, bytes]],
 
     toc_offset     = cpk_header_section_size                 # = 2048
     content_offset = _align_up(toc_offset + toc_size, align) # aligned
+    offset_base = _toc_add_offset(content_offset, toc_offset)
+    toc_section = make_toc(
+        [content_offset + rel - offset_base for rel in file_offsets])
+    toc_size = len(toc_section)
 
     # Step 4: build CPK header @UTF
     cpk_hdr = UtfBuilder("CpkHeader")

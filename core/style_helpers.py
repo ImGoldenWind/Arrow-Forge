@@ -173,6 +173,16 @@ def ss_entry_card(selected: bool = False) -> str:
     )
 
 
+def ss_tool_card(hover: bool = False) -> str:
+    """Home-screen tool card."""
+    bg = P['bg_card_hov'] if hover else P['bg_card']
+    border = P['border_hov'] if hover else P['border']
+    return (
+        f"ToolCard {{ background-color: {bg}; border-radius: 8px; "
+        f"border: 1px solid {border}; }}"
+    )
+
+
 def ss_sidebar_frame() -> str:
     """Left sidebar container frame."""
     return f"QFrame {{ background-color: {P['bg_panel']}; }}"
@@ -206,6 +216,23 @@ def ss_scrollarea_transparent() -> str:
     )
 
 
+def ss_home_grid_scrollarea() -> str:
+    """Scrollable home-screen tool grid."""
+    return (
+        f"QScrollArea {{ background: transparent; border: none; }}"
+        f"QScrollBar:vertical {{"
+        f"  background: {P['bg_dark']}; width: 8px;"
+        f"  border-radius: 4px; margin: 0px;"
+        f"}}"
+        f"QScrollBar::handle:vertical {{"
+        f"  background: {P['mid']}; border-radius: 4px; min-height: 28px;"
+        f"}}"
+        f"QScrollBar::handle:vertical:hover {{ background: {P['secondary']}; }}"
+        f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; border: none; }}"
+        f"QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}"
+    )
+
+
 # Separators
 
 def ss_sep() -> str:
@@ -233,6 +260,22 @@ def ss_sidebar_btn(selected: bool = False) -> str:
     )
 
 
+def ss_tool_favorite_btn(checked: bool = False) -> str:
+    """Small favorite toggle button overlaid on a home-screen tool card."""
+    color = P['accent'] if checked else P['text_dim']
+    hover_color = P['accent'] if checked else P['text_main']
+    bg = P['mid'] if checked else P['bg_panel']
+    hover_bg = P['bg_card_hov']
+    return (
+        f"QPushButton {{ background-color: {bg}; color: {color}; border: 1px solid {P['border']}; "
+        f"border-radius: 6px; padding: 0px; }}"
+        f"QPushButton:hover {{ background-color: {hover_bg}; color: {hover_color}; "
+        f"border: 1px solid {P['border_hov']}; }}"
+        f"QPushButton:checked {{ background-color: {P['mid']}; color: {P['accent']}; "
+        f"border: 1px solid {P['accent']}; }}"
+    )
+
+
 # Labels (style strings only, not widgets)
 
 def ss_section_label() -> str:
@@ -248,6 +291,11 @@ def ss_field_label() -> str:
 def ss_main_label() -> str:
     """Normal emphasis QLabel style."""
     return f"color: {P['text_main']}; background: transparent;"
+
+
+def ss_tool_file_hint_label() -> str:
+    """File hint label inside a home-screen tool card."""
+    return f"color: {P['text_file']}; background: transparent; border: none;"
 
 
 def ss_accent_label() -> str:
@@ -273,6 +321,11 @@ def ss_file_label() -> str:
 def ss_file_label_loaded() -> str:
     """Loaded filename display label in toolbar with normal text emphasis."""
     return f"color: {P['text_main']}; background: transparent;"
+
+
+def ss_file_label_dirty() -> str:
+    """Loaded filename display label when the file has unsaved changes."""
+    return f"color: {P['accent']}; background: transparent; font-weight: bold;"
 
 
 def ss_error_label() -> str:

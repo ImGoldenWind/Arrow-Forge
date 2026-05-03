@@ -19,8 +19,10 @@ from core.style_helpers import (
     ss_btn, ss_sep, ss_scrollarea, ss_scrollarea_transparent,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.editor_file_state import set_file_label
 from parsers.projectile_parser import parse_projectile_xfbin, save_projectile_xfbin
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 # Helpers
@@ -521,7 +523,7 @@ class ProjectileEditor(QWidget):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
-        self._placeholder = QLabel(self.t("placeholder_char_stats"))
+        self._placeholder = QLabel(ui_text("ui_projectile_open_a_projectile_xfbin_file_to_begin_editing"))
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._placeholder.setFont(QFont("Segoe UI", 16))
         self._placeholder.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
@@ -540,10 +542,11 @@ class ProjectileEditor(QWidget):
 
     def _load_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_projectile_open_projectile_xfbin"), "",
+            self, ui_text("ui_projectile_open_projectile_xfbin"), game_files_dialog_dir(target_patterns="*_x.xfbin"),
             "Projectile files (*_x.xfbin *.xfbin);;All files (*.*)"
         )
         if path:
+            create_backup_on_open(path)
             self._start_load(path)
 
     def _start_load(self, path):
@@ -569,9 +572,7 @@ class ProjectileEditor(QWidget):
         self._current_chunk = None
         self._dirty         = False
 
-        name = os.path.basename(path)
-        self._file_lbl.setText(name)
-        self._file_lbl.setStyleSheet(f"color: {P['text_file']}; background: transparent;")
+        set_file_label(self._file_lbl, path)
 
         self._placeholder.setVisible(False)
         self._skill_table.setVisible(True)
@@ -728,22 +729,15 @@ class ProjectileEditor(QWidget):
     def _save_file(self):
         if not self._chunks:
             return
-        path, _ = QFileDialog.getSaveFileName(
-            self, ui_text("ui_projectile_save_projectile_xfbin"),
-            self._filepath or "",
-            "XFBIN files (*_x.xfbin *.xfbin);;All files (*.*)"
-        )
-        if path:
-            self._do_save(path)
+        if self._filepath:
+            self._do_save(self._filepath)
 
     def _do_save(self, path):
         try:
             save_projectile_xfbin(path, self._raw_data, self._chunks)
             self._filepath = path
             self._dirty    = False
-            name = os.path.basename(path)
-            self._file_lbl.setText(name)
-            self._file_lbl.setStyleSheet(f"color: {P['text_file']}; background: transparent;")
+            set_file_label(self._file_lbl, path)
             self._raw_data, _ = parse_projectile_xfbin(path)
         except Exception as exc:
             import traceback
@@ -752,6 +746,4 @@ class ProjectileEditor(QWidget):
     def _mark_dirty(self):
         if not self._dirty:
             self._dirty = True
-            name = os.path.basename(self._filepath) if self._filepath else ''
-            self._file_lbl.setText(ui_text("ui_projectile_value", p0=name))
-            self._file_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+            set_file_label(self._file_lbl, self._filepath, dirty=True)

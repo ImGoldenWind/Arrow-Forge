@@ -17,8 +17,10 @@ from core.style_helpers import (
     ss_file_label, ss_section_label,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.editor_file_state import set_file_label
 from parsers.damageprm_parser import parse_damageprm_xfbin, save_damageprm_xfbin
 from core.translations import ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir
 
 # Reaction type names (for hint display)
 
@@ -236,7 +238,7 @@ class DamagePrmEditor(QWidget):
     def _show_placeholder(self):
         _clear_layout(self._main_layout)
         self._field_widgets = {}
-        lbl = QLabel(ui_text("xfa_no_file"))
+        lbl = QLabel(ui_text("ui_damageprm_open_a_damageprm_bin_xfbin_file_to_begin_editing"))
         lbl.setFont(QFont("Segoe UI", 14))
         lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -353,6 +355,8 @@ class DamagePrmEditor(QWidget):
     def _mark_dirty(self):
         self._dirty = True
         self._btn_save.setEnabled(True)
+        if self._filepath:
+            set_file_label(self._file_lbl, self._filepath, dirty=True)
 
     def _apply_fields(self):
         if self._current_idx < 0 or self._result is None:
@@ -400,6 +404,7 @@ class DamagePrmEditor(QWidget):
     # Data loading
 
     def _load_file(self, filepath):
+        create_backup_on_open(filepath)
         try:
             raw, result = parse_damageprm_xfbin(filepath)
         except Exception as e:
@@ -416,15 +421,14 @@ class DamagePrmEditor(QWidget):
         self._populate_sidebar()
         self._show_empty_selection()
 
-        self._file_lbl.setText(os.path.basename(filepath))
-        self._file_lbl.setStyleSheet(f"color: {P['text_file']}; background: transparent;")
+        set_file_label(self._file_lbl, filepath)
         self._btn_save.setEnabled(True)
 
     # File I/O
 
     def _on_open(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_damageprm_open_damageprm_bin_xfbin"), "",
+            self, ui_text("ui_damageprm_open_damageprm_bin_xfbin"), game_files_dialog_dir(target_patterns="damageprm.bin.xfbin"),
             "XFBIN Files (damageprm.bin.xfbin);;All Files (*.*)"
         )
         if path:
@@ -440,6 +444,7 @@ class DamagePrmEditor(QWidget):
         try:
             save_damageprm_xfbin(filepath, self._raw, self._result)
             self._dirty = False
+            set_file_label(self._file_lbl, filepath)
             QMessageBox.information(self, ui_text("ui_assist_saved"), ui_text("ui_assist_file_saved_value", p0=os.path.basename(filepath)))
         except Exception as e:
             QMessageBox.critical(self, ui_text("ui_assist_save_error"), ui_text("ui_assist_failed_to_save_value", p0=e))
