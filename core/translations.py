@@ -1,15 +1,12 @@
 # i18n
 import json
 import os
-import sys
+
+from core.runtime_paths import app_path
 
 def _locales_dir():
-    """Return the locales directory, works both from source and after PyInstaller."""
-    if getattr(sys, "frozen", False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, "locales")
+    """Return the external locales directory for source and packaged builds."""
+    return app_path("locales")
 
 def load_translations():
     """Scan locales/ for *.json files and return {code: {key: text, ...}, ...}."""
@@ -40,11 +37,7 @@ def available_languages(translations):
 TRANSLATIONS = load_translations()
 
 def _settings_path():
-    if getattr(sys, "frozen", False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, "asbr_settings.json")
+    return app_path("asbr_settings.json")
 
 def current_language(default="en"):
     try:

@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QLineEdit, QScrollArea, QSlider,
     QFileDialog, QMessageBox, QSizePolicy, QComboBox,
     QDoubleSpinBox, QSpinBox, QCheckBox,
-    QTabWidget,
+    QTabWidget, QProgressBar,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont, QPainter, QColor, QPen
@@ -38,6 +38,7 @@ from core.style_helpers import (
     ss_btn, ss_check, ss_dim_label, ss_file_label, ss_input, ss_panel,
     ss_placeholder, ss_scrollarea, ss_scrollarea_transparent, ss_search,
     ss_section_label, ss_sep, ss_sidebar_btn, ss_slider,
+    ss_blocking_overlay, ss_blocking_overlay_card, ss_progressbar,
 )
 from core.editor_file_state import set_file_label, set_file_label_empty
 from core.skeleton import SkeletonListRow
@@ -50,6 +51,7 @@ from parsers.nus3bank_parser import (
     _align_up,
 )
 from core.translations import ui_text
+from core.runtime_paths import app_path
 
 
 # Audio format detection
@@ -60,19 +62,31 @@ _AUDIO_MATCHERS = [
     (lambda d: d[:4] == b'fLaC',                                        '.flac', 'FLAC'),
     (lambda d: d[:4] == b'OggS',                                        '.ogg',  'OGG'),
     (lambda d: d[:4] == b'FORM' and d[8:12] in (b'AIFF', b'AIFC'),     '.aiff', 'AIFF'),
+    (lambda d: d[:2] in (b'\xff\xf1', b'\xff\xf9'),                    '.aac',  'AAC'),
+    (lambda d: d[:4] == b'wvpk',                                        '.wv',   'WV'),
+    (lambda d: d[:8] == b'\x30\x26\xb2\x75\x8e\x66\xcf\x11',          '.wma',  'WMA'),
     (lambda d: d[:2] == b'\x80\x00',                                    '.adx',  'ADX'),
     (lambda d: d[:4] == b'BNSF',                                        '.bnsf', 'BNSF'),
     (lambda d: d[:3] == b'HCA' or d[:3] == bytes([0xC8,0xC3,0xC1]),    '.hca',  'HCA'),
     (lambda d: len(d) > 8 and d[4:8] == b'ftyp',                       '.m4a',  'M4A'),
 ]
 
+_AUDIO_EXTENSIONS = {
+    '.wav', '.mp3', '.flac', '.ogg', '.opus', '.aiff', '.aif',
+    '.m4a', '.aac', '.wv', '.wma', '.bnsf', '.hca', '.adx', '.bin',
+}
+
 _AUDIO_OPEN_FILTER = (
     "Audio files (*.wav *.mp3 *.flac *.ogg *.opus *.aiff *.aif *.m4a *.aac "
-    "*.bnsf *.hca *.adx *.bin);;All files (*.*)"
+    "*.wv *.wma *.bnsf *.hca *.adx *.bin);;All files (*.*)"
 )
 
 
-def _detect_ext(data: bytes) -> str:
+def _ensure_file_ext(path: str, ext: str) -> str:
+    return path if os.path.splitext(path)[1] else path + ext
+
+
+def _detect_ext(data: bytes, fallback_path: str = '') -> str:
     h = data[:16]
     for matcher, ext, _ in _AUDIO_MATCHERS:
         try:
@@ -80,15 +94,16 @@ def _detect_ext(data: bytes) -> str:
                 return ext
         except Exception:
             pass
+    fallback_ext = os.path.splitext(fallback_path)[1].lower()
+    if fallback_ext in _AUDIO_EXTENSIONS:
+        return fallback_ext
     raise ValueError(ui_text("xfa_unknown_audio_format", signature=h[:8].hex()))
 
 
 def _detect_audio_tool() -> dict:
     """Find vgmstream for reading and VGAudio for writing."""
-    import sys
-    base = os.path.dirname(os.path.abspath(sys.argv[0]))
-    vgmstream = os.path.join(base, 'tools', 'vgmstream-cli.exe')
-    vgaudio = os.path.join(base, 'tools', ui_text("ui_sound_vgaudiocli_exe_2"))
+    vgmstream = app_path('tools', 'vgmstream-cli.exe')
+    vgaudio = app_path('tools', ui_text("ui_sound_vgaudiocli_exe_2"))
     
     return {
         'decode': vgmstream if os.path.isfile(vgmstream) else vgaudio if os.path.isfile(vgaudio) else '',
@@ -279,16 +294,136 @@ def _decode_bnsf_to_wav(bnsf_data: bytes, cli: str) -> bytes:
         return _decode_is14_python(bnsf_data)
 
 
-def _encode_audio_to_bnsf(audio_data: bytes, cli: str) -> bytes:
-    ext = _detect_ext(audio_data)
-    if ext == '.bnsf':
+def _decode_input_to_wav(audio_data: bytes, cli: str, source_path: str = '') -> bytes:
+    ext = _detect_ext(audio_data, source_path)
+    if ext == '.wav':
         return audio_data
+    if not cli:
+        raise RuntimeError(ui_text("sound_decode_tool_missing"))
     with tempfile.TemporaryDirectory() as tmp:
         in_path = os.path.join(tmp, f'input{ext}')
-        out_path = os.path.join(tmp, 'output.bnsf')
+        out_path = os.path.join(tmp, 'output.wav')
         with open(in_path, 'wb') as f:
             f.write(audio_data)
         return _run_vgaudio(cli, in_path, out_path)
+
+
+def _read_wav_pcm16(wav_data: bytes) -> tuple:
+    with wave.open(io.BytesIO(wav_data), 'rb') as wf:
+        channels = wf.getnchannels()
+        sample_rate = wf.getframerate()
+        sample_width = wf.getsampwidth()
+        frame_count = wf.getnframes()
+        frames = wf.readframes(frame_count)
+
+    if channels not in (1, 2):
+        raise ValueError(f"Unsupported channel count: {channels}")
+    if sample_width == 2:
+        samples = list(struct.unpack('<' + 'h' * (len(frames) // 2), frames))
+    elif sample_width == 1:
+        samples = [(b - 128) << 8 for b in frames]
+    else:
+        raise ValueError(f"Unsupported WAV sample width: {sample_width * 8} bits")
+    return samples, sample_rate, channels, frame_count
+
+
+def _encode_ima_nibble(sample: int, predictor: int, step_index: int) -> tuple:
+    step = _IMA_STEP_TABLE[step_index]
+    diff = sample - predictor
+    nibble = 0
+    if diff < 0:
+        nibble = 8
+        diff = -diff
+    if diff >= step:
+        nibble |= 4
+        diff -= step
+    if diff >= step >> 1:
+        nibble |= 2
+        diff -= step >> 1
+    if diff >= step >> 2:
+        nibble |= 1
+
+    delta = step >> 3
+    if nibble & 4:
+        delta += step
+    if nibble & 2:
+        delta += step >> 1
+    if nibble & 1:
+        delta += step >> 2
+    predictor = predictor - delta if nibble & 8 else predictor + delta
+    predictor = max(-32768, min(32767, predictor))
+    step_index = max(0, min(88, step_index + _IMA_INDEX_TABLE[nibble & 7]))
+    return nibble & 0xF, predictor, step_index
+
+
+def _encode_ima_bytes(samples: list, predictor: int, step_index: int, count: int) -> tuple:
+    encoded = bytearray()
+    pending = None
+    last = predictor
+    for i in range(count):
+        sample = samples[i] if i < len(samples) else last
+        last = sample
+        nibble, predictor, step_index = _encode_ima_nibble(sample, predictor, step_index)
+        if pending is None:
+            pending = nibble
+        else:
+            encoded.append(pending | (nibble << 4))
+            pending = None
+    if pending is not None:
+        encoded.append(pending)
+    return bytes(encoded), predictor, step_index
+
+
+def _encode_pcm16_to_is14(samples: list, channels: int) -> bytes:
+    block_size = 512
+    raw = bytearray()
+
+    if channels == 1:
+        block_samples = 1 + (block_size - 4) * 2
+        for start in range(0, max(1, len(samples)), block_samples):
+            block = samples[start:start + block_samples]
+            if not block:
+                block = [0]
+            predictor = int(block[0])
+            step_index = 0
+            payload, _, _ = _encode_ima_bytes(block[1:], predictor, step_index, (block_size - 4) * 2)
+            raw += struct.pack('<hBB', predictor, step_index, 0)
+            raw += payload[:block_size - 4].ljust(block_size - 4, b'\x00')
+        return bytes(raw)
+
+    left = samples[0::2]
+    right = samples[1::2]
+    block_samples = 1 + ((block_size - 8) // 8) * 8
+    total = max(1, max(len(left), len(right)))
+    for start in range(0, total, block_samples):
+        l_block = left[start:start + block_samples] or [0]
+        r_block = right[start:start + block_samples] or [0]
+        l_pred = int(l_block[0])
+        r_pred = int(r_block[0])
+        l_idx = 0
+        r_idx = 0
+        block = bytearray(struct.pack('<hBBhBB', l_pred, l_idx, 0, r_pred, r_idx, 0))
+        l_pos = 1
+        r_pos = 1
+        for _ in range((block_size - 8) // 8):
+            l_payload, l_pred, l_idx = _encode_ima_bytes(l_block[l_pos:l_pos + 8], l_pred, l_idx, 8)
+            r_payload, r_pred, r_idx = _encode_ima_bytes(r_block[r_pos:r_pos + 8], r_pred, r_idx, 8)
+            block += l_payload[:4].ljust(4, b'\x00')
+            block += r_payload[:4].ljust(4, b'\x00')
+            l_pos += 8
+            r_pos += 8
+        raw += block[:block_size].ljust(block_size, b'\x00')
+    return bytes(raw)
+
+
+def _encode_audio_to_bnsf(audio_data: bytes, cli: str, source_path: str = '') -> bytes:
+    ext = _detect_ext(audio_data, source_path)
+    if ext == '.bnsf':
+        return audio_data
+    wav_data = _decode_input_to_wav(audio_data, cli, source_path)
+    samples, sample_rate, channels, total_samples = _read_wav_pcm16(wav_data)
+    is14_data = _encode_pcm16_to_is14(samples, channels)
+    return build_bnsf(is14_data, sample_rate, channels, total_samples)
 
 
 def _fmt_size(n: int) -> str:
@@ -530,6 +665,7 @@ class XfbinAudioEditor(QWidget):
     _sig_batch_done = pyqtSignal(str)
     _sig_batch_err = pyqtSignal(str)
     _sig_batch_prog = pyqtSignal(str)
+    _sig_busy_progress = pyqtSignal(str, int, int)
 
     def __init__(self, parent=None, lang_func=None, embedded=False):
         super().__init__(parent)
@@ -565,9 +701,10 @@ class XfbinAudioEditor(QWidget):
         self._sig_convert_err.connect(self._on_convert_err)
         self._sig_save_done.connect(self._on_save_done)
         self._sig_save_err.connect(lambda msg: QMessageBox.critical(self, ui_text("dlg_title_error"), msg))
-        self._sig_batch_done.connect(lambda msg: QMessageBox.information(self, ui_text("ui_xfbin_audio_ok"), msg))
-        self._sig_batch_err.connect(lambda msg: QMessageBox.critical(self, ui_text("dlg_title_error"), msg))
+        self._sig_batch_done.connect(self._on_batch_done)
+        self._sig_batch_err.connect(self._on_batch_err)
         self._sig_batch_prog.connect(self._on_batch_prog)
+        self._sig_busy_progress.connect(self._on_busy_progress)
         self._build_ui()
 
     def _build_ui(self):
@@ -685,6 +822,79 @@ class XfbinAudioEditor(QWidget):
         self._show_placeholder()
         main_layout.addWidget(self._editor_scroll, 1)
         root.addWidget(main, 1)
+        self._build_busy_overlay()
+
+    def _build_busy_overlay(self):
+        self._busy_overlay = QFrame(self)
+        self._busy_overlay.setObjectName("BlockingOverlay")
+        self._busy_overlay.setStyleSheet(ss_blocking_overlay())
+        self._busy_overlay.hide()
+
+        overlay_layout = QVBoxLayout(self._busy_overlay)
+        overlay_layout.setContentsMargins(0, 0, 0, 0)
+        overlay_layout.addStretch()
+
+        card = QFrame()
+        card.setObjectName("BlockingOverlayCard")
+        card.setFixedWidth(360)
+        card.setStyleSheet(ss_blocking_overlay_card())
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(22, 18, 22, 18)
+        card_layout.setSpacing(10)
+
+        self._busy_title_lbl = QLabel(ui_text("loading"))
+        self._busy_title_lbl.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        self._busy_title_lbl.setStyleSheet(ss_section_label())
+        self._busy_title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(self._busy_title_lbl)
+
+        self._busy_detail_lbl = QLabel("")
+        self._busy_detail_lbl.setFont(QFont("Segoe UI", 10))
+        self._busy_detail_lbl.setStyleSheet(ss_dim_label())
+        self._busy_detail_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(self._busy_detail_lbl)
+
+        self._busy_bar = QProgressBar()
+        self._busy_bar.setRange(0, 100)
+        self._busy_bar.setValue(0)
+        self._busy_bar.setTextVisible(False)
+        self._busy_bar.setStyleSheet(ss_progressbar())
+        card_layout.addWidget(self._busy_bar)
+
+        row = QHBoxLayout()
+        row.addStretch()
+        row.addWidget(card)
+        row.addStretch()
+        overlay_layout.addLayout(row)
+        overlay_layout.addStretch()
+        self._busy_overlay.setGeometry(self.rect())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_busy_overlay'):
+            self._busy_overlay.setGeometry(self.rect())
+
+    def _set_busy(self, active: bool, title: str = '', detail: str = '', done: int = 0, total: int = 0):
+        if not hasattr(self, '_busy_overlay'):
+            return
+        if active:
+            self._busy_title_lbl.setText(title or ui_text("loading"))
+            self._on_busy_progress(detail, done, total)
+            self._busy_overlay.setGeometry(self.rect())
+            self._busy_overlay.raise_()
+            self._busy_overlay.show()
+            return
+        self._busy_overlay.hide()
+
+    def _on_busy_progress(self, text: str, done: int, total: int):
+        if not hasattr(self, '_busy_bar'):
+            return
+        self._busy_detail_lbl.setText(text or "")
+        if total > 0:
+            self._busy_bar.setRange(0, total)
+            self._busy_bar.setValue(max(0, min(done, total)))
+        else:
+            self._busy_bar.setRange(0, 0)
 
     def _show_placeholder(self, text: str | None = None):
         _clear_layout(self._editor_layout)
@@ -908,7 +1118,7 @@ class XfbinAudioEditor(QWidget):
         act_layout.setContentsMargins(12, 0, 12, 12)
         act_layout.setSpacing(8)
         for text, fn, accent in [
-            (ui_text("ui_sound_extract_audio"), lambda: self._export_tone('bnsf'), True),
+            (ui_text("ui_sound_extract_audio"), lambda: self._export_tone('wav'), True),
             (ui_text("ui_sound_extract_all"), self._batch_export, False),
             (ui_text("ui_sound_replace_audio"), self._replace_audio, False),
         ]:
@@ -1335,6 +1545,7 @@ class XfbinAudioEditor(QWidget):
             "WAV files (*.wav);;All files (*.*)")
         if not path:
             return
+        path = _ensure_file_ext(path, '.wav')
 
         key = (self._cur_bank, self._cur_tone)
         cached_wav = self._wav_cache.get(key)
@@ -1347,7 +1558,7 @@ class XfbinAudioEditor(QWidget):
                 QMessageBox.critical(self, ui_text("dlg_title_error"), str(e))
             return
 
-        cli = _detect_vgaudio()
+        cli = _detect_audio_tool()['decode']
 
         def worker():
             try:
@@ -1382,7 +1593,7 @@ class XfbinAudioEditor(QWidget):
             try:
                 with open(path, 'rb') as f:
                     audio_data = f.read()
-                bnsf = _encode_audio_to_bnsf(audio_data, cli)
+                bnsf = _encode_audio_to_bnsf(audio_data, cli, path)
                 self._sig_convert_done.emit(bank_idx, tone_idx, bnsf)
             except Exception as e:
                 self._sig_convert_err.emit(str(e))
@@ -1429,7 +1640,7 @@ class XfbinAudioEditor(QWidget):
             try:
                 with open(path, 'rb') as f:
                     audio_data = f.read()
-                bnsf = _encode_audio_to_bnsf(audio_data, cli)
+                bnsf = _encode_audio_to_bnsf(audio_data, cli, path)
                 self._sig_convert_done.emit(bank_idx, -1, bnsf)
             except Exception as e:
                 self._sig_convert_err.emit(str(e))
@@ -1517,48 +1728,53 @@ class XfbinAudioEditor(QWidget):
     # Batch export
 
     def _batch_export(self):
-        """Export all PlaySound tones in the current bank to a folder.
-
-        Normal click → BNSF (raw, no conversion needed).
-        Shift+click  → WAV  (decoded via VGAudioCli / Python fallback).
-        """
+        """Export all PlaySound tones in the current bank to WAV files."""
         if not self._banks:
             return
-        from PyQt6.QtWidgets import QApplication
-        mods = QApplication.keyboardModifiers()
-        as_wav = bool(mods & Qt.KeyboardModifier.ShiftModifier)
-
-        if as_wav:
-            cli = _detect_vgaudio()
-            # Even without VGAudioCli the Python IS14 decoder works for battle.xfbin tones
-        else:
-            cli = ''
+        cli = _detect_audio_tool()['decode']
 
         folder = QFileDialog.getExistingDirectory(
             self,
-            ui_text("xfa_choose_export_folder_wav" if as_wav else "xfa_choose_export_folder_bnsf"),
+            ui_text("xfa_choose_export_folder_wav"),
             "")
         if not folder:
             return
 
-        bank  = self._banks[self._cur_bank]
+        bank_idx = self._cur_bank
+        bank  = self._banks[bank_idx]
         tones = bank.tones
-        ext   = '.wav' if as_wav else '.bnsf'
+        ext   = '.wav'
+        export_items = []
+        for i, tone in enumerate(tones):
+            bnsf = get_tone_bnsf(tone)
+            if bnsf and len(bnsf) >= 4:
+                export_items.append((i, tone, bnsf))
+        total = len(export_items)
+        if total == 0:
+            QMessageBox.warning(self, ui_text("dlg_title_error"), ui_text("xfa_no_audio_export"))
+            return
+
+        self._set_busy(
+            True,
+            ui_text("ui_xfbin_audio_wav"),
+            ui_text("xfa_export_progress", done=0, total=total),
+            0,
+            total,
+        )
 
         def worker():
             ok = 0; err = 0; errs = []
-            for i, tone in enumerate(tones):
-                # Export PlaySound only (skip empty tones that have no audio)
-                bnsf = get_tone_bnsf(tone)
-                if not bnsf or len(bnsf) < 4:
-                    continue
-                self._sig_batch_prog.emit(ui_text("xfa_export_progress", done=i + 1, total=len(tones)))
+            for done, (i, tone, bnsf) in enumerate(export_items, start=1):
+                progress_text = ui_text("xfa_export_progress", done=done, total=total)
+                self._sig_batch_prog.emit(progress_text)
+                self._sig_busy_progress.emit(progress_text, done, total)
                 name = (tone.name or f"tone_{i}").replace('/', '_').replace('\\', '_')
                 try:
-                    if as_wav:
+                    key = (bank_idx, i)
+                    data = self._wav_cache.get(key)
+                    if data is None:
                         data = _decode_bnsf_to_wav(bnsf, cli)
-                    else:
-                        data = bnsf
+                        self._wav_cache[key] = data
                     out_path = os.path.join(folder, name + ext)
                     with open(out_path, 'wb') as f:
                         f.write(data)
@@ -1603,7 +1819,7 @@ class XfbinAudioEditor(QWidget):
                 try:
                     with open(path, 'rb') as f:
                         audio_data = f.read()
-                    bnsf = _encode_audio_to_bnsf(audio_data, cli)
+                    bnsf = _encode_audio_to_bnsf(audio_data, cli, path)
                     t = ToneEntry()
                     t.type_id = bank._tone_type_id
                     t._params_size = getattr(bank, '_tone_param_size', PARAMS_SIZE)
@@ -1636,6 +1852,14 @@ class XfbinAudioEditor(QWidget):
         self._sig_batch_done.connect(_refresh_once)
 
     # Batch progress helper
+
+    def _on_batch_done(self, msg: str):
+        self._set_busy(False)
+        QMessageBox.information(self, ui_text("ui_xfbin_audio_ok"), msg)
+
+    def _on_batch_err(self, msg: str):
+        self._set_busy(False)
+        QMessageBox.critical(self, ui_text("dlg_title_error"), msg)
 
     def _on_batch_prog(self, text: str):
         if hasattr(self, '_info_lbl'):

@@ -8,7 +8,7 @@ import threading
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QLineEdit, QScrollArea, QSlider,
-    QFileDialog, QMessageBox,
+    QFileDialog, QMessageBox, QProgressBar,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QPainter, QColor, QPen
@@ -18,6 +18,7 @@ from core.style_helpers import (
     ss_btn, ss_file_label, ss_input, ss_panel,
     ss_placeholder, ss_scrollarea, ss_scrollarea_transparent, ss_search,
     ss_section_label, ss_sep, ss_sidebar_btn, ss_slider,
+    ss_blocking_overlay, ss_blocking_overlay_card, ss_progressbar,
 )
 from core.editor_file_state import set_file_label, set_file_label_empty
 from core.skeleton import SkeletonListRow
@@ -28,6 +29,7 @@ from parsers.awb_parser import (
 )
 from parsers.hca_decoder import parse_hca_info, decode_hca_to_wav, set_hca_volume
 from core.translations import ui_text
+from core.runtime_paths import app_path
 
 
 # Audio format detection
@@ -40,11 +42,18 @@ _AUDIO_FORMAT_MATCHERS = [
     (lambda d: d[:4] == b'fLaC',                                            '.flac', 'FLAC'),
     (lambda d: d[:4] == b'OggS',                                            '.ogg',  ui_text("ui_sound_ogg_opus")),
     (lambda d: d[:4] == b'FORM' and d[8:12] in (b'AIFF', b'AIFC'),        '.aiff', 'AIFF'),
+    (lambda d: d[:2] in (b'\xff\xf1', b'\xff\xf9'),                        '.aac',  'AAC'),
     (lambda d: d[:4] == b'wvpk',                                            '.wv',   ui_text("ui_sound_wavpack")),
     (lambda d: d[:8] == b'\x30\x26\xb2\x75\x8e\x66\xcf\x11',              '.wma',  ui_text("ui_sound_wma_asf")),
     (lambda d: len(d) > 8 and d[4:8] == b'ftyp',                           '.m4a',  ui_text("ui_sound_aac_m4a")),
+    (lambda d: d[:3] == b'HCA' or d[:3] == bytes([0xC8, 0xC3, 0xC1]),      '.hca',  'HCA'),
     (lambda d: d[:2] == b'\x80\x00',                                        '.adx',  'ADX'),
 ]
+
+_AUDIO_EXTENSIONS = {
+    '.wav', '.mp3', '.flac', '.ogg', '.opus', '.aiff', '.aif',
+    '.m4a', '.aac', '.wv', '.wma', '.hca', '.adx', '.bin',
+}
 
 # Extensions shown in "open file" dialogs
 _AUDIO_OPEN_FILTER = (
@@ -55,7 +64,11 @@ _AUDIO_OPEN_FILTER = (
 )
 
 
-def _detect_audio_input_format(data: bytes) -> str:
+def _ensure_file_ext(path: str, ext: str) -> str:
+    return path if os.path.splitext(path)[1] else path + ext
+
+
+def _detect_audio_input_format(data: bytes, fallback_path: str = '') -> str:
     """Return a suitable file extension for *data*, or raise ValueError.
 
     Raises
@@ -71,10 +84,18 @@ def _detect_audio_input_format(data: bytes) -> str:
                 return ext
         except Exception:
             continue
+    fallback_ext = os.path.splitext(fallback_path)[1].lower()
+    if fallback_ext in _AUDIO_EXTENSIONS:
+        return fallback_ext
     raise ValueError(ui_text("sound_unsupported_audio_format", signature=header[:8].hex()))
 
 
-def _run_vgaudio_conversion(cli_path: str, audio_data: bytes) -> bytes:
+def _run_vgaudio_conversion(
+    cli_path: str,
+    audio_data: bytes,
+    target_ext: str = '.hca',
+    source_path: str = '',
+) -> bytes:
     """Convert audio bytes to HCA using VGAudioCli.exe at the given path.
 
     Raises
@@ -83,17 +104,74 @@ def _run_vgaudio_conversion(cli_path: str, audio_data: bytes) -> bytes:
     RuntimeError
         If VGAudioCli exits with a non-zero return code or produces no output.
     """
-    in_ext = _detect_audio_input_format(audio_data)
+    in_ext = _detect_audio_input_format(audio_data, source_path)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         in_path = os.path.join(tmpdir, f'input{in_ext}')
-        out_path = os.path.join(tmpdir, 'output.hca')
+        out_path = os.path.join(tmpdir, f'output{target_ext}')
         with open(in_path, 'wb') as f:
             f.write(audio_data)
-        result = subprocess.run(
+        commands = (
+            [cli_path, '-i', in_path, '-o', out_path],
             [cli_path, in_path, '-o', out_path],
-            capture_output=True, timeout=60
         )
+        last_result = None
+        for command in commands:
+            if os.path.isfile(out_path):
+                try:
+                    os.remove(out_path)
+                except OSError:
+                    pass
+            last_result = subprocess.run(command, capture_output=True, timeout=60)
+            if last_result.returncode == 0 and os.path.isfile(out_path):
+                break
+        if last_result is None or last_result.returncode != 0 or not os.path.isfile(out_path):
+            stderr = (last_result.stderr if last_result else b'').decode(errors='replace').strip()
+            stdout = (last_result.stdout if last_result else b'').decode(errors='replace').strip()
+            details = stderr or stdout or ui_text("no_output")
+            code = last_result.returncode if last_result else -1
+            raise RuntimeError(ui_text("sound_vgaudio_exit_code", code=code, details=details))
+        with open(out_path, 'rb') as f:
+            return f.read()
+
+
+def _run_tool_decode_to_wav(cli_path: str, audio_data: bytes, source_path: str = '') -> bytes:
+    """Decode any supported audio bytes to WAV using vgmstream or VGAudioCli."""
+    in_ext = _detect_audio_input_format(audio_data, source_path)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        in_path = os.path.join(tmpdir, f'input{in_ext}')
+        out_path = os.path.join(tmpdir, 'output.wav')
+        with open(in_path, 'wb') as f:
+            f.write(audio_data)
+
+        if 'vgmstream' in os.path.basename(cli_path).lower():
+            cmd = [cli_path, '-o', out_path, in_path]
+        else:
+            commands = (
+                [cli_path, '-i', in_path, '-o', out_path],
+                [cli_path, in_path, '-o', out_path],
+            )
+            last_result = None
+            for command in commands:
+                if os.path.isfile(out_path):
+                    try:
+                        os.remove(out_path)
+                    except OSError:
+                        pass
+                last_result = subprocess.run(command, capture_output=True, timeout=60)
+                if last_result.returncode == 0 and os.path.isfile(out_path):
+                    break
+            if last_result is None or last_result.returncode != 0 or not os.path.isfile(out_path):
+                stderr = (last_result.stderr if last_result else b'').decode(errors='replace').strip()
+                stdout = (last_result.stdout if last_result else b'').decode(errors='replace').strip()
+                details = stderr or stdout or ui_text("no_output")
+                code = last_result.returncode if last_result else -1
+                raise RuntimeError(ui_text("sound_vgaudio_exit_code", code=code, details=details))
+            with open(out_path, 'rb') as f:
+                return f.read()
+
+        result = subprocess.run(cmd, capture_output=True, timeout=60)
         if result.returncode != 0 or not os.path.isfile(out_path):
             stderr = result.stderr.decode(errors='replace').strip()
             stdout = result.stdout.decode(errors='replace').strip()
@@ -108,14 +186,39 @@ def _auto_detect_vgaudio_cli() -> str:
 
     Never shows a dialog — returns an empty string when not found.
     """
-    import sys
     settings = load_settings()
     cli = settings.get('vgaudio_cli_path', '')
     if cli and os.path.isfile(cli):
         return cli
-    base = os.path.dirname(os.path.abspath(sys.argv[0]))
-    candidate = os.path.join(base, 'tools', ui_text("ui_sound_vgaudiocli_exe_2"))
+    candidate = app_path('tools', ui_text("ui_sound_vgaudiocli_exe_2"))
     return candidate if os.path.isfile(candidate) else ''
+
+
+def _auto_detect_decode_cli() -> str:
+    """Return the best bundled decoder: vgmstream first, then VGAudioCli."""
+    candidate = app_path('tools', 'vgmstream-cli.exe')
+    if os.path.isfile(candidate):
+        return candidate
+    return _auto_detect_vgaudio_cli()
+
+
+def _decode_audio_to_wav(audio_data: bytes, source_format: str = '', source_path: str = '') -> bytes:
+    """Decode game or common audio bytes to WAV for user-facing exports."""
+    if audio_data[:4] == b'RIFF' and audio_data[8:12] == b'WAVE':
+        return audio_data
+    if source_format == 'HCA' or audio_data[:3] in (b'HCA', bytes([0xC8, 0xC3, 0xC1])):
+        try:
+            return decode_hca_to_wav(audio_data)
+        except Exception:
+            pass
+    cli = _auto_detect_decode_cli()
+    if not cli:
+        raise RuntimeError(ui_text("sound_decode_tool_missing"))
+    return _run_tool_decode_to_wav(cli, audio_data, source_path)
+
+
+def _target_ext_for_entry(entry: dict) -> str:
+    return '.adx' if entry.get('format') == 'ADX' else '.hca'
 
 
 def _encode_to_hca_python(audio_data: bytes) -> bytes:
@@ -254,6 +357,7 @@ class SoundEditor(QWidget):
     _sig_waveform_ready = pyqtSignal(object)
     _sig_export_success = pyqtSignal(str)
     _sig_export_error = pyqtSignal(str)
+    _sig_busy_progress = pyqtSignal(str, int, int)
     # Conversion (add / replace) — emitted from background threads
     _sig_convert_replace_done = pyqtSignal(int, bytes)   # (entry_idx, hca_bytes)
     _sig_convert_add_done     = pyqtSignal(bytes)        # (hca_bytes,)
@@ -295,10 +399,9 @@ class SoundEditor(QWidget):
         self._sig_play_progress.connect(self._update_play_progress)
         self._sig_playback_done.connect(self._on_playback_done)
         self._sig_waveform_ready.connect(self._finish_draw_waveform)
-        self._sig_export_success.connect(lambda msg: QMessageBox.information(
-            self, self.t("dlg_title_success"), msg))
-        self._sig_export_error.connect(lambda msg: QMessageBox.critical(
-            self, self.t("dlg_title_error"), msg))
+        self._sig_export_success.connect(self._on_export_success)
+        self._sig_export_error.connect(self._on_export_error)
+        self._sig_busy_progress.connect(self._on_busy_progress)
         self._sig_convert_replace_done.connect(self._on_convert_replace_done)
         self._sig_convert_add_done.connect(self._on_convert_add_done)
         self._sig_convert_error.connect(self._on_convert_error)
@@ -460,6 +563,87 @@ class SoundEditor(QWidget):
 
         main_layout.addWidget(self._editor_scroll, 1)
         root_layout.addWidget(main, 1)
+        self._build_busy_overlay()
+
+    def _build_busy_overlay(self):
+        self._busy_overlay = QFrame(self)
+        self._busy_overlay.setObjectName("BlockingOverlay")
+        self._busy_overlay.setStyleSheet(ss_blocking_overlay())
+        self._busy_overlay.hide()
+
+        overlay_layout = QVBoxLayout(self._busy_overlay)
+        overlay_layout.setContentsMargins(0, 0, 0, 0)
+        overlay_layout.addStretch()
+
+        card = QFrame()
+        card.setObjectName("BlockingOverlayCard")
+        card.setFixedWidth(360)
+        card.setStyleSheet(ss_blocking_overlay_card())
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(22, 18, 22, 18)
+        card_layout.setSpacing(10)
+
+        self._busy_title_lbl = QLabel(self.t("loading"))
+        self._busy_title_lbl.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        self._busy_title_lbl.setStyleSheet(ss_section_label())
+        self._busy_title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(self._busy_title_lbl)
+
+        self._busy_detail_lbl = QLabel("")
+        self._busy_detail_lbl.setFont(QFont("Segoe UI", 10))
+        self._busy_detail_lbl.setStyleSheet(ss_file_label())
+        self._busy_detail_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(self._busy_detail_lbl)
+
+        self._busy_bar = QProgressBar()
+        self._busy_bar.setRange(0, 100)
+        self._busy_bar.setValue(0)
+        self._busy_bar.setTextVisible(False)
+        self._busy_bar.setStyleSheet(ss_progressbar())
+        card_layout.addWidget(self._busy_bar)
+
+        row = QHBoxLayout()
+        row.addStretch()
+        row.addWidget(card)
+        row.addStretch()
+        overlay_layout.addLayout(row)
+        overlay_layout.addStretch()
+        self._busy_overlay.setGeometry(self.rect())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_busy_overlay'):
+            self._busy_overlay.setGeometry(self.rect())
+
+    def _set_busy(self, active: bool, title: str = '', detail: str = '', done: int = 0, total: int = 0):
+        if not hasattr(self, '_busy_overlay'):
+            return
+        if active:
+            self._busy_title_lbl.setText(title or self.t("loading"))
+            self._on_busy_progress(detail, done, total)
+            self._busy_overlay.setGeometry(self.rect())
+            self._busy_overlay.raise_()
+            self._busy_overlay.show()
+            return
+        self._busy_overlay.hide()
+
+    def _on_busy_progress(self, text: str, done: int, total: int):
+        if not hasattr(self, '_busy_bar'):
+            return
+        self._busy_detail_lbl.setText(text or "")
+        if total > 0:
+            self._busy_bar.setRange(0, total)
+            self._busy_bar.setValue(max(0, min(done, total)))
+        else:
+            self._busy_bar.setRange(0, 0)
+
+    def _on_export_success(self, msg: str):
+        self._set_busy(False)
+        QMessageBox.information(self, self.t("dlg_title_success"), msg)
+
+    def _on_export_error(self, msg: str):
+        self._set_busy(False)
+        QMessageBox.critical(self, self.t("dlg_title_error"), msg)
 
     # File loading
 
@@ -896,15 +1080,13 @@ class SoundEditor(QWidget):
         dialog.  Raises RuntimeError when the user cancels or the path is
         invalid.
         """
-        import sys
         settings = load_settings()
         cli = settings.get('vgaudio_cli_path', '')
         if cli and not os.path.isfile(cli):
             cli = ''
 
         if not cli:
-            base = os.path.dirname(os.path.abspath(sys.argv[0]))
-            candidate = os.path.join(base, 'tools', ui_text("ui_sound_vgaudiocli_exe_2"))
+            candidate = app_path('tools', ui_text("ui_sound_vgaudiocli_exe_2"))
             if os.path.isfile(candidate):
                 cli = candidate
 
@@ -1247,10 +1429,6 @@ class SoundEditor(QWidget):
     def _export_wav(self, idx):
         """Export entry as decoded WAV file."""
         entry = self._entries[idx]
-        if entry['format'] != 'HCA':
-            QMessageBox.warning(self, self.t("dlg_title_warning"),
-                                self.t("sound_export_hca_only"))
-            return
 
         default_name = f"entry_{entry['id']:03d}.wav"
         path, _ = QFileDialog.getSaveFileName(
@@ -1258,11 +1436,12 @@ class SoundEditor(QWidget):
             default_name, "WAV files (*.wav);;All files (*.*)")
         if not path:
             return
+        path = _ensure_file_ext(path, '.wav')
 
         def worker():
             try:
-                hca_bytes = self._get_entry_bytes(idx)
-                wav_data = decode_hca_to_wav(hca_bytes)
+                audio_bytes = self._get_entry_bytes(idx)
+                wav_data = _decode_audio_to_wav(audio_bytes, entry.get('format', ''))
                 with open(path, 'wb') as f:
                     f.write(wav_data)
                 self._sig_export_success.emit(
@@ -1276,42 +1455,72 @@ class SoundEditor(QWidget):
 
     def _extract_single(self, idx):
         entry = self._entries[idx]
-        ext = ".hca" if entry['format'] == 'HCA' else (".adx" if entry['format'] == 'ADX' else ".bin")
-        default_name = f"entry_{entry['id']:03d}{ext}"
+        default_name = f"entry_{entry['id']:03d}.wav"
 
         path, _ = QFileDialog.getSaveFileName(
             self, self.t("sound_extract_title"),
-            default_name, f"{entry['format']} files (*{ext});;All files (*.*)")
+            default_name, "WAV files (*.wav);;All files (*.*)")
         if not path:
             return
-        try:
-            data = self._get_entry_bytes(idx)
-            with open(path, 'wb') as f:
-                f.write(data)
-            QMessageBox.information(self, self.t("dlg_title_success"),
-                                    self.t("sound_extract_success", name=os.path.basename(path),
-                                           size=_fmt_size(len(data))))
-        except Exception as e:
-            QMessageBox.critical(self, self.t("dlg_title_error"), str(e))
+        path = _ensure_file_ext(path, '.wav')
+
+        def worker():
+            try:
+                data = self._get_entry_bytes(idx)
+                wav_data = _decode_audio_to_wav(data, entry.get('format', ''))
+                with open(path, 'wb') as f:
+                    f.write(wav_data)
+                self._sig_export_success.emit(
+                    self.t("sound_extract_success", name=os.path.basename(path),
+                           size=_fmt_size(len(wav_data))))
+            except Exception as e:
+                self._sig_export_error.emit(str(e))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _extract_all(self):
         folder = QFileDialog.getExistingDirectory(self, self.t("sound_extract_all_title"))
         if not folder:
             return
-        try:
-            count = 0
-            for i, entry in enumerate(self._entries):
-                ext = ".hca" if entry['format'] == 'HCA' else (
-                    ".adx" if entry['format'] == 'ADX' else ".bin")
-                fname = f"entry_{entry['id']:03d}{ext}"
-                data = self._get_entry_bytes(i)
-                with open(os.path.join(folder, fname), 'wb') as f:
-                    f.write(data)
-                count += 1
-            QMessageBox.information(self, self.t("dlg_title_success"),
-                                    self.t("sound_extract_all_success", n=count, folder=folder))
-        except Exception as e:
-            QMessageBox.critical(self, self.t("dlg_title_error"), str(e))
+        total = len(self._entries)
+        if total == 0:
+            return
+
+        self._set_busy(
+            True,
+            self.t("sound_export_wav_title"),
+            self.t("xfa_export_progress", done=0, total=total),
+            0,
+            total,
+        )
+
+        def worker():
+            try:
+                count = 0
+                errors = []
+                for i, entry in enumerate(self._entries):
+                    progress_text = self.t("xfa_export_progress", done=i + 1, total=total)
+                    self._sig_busy_progress.emit(progress_text, i + 1, total)
+                    fname = f"entry_{entry['id']:03d}.wav"
+                    try:
+                        wav_data = self._wav_cache.get(i)
+                        if wav_data is None:
+                            data = self._get_entry_bytes(i)
+                            wav_data = _decode_audio_to_wav(data, entry.get('format', ''))
+                            self._wav_cache[i] = wav_data
+                        with open(os.path.join(folder, fname), 'wb') as f:
+                            f.write(wav_data)
+                        count += 1
+                    except Exception as e:
+                        errors.append(f"{fname}: {e}")
+                msg = self.t("sound_extract_all_success", n=count, folder=folder)
+                if errors:
+                    msg += "\n" + "\n".join(errors[:5])
+                self._sig_export_success.emit(msg)
+            except Exception as e:
+                self._sig_export_error.emit(str(e))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _replace_single(self, idx):
         """Open a file dialog and replace the entry at *idx* with the chosen audio."""
@@ -1328,7 +1537,12 @@ class SoundEditor(QWidget):
             return
 
         # Fast-path: file is already HCA — no subprocess needed.
-        if raw[:3] in (b'HCA', bytes([0xC8, 0xC3, 0xC1])):
+        target_ext = _target_ext_for_entry(self._entries[idx])
+
+        if target_ext == '.hca' and raw[:3] in (b'HCA', bytes([0xC8, 0xC3, 0xC1])):
+            self._sig_convert_replace_done.emit(idx, raw)
+            return
+        if target_ext == '.adx' and raw[:2] == b'\x80\x00':
             self._sig_convert_replace_done.emit(idx, raw)
             return
 
@@ -1336,7 +1550,10 @@ class SoundEditor(QWidget):
 
         def worker():
             try:
-                hca = _encode_to_hca_python(raw)
+                if target_ext == '.hca':
+                    converted = _encode_to_hca_python(raw)
+                else:
+                    raise ImportError(ui_text("sound_vgaudio_required_for_target", target=target_ext.upper().lstrip('.')))
             except ImportError as imp_err:
                 # PyCriCodecs/soundfile not installed — try VGAudioCli as a last resort.
                 cli = _auto_detect_vgaudio_cli()
@@ -1345,14 +1562,21 @@ class SoundEditor(QWidget):
                     self._sig_convert_error.emit(str(imp_err))
                     return
                 try:
-                    hca = _run_vgaudio_conversion(cli, raw)
+                    converted = _run_vgaudio_conversion(cli, raw, target_ext, path)
                 except Exception as exc:
                     self._sig_convert_error.emit(str(exc))
                     return
             except Exception as exc:
-                self._sig_convert_error.emit(str(exc))
-                return
-            self._sig_convert_replace_done.emit(idx, hca)
+                cli = _auto_detect_vgaudio_cli()
+                if not cli:
+                    self._sig_convert_error.emit(str(exc))
+                    return
+                try:
+                    converted = _run_vgaudio_conversion(cli, raw, target_ext, path)
+                except Exception as conv_exc:
+                    self._sig_convert_error.emit(str(conv_exc))
+                    return
+            self._sig_convert_replace_done.emit(idx, converted)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1406,13 +1630,20 @@ class SoundEditor(QWidget):
                     self._sig_convert_error.emit(str(imp_err))
                     return
                 try:
-                    hca = _run_vgaudio_conversion(cli, raw)
+                    hca = _run_vgaudio_conversion(cli, raw, '.hca', path)
                 except Exception as exc:
                     self._sig_convert_error.emit(str(exc))
                     return
             except Exception as exc:
-                self._sig_convert_error.emit(str(exc))
-                return
+                cli = _auto_detect_vgaudio_cli()
+                if not cli:
+                    self._sig_convert_error.emit(str(exc))
+                    return
+                try:
+                    hca = _run_vgaudio_conversion(cli, raw, '.hca', path)
+                except Exception as conv_exc:
+                    self._sig_convert_error.emit(str(conv_exc))
+                    return
             self._sig_convert_add_done.emit(hca)
 
         threading.Thread(target=worker, daemon=True).start()

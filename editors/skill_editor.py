@@ -23,7 +23,7 @@ from parsers.skill_parser import (
     parse_prmload_xfbin, save_prmload_xfbin,
     write_mot_entry, write_mot_subentry,
     make_default_mot_entry, make_default_mot_subentry, write_mot,
-    DATA_TYPE_MAP, FUNC_MAP_1B, PRMLOAD_TYPE_NAMES,
+    DATA_TYPE_MAP, FUNC_MAP_1B, PRMLOAD_TYPE_NAMES, ANM_SPEED_FUNC_NAMES,
 )
 from core.translations import ui_text
 from core.settings import create_backup_on_open, game_files_dialog_dir
@@ -963,9 +963,15 @@ class _MotTab(QWidget):
         grid.addWidget(fw6, 1, 2)
         grid.addWidget(fw7, 1, 3)
 
-        # Row 2: Push | Function (spans 3 cols)
+        # Row 2: Push | Speed | Function (spans 2 cols)
         fw8, f_push = _make_field(ui_text("ui_skill_push"), s.get('push', 0))
         grid.addWidget(fw8, 2, 0)
+
+        fw_speed, f_speed = _make_field(
+            ui_text("skill_field_speed"),
+            f"{s.get('speed_multiplier', 1.0):.6g}",
+        )
+        grid.addWidget(fw_speed, 2, 1)
 
         fw_func_w, f_func = _make_combo_field(ui_text("skill_field_function"), [], s.get('func_name', ''))
         f_func.setEditable(True)
@@ -975,7 +981,14 @@ class _MotTab(QWidget):
             f_func.addItem(name)
         f_func.setCurrentText(s.get('func_name', ''))
         f_func.blockSignals(False)
-        grid.addWidget(fw_func_w, 2, 1, 1, 3)
+        grid.addWidget(fw_func_w, 2, 2, 1, 2)
+
+        def update_speed_visibility():
+            is_speed_func = f_func.currentText().strip() in ANM_SPEED_FUNC_NAMES
+            fw_speed.setVisible(is_speed_func)
+            f_speed.setEnabled(is_speed_func)
+
+        update_speed_visibility()
 
         cl.addLayout(grid)
 
@@ -1016,6 +1029,10 @@ class _MotTab(QWidget):
                 s['push'] = int(f_push.text())
             except Exception:
                 pass
+            try:
+                s['speed_multiplier'] = float(f_speed.text())
+            except Exception:
+                pass
             func_txt = f_func.currentText().strip()
             _func_rev = {v: k for k, v in FUNC_MAP_1B.items()}
             if func_txt in _func_rev:
@@ -1023,8 +1040,12 @@ class _MotTab(QWidget):
                 s['func_name'] = func_txt
             else:
                 s['func_name'] = FUNC_MAP_1B.get(s['dtype'], s.get('func_name', ''))
+            if s.get('func_name') in ANM_SPEED_FUNC_NAMES and 'speed_multiplier' not in s:
+                s['speed_multiplier'] = 1.0
+                f_speed.setText("1")
             s['dname'] = DATA_TYPE_MAP.get(s['dtype'], str(s['dtype']))
             hdr_lbl.setText(ui_text("ui_skill_value_value_value", p0=r, p1=s['bone'], p2=s.get('func_name', '')))
+            update_speed_visibility()
             if self._mot_raw is not None and s.get('sub_off') is not None:
                 write_mot_subentry(self._mot_raw, s)
             self.changed.emit()
@@ -1038,6 +1059,7 @@ class _MotTab(QWidget):
         f_x.editingFinished.connect(commit)
         f_y.editingFinished.connect(commit)
         f_push.editingFinished.connect(commit)
+        f_speed.editingFinished.connect(commit)
         f_func.currentTextChanged.connect(lambda _: commit())
 
         return card

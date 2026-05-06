@@ -37,14 +37,18 @@ to the app.
 
 ## Building
 
-The repo has a PyInstaller spec:
+The repo has a PyInstaller spec. For release builds, install a current
+PyInstaller into the same Python environment you build from, then make a clean
+one-folder package.
 
 ```powershell
-pip install pyinstaller
-pyinstaller ASBR-Tools.spec
+python -m pip install -U pyinstaller
+python -m PyInstaller --clean ASBR-Tools.spec
 ```
 
-The built executable will be placed under `dist/`.
+The packaged app will be placed under `dist/ASBR-Tools/`. Zip that folder for
+GitHub Releases. The app checks for new releases and opens the release page for
+manual download.
 
 ## Credits
 

@@ -2,7 +2,8 @@ import json
 import fnmatch
 import os
 import shutil
-import sys
+
+from core.runtime_paths import app_path
 
 
 DEFAULT_SETTINGS = {
@@ -19,11 +20,7 @@ DEFAULT_SETTINGS = {
 
 
 def _settings_path():
-    if getattr(sys, "frozen", False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, "asbr_settings.json")
+    return app_path("asbr_settings.json")
 
 
 def load_settings() -> dict:

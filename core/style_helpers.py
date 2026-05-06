@@ -163,6 +163,40 @@ def ss_panel() -> str:
     return f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}"
 
 
+def _rgba(hex_color: str, alpha: int) -> str:
+    """Convert a #RRGGBB palette colour to rgba() for translucent overlays."""
+    value = hex_color.lstrip("#")
+    if len(value) != 6:
+        return hex_color
+    r = int(value[0:2], 16)
+    g = int(value[2:4], 16)
+    b = int(value[4:6], 16)
+    return f"rgba({r}, {g}, {b}, {alpha})"
+
+
+def ss_blocking_overlay() -> str:
+    """Full-editor modal overlay that blocks input during long tasks."""
+    return f"QFrame#BlockingOverlay {{ background-color: {_rgba(P['bg_dark'], 218)}; }}"
+
+
+def ss_blocking_overlay_card() -> str:
+    """Centered status card inside a blocking overlay."""
+    return (
+        f"QFrame#BlockingOverlayCard {{ background-color: {P['bg_panel']}; "
+        f"border: 1px solid {P['border_hov']}; border-radius: 8px; }}"
+    )
+
+
+def ss_progressbar() -> str:
+    """Compact determinate progress bar for long-running editor operations."""
+    return (
+        f"QProgressBar {{ background-color: {P['bg_card']}; color: {P['text_main']}; "
+        f"border: 1px solid {P['border']}; border-radius: 5px; text-align: center; "
+        f"height: 12px; }}"
+        f"QProgressBar::chunk {{ background-color: {P['accent']}; border-radius: 4px; }}"
+    )
+
+
 def ss_entry_card(selected: bool = False) -> str:
     """Editable entry card used in card-based editors."""
     border = P['accent'] if selected else P['bg_panel']
