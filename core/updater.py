@@ -1,8 +1,16 @@
 import datetime as _dt
 import json
+import os
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 import urllib.error
 import urllib.request
+import zipfile
+
+from core.runtime_paths import app_root
 
 
 APP_VERSION = "1.1"
@@ -29,6 +37,92 @@ def _request_json(url: str, timeout: int = 15) -> dict:
         raise UpdateError(f"GitHub returned HTTP {exc.code}.") from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise UpdateError(str(exc)) from exc
+
+
+def _download_file(url: str, dest_path: str, progress_callback=None, timeout: int = 30) -> int:
+    req = urllib.request.Request(url, headers={
+        "Accept": "application/octet-stream",
+        "User-Agent": USER_AGENT,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            total = int(response.headers.get("Content-Length") or 0)
+            downloaded = 0
+            with open(dest_path, "wb") as out:
+                while True:
+                    chunk = response.read(1024 * 128)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    downloaded += len(chunk)
+                    if progress_callback:
+                        progress_callback(downloaded, total)
+            return downloaded
+    except (OSError, urllib.error.URLError) as exc:
+        raise UpdateError(str(exc)) from exc
+
+
+def _safe_extract_zip(zip_path: str, dest_dir: str) -> None:
+    dest_real = os.path.realpath(dest_dir)
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for member in zf.infolist():
+                target = os.path.realpath(os.path.join(dest_dir, member.filename))
+                if target != dest_real and not target.startswith(dest_real + os.sep):
+                    raise UpdateError(f"Unsafe path in update archive: {member.filename}")
+            zf.extractall(dest_dir)
+    except zipfile.BadZipFile as exc:
+        raise UpdateError("The downloaded update archive is not a valid zip file.") from exc
+
+
+def _find_update_source(extract_dir: str, exe_name: str) -> str:
+    direct_exe = os.path.join(extract_dir, exe_name)
+    if os.path.isfile(direct_exe):
+        return extract_dir
+
+    matches = []
+    for dirpath, _dirnames, filenames in os.walk(extract_dir):
+        if exe_name in filenames:
+            rel_depth = os.path.relpath(dirpath, extract_dir).count(os.sep)
+            matches.append((rel_depth, dirpath))
+    if matches:
+        matches.sort(key=lambda item: item[0])
+        return matches[0][1]
+
+    raise UpdateError(f"The update archive does not contain {exe_name}.")
+
+
+def _bat_path(path: str) -> str:
+    return os.path.abspath(path).replace("%", "%%")
+
+
+def _write_apply_script(update_dir: str, source_dir: str, install_dir: str, restart_exe: str) -> str:
+    script_path = os.path.join(update_dir, "apply_update.bat")
+    pid = os.getpid()
+    script = f'''@echo off
+setlocal
+set "UPDATE_DIR={_bat_path(update_dir)}"
+set "SOURCE_DIR={_bat_path(source_dir)}"
+set "INSTALL_DIR={_bat_path(install_dir)}"
+set "RESTART_EXE={_bat_path(restart_exe)}"
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try {{ Wait-Process -Id {pid} -Timeout 60 }} catch {{ }}" >nul 2>nul
+timeout /t 1 /nobreak >nul
+
+robocopy "%SOURCE_DIR%" "%INSTALL_DIR%" /E /COPY:DAT /R:30 /W:1 /XF asbr_settings.json >nul
+set "ROBOCOPY_EXIT=%ERRORLEVEL%"
+if %ROBOCOPY_EXIT% GEQ 8 (
+    start "" "https://github.com/{GITHUB_REPO}/releases/latest"
+    exit /b %ROBOCOPY_EXIT%
+)
+
+start "" /D "%INSTALL_DIR%" "%RESTART_EXE%"
+start "" /min cmd /c "timeout /t 3 /nobreak >nul & rmdir /s /q ""%UPDATE_DIR%"""
+exit /b 0
+'''
+    with open(script_path, "w", encoding="utf-8", newline="\r\n") as f:
+        f.write(script)
+    return script_path
 
 
 def _version_parts(version: str) -> tuple[int, ...]:
@@ -83,6 +177,58 @@ def check_for_update(current_version: str = APP_VERSION) -> dict:
         "asset_size": int(asset.get("size") or 0) if asset else 0,
         "asset_digest": asset.get("digest") or "",
     }
+
+
+def download_and_prepare_update(info: dict, progress_callback=None) -> dict:
+    asset_url = info.get("asset_url")
+    asset_name = info.get("asset_name") or "ArrowForge-update"
+    if not asset_url:
+        raise UpdateError("This release does not have a downloadable zip or exe asset.")
+
+    install_dir = app_root()
+    exe_name = os.path.basename(sys.executable) if getattr(sys, "frozen", False) else "ASBR-Tools.exe"
+    restart_exe = os.path.join(install_dir, exe_name)
+    update_dir = tempfile.mkdtemp(prefix=".arrowforge-update-", dir=install_dir)
+    download_path = os.path.join(update_dir, asset_name)
+
+    try:
+        _download_file(asset_url, download_path, progress_callback=progress_callback)
+
+        ext = os.path.splitext(asset_name)[1].lower()
+        if ext == ".zip":
+            extract_dir = os.path.join(update_dir, "extracted")
+            os.makedirs(extract_dir, exist_ok=True)
+            _safe_extract_zip(download_path, extract_dir)
+            source_dir = _find_update_source(extract_dir, exe_name)
+        elif ext == ".exe":
+            source_dir = os.path.join(update_dir, "extracted")
+            os.makedirs(source_dir, exist_ok=True)
+            shutil.copy2(download_path, os.path.join(source_dir, exe_name))
+        else:
+            raise UpdateError(f"Unsupported update asset type: {asset_name}")
+
+        script_path = _write_apply_script(update_dir, source_dir, install_dir, restart_exe)
+        return {
+            "update_dir": update_dir,
+            "download_path": download_path,
+            "source_dir": source_dir,
+            "script_path": script_path,
+            "restart_exe": restart_exe,
+        }
+    except Exception:
+        shutil.rmtree(update_dir, ignore_errors=True)
+        raise
+
+
+def launch_prepared_update(script_path: str) -> None:
+    if not script_path or not os.path.isfile(script_path):
+        raise UpdateError("The update script was not created.")
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    subprocess.Popen(
+        ["cmd.exe", "/c", "start", "", "/min", script_path],
+        cwd=os.path.dirname(script_path),
+        creationflags=creationflags,
+    )
 
 
 def should_check_today(last_check: str | None) -> bool:
