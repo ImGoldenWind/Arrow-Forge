@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
     QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea, QRadioButton,
     QButtonGroup, QCheckBox, QLineEdit, QSizePolicy, QFileDialog,
-    QMessageBox,
+    QMessageBox, QProgressDialog,
 )
 from PyQt6.QtGui import QFont, QPixmap, QIcon, QCursor, QDesktopServices
 from PyQt6.QtCore import Qt, QTimer, QSize, QPoint, QUrl, QThread, pyqtSignal
@@ -300,6 +300,26 @@ class _UpdateCheckWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class _UpdateDownloadWorker(QThread):
+    progress = pyqtSignal(int, int)
+    finished = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, info, parent=None):
+        super().__init__(parent)
+        self._info = info
+
+    def run(self):
+        try:
+            result = updater.download_and_prepare_update(
+                self._info,
+                progress_callback=lambda done, total: self.progress.emit(done, total),
+            )
+            self.finished.emit(result)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 # Main App
 class App(QMainWindow):
     _PORTRAIT_SIZE = 150
@@ -353,6 +373,8 @@ class App(QMainWindow):
         self._tool_search_entry = None
         self._search_frame = None
         self._update_check_worker = None
+        self._update_download_worker = None
+        self._update_progress_dialog = None
         self._update_status_label = None
 
         self._central = QWidget()
@@ -649,6 +671,65 @@ class App(QMainWindow):
         self._update_check_worker = worker
         worker.start()
 
+    def _download_and_install_update(self, info):
+        if self._update_download_worker and self._update_download_worker.isRunning():
+            return
+
+        self._set_update_status(self.t("updates_downloading"))
+
+        progress = QProgressDialog(self.t("updates_download_progress", asset=info.get("asset_name", "")), "", 0, 100, self)
+        progress.setWindowTitle(self.t("updates_title"))
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setValue(0)
+        self._update_progress_dialog = progress
+
+        worker = _UpdateDownloadWorker(info, self)
+        worker.progress.connect(self._on_update_download_progress)
+        worker.finished.connect(self._on_update_download_finished)
+        worker.failed.connect(self._on_update_download_failed)
+        worker.finished.connect(lambda _result, w=worker: w.deleteLater())
+        worker.failed.connect(lambda _error, w=worker: w.deleteLater())
+        self._update_download_worker = worker
+        worker.start()
+
+    def _on_update_download_progress(self, done, total):
+        progress = self._update_progress_dialog
+        if progress is None:
+            return
+        if total > 0:
+            progress.setRange(0, 100)
+            progress.setValue(min(100, int(done * 100 / total)))
+        else:
+            progress.setRange(0, 0)
+
+    def _close_update_progress(self):
+        if self._update_progress_dialog is not None:
+            self._update_progress_dialog.close()
+            self._update_progress_dialog.deleteLater()
+            self._update_progress_dialog = None
+
+    def _on_update_download_finished(self, result):
+        self._update_download_worker = None
+        self._close_update_progress()
+        self._set_update_status(self.t("updates_installing"))
+        QMessageBox.information(self, self.t("updates_title"), self.t("updates_restart_message"))
+        try:
+            updater.launch_prepared_update(result.get("script_path", ""))
+        except Exception as exc:
+            QMessageBox.warning(self, self.t("updates_title"), self.t("updates_failed_details", error=str(exc)))
+            return
+        QApplication.quit()
+
+    def _on_update_download_failed(self, error):
+        self._update_download_worker = None
+        self._close_update_progress()
+        self._set_update_status(self.t("updates_failed"))
+        QMessageBox.warning(self, self.t("updates_title"), self.t("updates_failed_details", error=error))
+
     def _on_update_check_finished(self, info, manual):
         self._update_check_worker = None
         self._settings["last_update_check"] = updater.today_string()
@@ -665,8 +746,7 @@ class App(QMainWindow):
             "updates_available_status",
             version=info.get("latest_version", ""),
         ))
-        if manual:
-            self._prompt_for_update(info)
+        self._prompt_for_update(info)
 
     def _on_update_check_failed(self, error, manual):
         self._update_check_worker = None
@@ -683,16 +763,27 @@ class App(QMainWindow):
             asset=info.get("asset_name", ""),
             size=asset_size,
         )
+        if not info.get("asset_url"):
+            answer = QMessageBox.question(
+                self,
+                self.t("updates_title"),
+                message + "\n\n" + self.t("updates_no_download_asset"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                QDesktopServices.openUrl(QUrl(info.get("release_url", "")))
+            return
 
         answer = QMessageBox.question(
             self,
             self.t("updates_title"),
-            message + "\n\n" + self.t("updates_open_release_question"),
+            message + "\n\n" + self.t("updates_download_install_question"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )
         if answer == QMessageBox.StandardButton.Yes:
-            QDesktopServices.openUrl(QUrl(info.get("release_url", "")))
+            self._download_and_install_update(info)
 
     # Header
     def _build_header(self):

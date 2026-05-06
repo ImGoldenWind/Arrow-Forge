@@ -47,8 +47,8 @@ python -m PyInstaller --clean ASBR-Tools.spec
 ```
 
 The packaged app will be placed under `dist/ASBR-Tools/`. Zip that folder for
-GitHub Releases. The app checks for new releases and opens the release page for
-manual download.
+GitHub Releases. The app checks for new releases, downloads the release asset,
+and applies the update from the app folder.
 
 ## Credits
 
