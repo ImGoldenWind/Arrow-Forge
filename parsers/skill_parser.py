@@ -201,6 +201,9 @@ _ATTACK_MAP = {
     0x10:'low',  0x13:'low',  0x16:'low',
 }
 
+ANM_SPEED_FUNC_NAMES = {'ME_ANM_SPEED_SET', 'ME_ENEMY_ANM_SPEED_SET'}
+ANM_SPEED_MULTIPLIER_OFFSET = 0x4C
+
 
 def _decode_func(raw, off):
     """Decode function name from bytes at subentry offset +0x34/+0x35."""
@@ -229,6 +232,12 @@ def _cstr(b, off, size):
 def _wstr(buf, off, s, size):
     enc = s.encode('ascii', errors='replace')[:size]
     buf[off:off+size] = enc + b'\x00' * (size - len(enc))
+
+def _wstr_preserve_tail(buf, off, s, size):
+    enc = s.encode('ascii', errors='replace')[:size]
+    buf[off:off+len(enc)] = enc
+    if len(enc) < size:
+        buf[off+len(enc)] = 0
 
 def _wu32le(buf, off, v):
     struct.pack_into('<I', buf, off, int(v))
@@ -481,6 +490,10 @@ def parse_mot(raw):
             func_name = _decode_func(raw, sub_off)
             dmg       = raw[sub_off+0x6C] if sub_off+0x6C < len(raw) else 0
             grd       = raw[sub_off+0x7C] if sub_off+0x7C < len(raw) else 0
+            speed_multiplier = 1.0
+            if func_name in ANM_SPEED_FUNC_NAMES and sub_off+ANM_SPEED_MULTIPLIER_OFFSET+4 <= len(raw):
+                sr = _f32le(raw, sub_off+ANM_SPEED_MULTIPLIER_OFFSET)
+                speed_multiplier = 1.0 if not math.isfinite(sr) else sr
 
             # Frame label: Int16 LE at +0x30
             frame_w = struct.unpack_from('<H', raw, sub_off+0x30)[0] if sub_off+0x32 <= len(raw) else 0
@@ -546,6 +559,7 @@ def parse_mot(raw):
                 'dmg_label': dmg_label,
                 'attack':    attack,
                 'push':      push,
+                'speed_multiplier': speed_multiplier,
             })
 
         entries.append({
@@ -592,8 +606,16 @@ def write_mot_subentry(raw_buf, sub):
     off = sub.get('sub_off')
     if off is None:
         return
-    _wstr(raw_buf, off+0x08, sub['bone'], 32)
+    dmg_label = sub.get('dmg_label', '')
+    if dmg_label:
+        # DAMAGE_ID-style records store flags and the DAMAGE_ID string inside
+        # the range that other records use as a 32-byte bone name.
+        _wstr_preserve_tail(raw_buf, off+0x18, dmg_label, 32)
+    else:
+        _wstr(raw_buf, off+0x08, sub['bone'], 32)
     _wu32le(raw_buf, off+0x34, sub['dtype'])
+    if sub.get('func_name') in ANM_SPEED_FUNC_NAMES and off+ANM_SPEED_MULTIPLIER_OFFSET+4 <= len(raw_buf):
+        _wf32le(raw_buf, off+ANM_SPEED_MULTIPLIER_OFFSET, sub.get('speed_multiplier', 1.0))
     _wu8(raw_buf, off+0x6C, sub['dmg'])
     _wu8(raw_buf, off+0x7C, sub['grd'])
     # frame: Int16 LE at +0x30
@@ -601,7 +623,7 @@ def write_mot_subentry(raw_buf, sub):
     struct.pack_into('<H', raw_buf, off+0x30, int(fw) & 0xFFFF)
     # X/Y/push: DAMAGE_ID only; anchor = off+0x18
     # X at anchor+0x48 = off+0x60, Y at anchor+0x4C = off+0x64, push at anchor+0x50 = off+0x68
-    if sub.get('dmg_label', '').startswith('DAMAGE_ID'):
+    if dmg_label.startswith('DAMAGE_ID'):
         if off+0x68 <= len(raw_buf):
             _wf32le(raw_buf, off+0x60, sub.get('x', 0.0))
             _wf32le(raw_buf, off+0x64, sub.get('y', 0.0))
@@ -642,6 +664,7 @@ def make_default_mot_subentry(index=0):
         'dmg_label': '',
         'attack': '',
         'push': 0,
+        'speed_multiplier': 1.0,
     }
 
 

@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('resources', 'resources'), ('ArrowForgeIcon.ico', '.')]
+datas = [('resources', 'resources'), ('tools', 'tools'), ('ArrowForgeIcon.ico', '.')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('qtawesome')
