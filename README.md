@@ -24,11 +24,6 @@
 </p>
 
 <p align="center">
-  <img alt="Git clone counter" src="https://img.shields.io/badge/git%20clones-GitHub%20Traffic%20API-lightgrey?style=for-the-badge">
-  <img alt="Source code downloads counter" src="https://img.shields.io/badge/source%20downloads-not%20public%20by%20GitHub-lightgrey?style=for-the-badge">
-</p>
-
-<p align="center">
   <a href="#download">Download</a>
   |
   <a href="#source">Source</a>
@@ -76,17 +71,6 @@ Download the current source archive:
 
 - [Source code ZIP](https://github.com/ImGoldenWind/Arrow-Forge/archive/refs/heads/main.zip)
 - [Source code TAR.GZ](https://github.com/ImGoldenWind/Arrow-Forge/archive/refs/heads/main.tar.gz)
-
-## Counters
-
-The release download counter above is the real public total reported by GitHub
-for release assets.
-
-GitHub does not publish public all-time counters for repository clones or for
-the generated `Source code (zip)` / `Source code (tar.gz)` archives. Those
-badges are marked accordingly so the README does not show fake numbers. To
-publish real clone statistics, the repository needs a token-backed GitHub
-Action that reads the Traffic API and writes a public badge endpoint.
 
 ## Features
 
