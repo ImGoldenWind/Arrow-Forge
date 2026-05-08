@@ -111,7 +111,7 @@ THEMES = {
 }
 
 # Active palette — mutable, updated on theme switch
-DEFAULT_THEME = "Star Platinum"
+DEFAULT_THEME = "Wonder of U"
 
 THEME_ALIASES = {
     "soft_wet": "Soft & Wet",
