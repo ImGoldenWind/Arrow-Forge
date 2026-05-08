@@ -148,8 +148,7 @@ game reject a file.
   built-in editor.
 - [TheLeonX](https://github.com/TheLeonX) - XFBIN_Lib, toolbox idea, the
   talking character at the bottom, and inspiration.
-- [JoJo Modding Community](https://discord.gg/bfWPHBwbr9) - inspiration and
-  shared ASBR modding knowledge.
+- [JoJo Modding Community](https://discord.gg/bfWPHBwbr9) - for the inspiration
 
 ## Donations
 
