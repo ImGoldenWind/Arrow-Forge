@@ -8,9 +8,9 @@ from core.runtime_paths import app_path
 
 DEFAULT_SETTINGS = {
     "language": "en",
-    "theme": "Star Platinum",
+    "theme": "Wonder of U",
     "game_files_dir": "",
-    "backup_on_open": True,
+    "backup_on_open": False,
     "check_updates_on_startup": True,
     "last_update_check": "",
     "recent_tools": [],
