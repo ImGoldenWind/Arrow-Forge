@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -17,6 +18,10 @@ APP_VERSION = "1.1.1"
 GITHUB_REPO = "ImGoldenWind/Arrow-Forge"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 USER_AGENT = f"ArrowForge-Updater/{APP_VERSION}"
+DOWNLOAD_CHUNK_SIZE = 1024 * 1024 * 4
+PROGRESS_MIN_BYTES = 1024 * 1024
+PROGRESS_MIN_INTERVAL = 0.1
+DOWNLOAD_STALL_SECONDS = 60
 
 
 class UpdateError(Exception):
@@ -39,37 +44,165 @@ def _request_json(url: str, timeout: int = 15) -> dict:
         raise UpdateError(str(exc)) from exc
 
 
-def _download_file(url: str, dest_path: str, progress_callback=None, timeout: int = 30) -> int:
+def _emit_progress(progress_callback, done: int, total: int) -> tuple[int, float]:
+    now = time.monotonic()
+    if progress_callback:
+        progress_callback(done, total)
+    return done, now
+
+
+def _download_file_with_curl(url: str, dest_path: str, progress_callback=None, total_hint: int = 0) -> int | None:
+    curl = shutil.which("curl.exe") or shutil.which("curl")
+    if not curl:
+        return None
+
+    cmd = [
+        curl,
+        "--location",
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--retry", "3",
+        "--retry-delay", "1",
+        "--connect-timeout", "15",
+        "--speed-limit", "1024",
+        "--speed-time", str(DOWNLOAD_STALL_SECONDS),
+        "--user-agent", USER_AGENT,
+        "--header", "Accept: application/octet-stream",
+        "--output", dest_path,
+        url,
+    ]
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except OSError:
+        return None
+
+    total = int(total_hint or 0)
+    last_progress = 0
+    last_progress_time = 0.0
+    _emit_progress(progress_callback, 0, total)
+
+    while process.poll() is None:
+        done = os.path.getsize(dest_path) if os.path.exists(dest_path) else 0
+        now = time.monotonic()
+        if (
+            progress_callback
+            and (
+                done - last_progress >= PROGRESS_MIN_BYTES
+                or now - last_progress_time >= PROGRESS_MIN_INTERVAL
+            )
+        ):
+            last_progress, last_progress_time = _emit_progress(progress_callback, done, total)
+        time.sleep(0.05)
+
+    _stdout, stderr = process.communicate()
+    if process.returncode != 0:
+        try:
+            os.remove(dest_path)
+        except OSError:
+            pass
+        message = (stderr or "").strip()
+        raise UpdateError(message or f"curl failed with exit code {process.returncode}.")
+
+    downloaded = os.path.getsize(dest_path)
+    _emit_progress(progress_callback, downloaded, total or downloaded)
+    return downloaded
+
+
+def _download_file(url: str, dest_path: str, progress_callback=None, timeout: int = 30, total_hint: int = 0) -> int:
+    try:
+        curl_downloaded = _download_file_with_curl(
+            url, dest_path, progress_callback=progress_callback, total_hint=total_hint
+        )
+        if curl_downloaded is not None:
+            return curl_downloaded
+    except UpdateError:
+        if os.path.exists(dest_path):
+            try:
+                os.remove(dest_path)
+            except OSError:
+                pass
+
     req = urllib.request.Request(url, headers={
         "Accept": "application/octet-stream",
         "User-Agent": USER_AGENT,
     })
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
-            total = int(response.headers.get("Content-Length") or 0)
+            total = int(response.headers.get("Content-Length") or total_hint or 0)
             downloaded = 0
+            last_progress = 0
+            last_progress_time = 0.0
+            _emit_progress(progress_callback, 0, total)
             with open(dest_path, "wb") as out:
                 while True:
-                    chunk = response.read(1024 * 128)
+                    chunk = response.read(DOWNLOAD_CHUNK_SIZE)
                     if not chunk:
                         break
                     out.write(chunk)
                     downloaded += len(chunk)
-                    if progress_callback:
-                        progress_callback(downloaded, total)
+                    now = time.monotonic()
+                    if (
+                        progress_callback
+                        and (
+                            downloaded == total
+                            or downloaded - last_progress >= PROGRESS_MIN_BYTES
+                            or now - last_progress_time >= PROGRESS_MIN_INTERVAL
+                        )
+                    ):
+                        last_progress, last_progress_time = _emit_progress(
+                            progress_callback, downloaded, total
+                        )
+            _emit_progress(progress_callback, downloaded, total)
             return downloaded
     except (OSError, urllib.error.URLError) as exc:
         raise UpdateError(str(exc)) from exc
 
 
-def _safe_extract_zip(zip_path: str, dest_dir: str) -> None:
+def _validate_zip_members(zip_path: str, dest_dir: str) -> None:
     dest_real = os.path.realpath(dest_dir)
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
             for member in zf.infolist():
+                if member.filename.startswith(("/", "\\")) or re.match(r"^[a-zA-Z]:", member.filename):
+                    raise UpdateError(f"Unsafe path in update archive: {member.filename}")
                 target = os.path.realpath(os.path.join(dest_dir, member.filename))
                 if target != dest_real and not target.startswith(dest_real + os.sep):
                     raise UpdateError(f"Unsafe path in update archive: {member.filename}")
+    except zipfile.BadZipFile as exc:
+        raise UpdateError("The downloaded update archive is not a valid zip file.") from exc
+
+
+def _extract_zip_with_tar(zip_path: str, dest_dir: str) -> bool:
+    tar = shutil.which("tar")
+    if not tar:
+        return False
+    try:
+        completed = subprocess.run(
+            [tar, "-xf", zip_path, "-C", dest_dir],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except OSError:
+        return False
+    return completed.returncode == 0
+
+
+def _safe_extract_zip(zip_path: str, dest_dir: str) -> None:
+    _validate_zip_members(zip_path, dest_dir)
+    os.makedirs(dest_dir, exist_ok=True)
+    if _extract_zip_with_tar(zip_path, dest_dir):
+        return
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(dest_dir)
     except zipfile.BadZipFile as exc:
         raise UpdateError("The downloaded update archive is not a valid zip file.") from exc
@@ -109,7 +242,7 @@ set "RESTART_EXE={_bat_path(restart_exe)}"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "try {{ Wait-Process -Id {pid} -Timeout 60 }} catch {{ }}" >nul 2>nul
 timeout /t 1 /nobreak >nul
 
-robocopy "%SOURCE_DIR%" "%INSTALL_DIR%" /E /COPY:DAT /R:30 /W:1 /XF asbr_settings.json >nul
+robocopy "%SOURCE_DIR%" "%INSTALL_DIR%" /E /COPY:DAT /DCOPY:DAT /MT:16 /R:3 /W:1 /NFL /NDL /NJH /NJS /NP /XF asbr_settings.json >nul
 set "ROBOCOPY_EXIT=%ERRORLEVEL%"
 if %ROBOCOPY_EXIT% GEQ 8 (
     start "" "https://github.com/{GITHUB_REPO}/releases/latest"
@@ -188,11 +321,16 @@ def download_and_prepare_update(info: dict, progress_callback=None) -> dict:
     install_dir = app_root()
     exe_name = os.path.basename(sys.executable) if getattr(sys, "frozen", False) else "ASBR-Tools.exe"
     restart_exe = os.path.join(install_dir, exe_name)
-    update_dir = tempfile.mkdtemp(prefix=".arrowforge-update-", dir=install_dir)
+    update_dir = tempfile.mkdtemp(prefix="arrowforge-update-")
     download_path = os.path.join(update_dir, asset_name)
 
     try:
-        _download_file(asset_url, download_path, progress_callback=progress_callback)
+        _download_file(
+            asset_url,
+            download_path,
+            progress_callback=progress_callback,
+            total_hint=int(info.get("asset_size") or 0),
+        )
 
         ext = os.path.splitext(asset_name)[1].lower()
         if ext == ".zip":
@@ -254,5 +392,3 @@ def human_size(size: int) -> str:
     if unit == "B":
         return f"{int(value)} {unit}"
     return f"{value:.1f} {unit}"
-
-
