@@ -1,6 +1,8 @@
 import inspect
 import os
+import weakref
 
+from PyQt6 import sip
 from PyQt6.QtCore import QObject, QEvent, QTimer
 from PyQt6.QtWidgets import QFileDialog, QWidget
 
@@ -14,7 +16,7 @@ def install_file_drop(widget: QWidget):
     handler = _FileDropHandler(widget, loader)
     handler.install(widget)
     widget._file_drop_handler = handler
-    QTimer.singleShot(0, lambda: handler.install_children(widget))
+    handler.install_children_later(widget)
     return handler
 
 
@@ -25,26 +27,50 @@ class _FileDropHandler(QObject):
         self._installed = set()
 
     def install(self, widget):
-        if not isinstance(widget, QWidget):
+        if not self._is_live_widget(widget):
             return
         key = id(widget)
         if key in self._installed:
             return
         self._installed.add(key)
-        widget.setAcceptDrops(True)
-        widget.installEventFilter(self)
+        try:
+            widget.setAcceptDrops(True)
+            widget.installEventFilter(self)
+        except RuntimeError:
+            self._installed.discard(key)
 
     def install_children(self, root):
+        if not self._is_live_widget(root):
+            return
         self.install(root)
-        for child in root.findChildren(QWidget):
+        try:
+            children = root.findChildren(QWidget)
+        except RuntimeError:
+            return
+        for child in children:
             self.install(child)
+
+    def install_children_later(self, root):
+        root_ref = weakref.ref(root)
+        QTimer.singleShot(0, lambda root_ref=root_ref: self.install_children_ref(root_ref))
+
+    def install_children_ref(self, root_ref):
+        if sip.isdeleted(self):
+            return
+        root = root_ref()
+        if root is not None:
+            self.install_children(root)
+
+    @staticmethod
+    def _is_live_widget(widget):
+        return isinstance(widget, QWidget) and not sip.isdeleted(widget)
 
     def eventFilter(self, obj, event):
         event_type = event.type()
         if event_type == QEvent.Type.ChildAdded:
             child = event.child()
-            if isinstance(child, QWidget):
-                QTimer.singleShot(0, lambda child=child: self.install_children(child))
+            if self._is_live_widget(child):
+                self.install_children_later(child)
             return False
 
         if event_type in (QEvent.Type.DragEnter, QEvent.Type.DragMove):

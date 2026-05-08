@@ -375,6 +375,7 @@ class SoundEditor(QWidget):
         self._filepath = None
         self._fields = {}
         self._dirty = False
+        self._decode_busy = False
 
         # Audio playback state
         self._wav_cache = {}       # idx -> wav bytes
@@ -636,6 +637,15 @@ class SoundEditor(QWidget):
             self._busy_bar.setValue(max(0, min(done, total)))
         else:
             self._busy_bar.setRange(0, 0)
+
+    def _show_decode_busy(self, detail: str = ""):
+        self._decode_busy = True
+        self._set_busy(True, self.t("sound_status_decoding"), detail, 0, 0)
+
+    def _hide_decode_busy(self):
+        if self._decode_busy:
+            self._decode_busy = False
+            self._set_busy(False)
 
     def _on_export_success(self, msg: str):
         self._set_busy(False)
@@ -1133,6 +1143,9 @@ class SoundEditor(QWidget):
             self._play_status.setText(self.t("sound_status_decoding"))
         if hasattr(self, '_play_btn'):
             self._play_btn.setEnabled(False)
+        if idx not in self._wav_cache:
+            entry_label = get_entry_label(entry['id'])
+            self._show_decode_busy(entry_label)
 
         def worker():
             try:
@@ -1150,11 +1163,13 @@ class SoundEditor(QWidget):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_decode_done(self, wav_data, idx):
+        self._hide_decode_busy()
         if hasattr(self, '_waveform_widget'):
             self._draw_waveform(wav_data)
         self._start_playback(wav_data, idx)
 
     def _on_decode_error(self, msg):
+        self._hide_decode_busy()
         if hasattr(self, '_play_status'):
             self._play_status.setText(self.t("sound_status_error"))
         if hasattr(self, '_play_btn'):
@@ -1437,6 +1452,7 @@ class SoundEditor(QWidget):
         if not path:
             return
         path = _ensure_file_ext(path, '.wav')
+        self._set_busy(True, self.t("sound_status_decoding"), os.path.basename(path), 0, 0)
 
         def worker():
             try:
@@ -1463,6 +1479,7 @@ class SoundEditor(QWidget):
         if not path:
             return
         path = _ensure_file_ext(path, '.wav')
+        self._set_busy(True, self.t("sound_status_decoding"), os.path.basename(path), 0, 0)
 
         def worker():
             try:

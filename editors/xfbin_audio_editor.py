@@ -679,6 +679,7 @@ class XfbinAudioEditor(QWidget):
         self._wav_cache = {}
         self._dirty = False
         self._decode_and_play = False
+        self._decode_busy = False
         self._playing = False
         self._stop_flag = threading.Event()
         self._pause_flag = threading.Event()
@@ -700,7 +701,7 @@ class XfbinAudioEditor(QWidget):
         self._sig_convert_done.connect(self._on_convert_done)
         self._sig_convert_err.connect(self._on_convert_err)
         self._sig_save_done.connect(self._on_save_done)
-        self._sig_save_err.connect(lambda msg: QMessageBox.critical(self, ui_text("dlg_title_error"), msg))
+        self._sig_save_err.connect(self._on_save_err)
         self._sig_batch_done.connect(self._on_batch_done)
         self._sig_batch_err.connect(self._on_batch_err)
         self._sig_batch_prog.connect(self._on_batch_prog)
@@ -895,6 +896,15 @@ class XfbinAudioEditor(QWidget):
             self._busy_bar.setValue(max(0, min(done, total)))
         else:
             self._busy_bar.setRange(0, 0)
+
+    def _show_decode_busy(self, detail: str = ""):
+        self._decode_busy = True
+        self._set_busy(True, ui_text("ui_xfbin_audio_decoding"), detail, 0, 0)
+
+    def _hide_decode_busy(self):
+        if self._decode_busy:
+            self._decode_busy = False
+            self._set_busy(False)
 
     def _show_placeholder(self, text: str | None = None):
         _clear_layout(self._editor_layout)
@@ -1264,6 +1274,7 @@ class XfbinAudioEditor(QWidget):
     # Decode / waveform
 
     def _on_decode_done(self, wav_bytes: bytes):
+        self._hide_decode_busy()
         # Restore play button
         if hasattr(self, '_play_btn'):
             self._play_btn.setEnabled(True)
@@ -1291,6 +1302,7 @@ class XfbinAudioEditor(QWidget):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_decode_err(self, msg):
+        self._hide_decode_busy()
         self._decode_and_play = False
         if hasattr(self, '_play_btn'):
             self._play_btn.setEnabled(True)
@@ -1349,6 +1361,7 @@ class XfbinAudioEditor(QWidget):
             if hasattr(self, '_pause_btn'):
                 self._pause_btn.setEnabled(False)
                 self._pause_btn.setText(ui_text("ui_sound_pause"))
+            self._show_decode_busy(tone.name or f"tone_{self._cur_tone}")
             def _decode_worker(bnsf=bnsf, cli=cli, key=key):
                 try:
                     decoded = _decode_bnsf_to_wav(bnsf, cli)
@@ -1559,6 +1572,7 @@ class XfbinAudioEditor(QWidget):
             return
 
         cli = _detect_audio_tool()['decode']
+        self._set_busy(True, ui_text("ui_xfbin_audio_decoding"), os.path.basename(path), 0, 0)
 
         def worker():
             try:
@@ -1873,6 +1887,7 @@ class XfbinAudioEditor(QWidget):
                 self._info_lbl.setText(ui_text("ui_xfbin_audio_value_value_2", p0=n, p1=_fmt_size(total)))
 
     def _on_save_done(self, path: str):
+        self._set_busy(False)
         if self._filepath and os.path.abspath(path) == os.path.abspath(self._filepath):
             self._dirty = False
             set_file_label(self._file_lbl, self._filepath)
@@ -1881,6 +1896,10 @@ class XfbinAudioEditor(QWidget):
             ui_text("ui_xfbin_audio_ok"),
             ui_text("ui_xfbin_audio_saved_value", p0=os.path.basename(path)),
         )
+
+    def _on_save_err(self, msg: str):
+        self._set_busy(False)
+        QMessageBox.critical(self, ui_text("dlg_title_error"), msg)
 
     def _mark_dirty(self):
         if self._dirty:
