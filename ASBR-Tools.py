@@ -1,12 +1,13 @@
 import sys
 import os
 import re
+import inspect
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
     QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea, QRadioButton,
     QButtonGroup, QCheckBox, QLineEdit, QSizePolicy, QFileDialog,
-    QMessageBox, QProgressDialog,
+    QMessageBox, QProgressDialog, QDialog, QTextEdit,
 )
 from PyQt6.QtGui import QFont, QPixmap, QIcon, QCursor, QDesktopServices
 from PyQt6.QtCore import Qt, QTimer, QSize, QPoint, QUrl, QThread, pyqtSignal
@@ -25,6 +26,7 @@ from core.file_drop import install_file_drop
 from core.style_helpers import (
     ss_home_grid_scrollarea, ss_main_label, ss_tool_card,
     ss_tool_favorite_btn, ss_tool_file_hint_label, ss_search,
+    ss_btn, ss_dialog, ss_textedit,
 )
 from editors.char_stats_editor import CharacterStatsEditor
 from editors.characode_editor import CharacodeEditor
@@ -376,6 +378,7 @@ class App(QMainWindow):
         self._update_download_worker = None
         self._update_progress_dialog = None
         self._update_status_label = None
+        self._embedded_editor = None
 
         self._central = QWidget()
         self.setCentralWidget(self._central)
@@ -754,6 +757,82 @@ class App(QMainWindow):
         if manual:
             QMessageBox.warning(self, self.t("updates_title"), self.t("updates_failed_details", error=error))
 
+    def _show_update_changelog_dialog(self, info, message):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self.t("updates_changelog_window_title", version=info.get("latest_version", "")))
+        dialog.setModal(True)
+        dialog.resize(680, 520)
+        dialog.setStyleSheet(ss_dialog())
+
+        result = {"action": "cancel"}
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(12)
+
+        title = QLabel(self.t("updates_changelog_title", version=info.get("latest_version", "")))
+        title.setFont(QFont("Segoe UI", 17, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+        layout.addWidget(title)
+
+        summary = QLabel(message)
+        summary.setFont(QFont("Segoe UI", 10))
+        summary.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        summary.setWordWrap(True)
+        layout.addWidget(summary)
+
+        if not info.get("asset_url"):
+            no_asset = QLabel(self.t("updates_no_download_asset_dialog"))
+            no_asset.setFont(QFont("Segoe UI", 10))
+            no_asset.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+            no_asset.setWordWrap(True)
+            layout.addWidget(no_asset)
+
+        changelog_label = QLabel(self.t("updates_changelog_label"))
+        changelog_label.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        changelog_label.setStyleSheet(f"color: {P['secondary']}; background: transparent;")
+        layout.addWidget(changelog_label)
+
+        body = str(info.get("body") or "").strip() or self.t("updates_changelog_empty")
+        changelog = QTextEdit()
+        changelog.setReadOnly(True)
+        changelog.setMinimumHeight(260)
+        changelog.setStyleSheet(ss_textedit())
+        try:
+            changelog.setMarkdown(body)
+        except Exception:
+            changelog.setPlainText(body)
+        layout.addWidget(changelog, 1)
+
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 2, 0, 0)
+        button_row.setSpacing(8)
+        button_row.addStretch()
+
+        def add_dialog_button(text, action, accent=False):
+            btn = QPushButton(text)
+            btn.setFixedHeight(32)
+            btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold if accent else QFont.Weight.Normal))
+            btn.setStyleSheet(ss_btn(accent=accent))
+            btn.clicked.connect(lambda _checked=False, a=action: (result.update(action=a), dialog.accept()))
+            button_row.addWidget(btn)
+            return btn
+
+        if info.get("release_url"):
+            add_dialog_button(self.t("updates_open_release"), "release", accent=not info.get("asset_url"))
+        if info.get("asset_url"):
+            add_dialog_button(self.t("updates_install_now"), "download", accent=True)
+        cancel_btn = QPushButton(self.t("unsaved_changes_cancel"))
+        cancel_btn.setFixedHeight(32)
+        cancel_btn.setFont(QFont("Segoe UI", 10))
+        cancel_btn.setStyleSheet(ss_btn())
+        cancel_btn.clicked.connect(dialog.reject)
+        button_row.addWidget(cancel_btn)
+
+        layout.addLayout(button_row)
+        dialog.exec()
+        return result["action"] if dialog.result() == QDialog.DialogCode.Accepted else "cancel"
+
     def _prompt_for_update(self, info):
         asset_size = updater.human_size(info.get("asset_size", 0))
         message = self.t(
@@ -763,27 +842,14 @@ class App(QMainWindow):
             asset=info.get("asset_name", ""),
             size=asset_size,
         )
-        if not info.get("asset_url"):
-            answer = QMessageBox.question(
-                self,
-                self.t("updates_title"),
-                message + "\n\n" + self.t("updates_no_download_asset"),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes,
-            )
-            if answer == QMessageBox.StandardButton.Yes:
-                QDesktopServices.openUrl(QUrl(info.get("release_url", "")))
-            return
-
-        answer = QMessageBox.question(
-            self,
-            self.t("updates_title"),
-            message + "\n\n" + self.t("updates_download_install_question"),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if answer == QMessageBox.StandardButton.Yes:
+        action = self._show_update_changelog_dialog(info, message)
+        if action == "download":
+            if not self._confirm_close_embedded_editor():
+                return
+            self._delete_tool_frame()
             self._download_and_install_update(info)
+        elif action == "release":
+            QDesktopServices.openUrl(QUrl(info.get("release_url", "")))
 
     # Header
     def _build_header(self):
@@ -979,6 +1045,9 @@ class App(QMainWindow):
         return frame
 
     def _select_category(self, cat_key):
+        if not self._confirm_close_embedded_editor():
+            return
+        self._delete_tool_frame()
         self._current_cat = cat_key
         if self._tool_search_query and self._tool_search_entry:
             self._tool_search_entry.clear()
@@ -990,15 +1059,21 @@ class App(QMainWindow):
         if self._loading:
             return
         if self._tool_search_query:
-            self._close_inline_panels_for_search()
+            if not self._close_inline_panels_for_search():
+                self._tool_search_query = ""
+                if self._tool_search_entry:
+                    self._tool_search_entry.blockSignals(True)
+                    self._tool_search_entry.clear()
+                    self._tool_search_entry.blockSignals(False)
+                return
             self._show_tool_search_results()
         else:
             self._show_category(self._current_cat)
 
     def _close_inline_panels_for_search(self):
-        if self._tool_frame:
-            self._tool_frame.deleteLater()
-            self._tool_frame = None
+        if not self._confirm_close_embedded_editor():
+            return False
+        self._delete_tool_frame()
         if self._settings_win:
             self._settings_win.deleteLater()
             self._settings_win = None
@@ -1007,6 +1082,7 @@ class App(QMainWindow):
             self._cpk_editor_win = None
         if self._settings.get("show_guide", True):
             self._show_char_panel()
+        return True
 
     def _normalize_search_text(self, text):
         text = str(text or "")
@@ -1317,13 +1393,102 @@ class App(QMainWindow):
             self._view_stack_layout.addWidget(frame, 1)
             frame.show()
 
+    def _embedded_editor_is_dirty(self):
+        editor = self._embedded_editor
+        if editor is None:
+            return False
+        for attr in ("_dirty", "_unsaved", "_structural_dirty"):
+            if bool(getattr(editor, attr, False)):
+                return True
+        return False
+
+    def _embedded_editor_save_method(self):
+        editor = self._embedded_editor
+        if editor is None:
+            return None
+        for name in ("_save_file", "_on_save", "_do_save", "_save_xfbin", "save_file"):
+            method = getattr(editor, name, None)
+            if not callable(method):
+                continue
+            try:
+                signature = inspect.signature(method)
+            except (TypeError, ValueError):
+                return method
+            required = [
+                param for param in signature.parameters.values()
+                if param.default is inspect.Parameter.empty
+                and param.kind in (
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
+            ]
+            if not required:
+                return method
+        return None
+
+    def _confirm_close_embedded_editor(self):
+        if not self._embedded_editor_is_dirty():
+            return True
+
+        box = QMessageBox(self)
+        box.setWindowTitle(self.t("unsaved_changes_title"))
+        box.setStyleSheet(ss_dialog())
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(self.t("unsaved_changes_message"))
+        box.setInformativeText(self.t("unsaved_changes_detail"))
+        save_btn = box.addButton(self.t("unsaved_changes_save"), QMessageBox.ButtonRole.AcceptRole)
+        discard_btn = box.addButton(self.t("unsaved_changes_discard"), QMessageBox.ButtonRole.DestructiveRole)
+        cancel_btn = box.addButton(self.t("unsaved_changes_cancel"), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(save_btn)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked == cancel_btn:
+            return False
+        if clicked == discard_btn:
+            return True
+        if clicked == save_btn:
+            save_method = self._embedded_editor_save_method()
+            if save_method is None:
+                QMessageBox.warning(
+                    self,
+                    self.t("unsaved_changes_title"),
+                    self.t("unsaved_changes_no_save_method"),
+                )
+                return False
+            try:
+                save_method()
+            except Exception as exc:
+                QMessageBox.critical(
+                    self,
+                    self.t("dlg_title_error"),
+                    self.t("msg_save_error", error=exc),
+                )
+                return False
+            if self._embedded_editor_is_dirty():
+                QMessageBox.warning(
+                    self,
+                    self.t("unsaved_changes_title"),
+                    self.t("unsaved_changes_save_cancelled_or_failed"),
+                )
+                return False
+            return True
+        return False
+
+    def _delete_tool_frame(self):
+        if self._tool_frame:
+            self._tool_frame.deleteLater()
+            self._tool_frame = None
+        self._embedded_editor = None
+
     # Open tool inline
     def _open_tool_inline(self, name: str, file_hint: str, tool_id: str | None = None):
         if self._loading:
             return
-        if self._tool_frame:
-            self._tool_frame.deleteLater()
-            self._tool_frame = None
+        if not self._confirm_close_embedded_editor():
+            return
+        self._delete_tool_frame()
 
         self._hide_char_panel()
 
@@ -1555,6 +1720,7 @@ class App(QMainWindow):
         self._add_embedded_editor(editor, layout)
 
     def _add_embedded_editor(self, editor, layout):
+        self._embedded_editor = editor
         install_file_drop(editor)
         layout.addWidget(editor, 1)
 
@@ -1566,9 +1732,9 @@ class App(QMainWindow):
         layout.addWidget(lbl, 1)
 
     def _close_tool_inline(self):
-        if self._tool_frame:
-            self._tool_frame.deleteLater()
-            self._tool_frame = None
+        if not self._confirm_close_embedded_editor():
+            return
+        self._delete_tool_frame()
         if self._settings.get("show_guide", True):
             self._show_char_panel()
         if self._tool_search_query:
@@ -1650,13 +1816,13 @@ class App(QMainWindow):
     def _open_cpk_editor(self):
         if self._loading:
             return
+        if not self._confirm_close_embedded_editor():
+            return
 
         if self._settings_win:
             self._settings_win.deleteLater()
             self._settings_win = None
-        if self._tool_frame:
-            self._tool_frame.deleteLater()
-            self._tool_frame = None
+        self._delete_tool_frame()
 
         self._hide_char_panel()
 
@@ -1713,9 +1879,9 @@ class App(QMainWindow):
             self._close_settings_inline()
             return
 
-        if self._tool_frame:
-            self._tool_frame.deleteLater()
-            self._tool_frame = None
+        if not self._confirm_close_embedded_editor():
+            return
+        self._delete_tool_frame()
 
         self._hide_char_panel()
 
@@ -2086,9 +2252,9 @@ class App(QMainWindow):
         if self._settings_win:
             self._close_settings_inline()
 
-        if self._tool_frame:
-            self._tool_frame.deleteLater()
-            self._tool_frame = None
+        if not self._confirm_close_embedded_editor():
+            return
+        self._delete_tool_frame()
 
         self._hide_char_panel()
 
@@ -2277,6 +2443,12 @@ class App(QMainWindow):
         apply_theme(theme_key)
         self._settings_win = None
         self._rebuild_ui()
+
+    def closeEvent(self, event):
+        if not self._confirm_close_embedded_editor():
+            event.ignore()
+            return
+        super().closeEvent(event)
 
 
 if __name__ == "__main__":
