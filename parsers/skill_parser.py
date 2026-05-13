@@ -203,6 +203,19 @@ _ATTACK_MAP = {
 
 ANM_SPEED_FUNC_NAMES = {'ME_ANM_SPEED_SET', 'ME_ENEMY_ANM_SPEED_SET'}
 ANM_SPEED_MULTIPLIER_OFFSET = 0x4C
+FWD_VELOCITY_FUNC_NAMES = {'ME_FWDVELOCITY_SET', 'ME_FWDVELOCITY_SET_INTERP'}
+FWD_VELOCITY_VALUE_OFFSET = 0x38
+FWD_VELOCITY_DURATION_OFFSET = 0x3C
+GION_FUNC_NAMES = {'ME_GION_BEGIN', 'ME_GION_BEGIN_2D', 'ME_PROVOKE_GION', 'ME_BTLWIN_GION'}
+GION_SCALE_OFFSET = 0x4C
+GION_ID_OFFSET = 0x54
+GION_ID_SIZE = 32
+ATKHIT_FUNC_NAMES = {
+    'ME_ATKHIT_ON', 'ME_ATKHIT2_ON', 'ME_ATKHIT3_ON',
+    'ME_ATKHIT4_ON', 'ME_ATKHIT5_ON',
+}
+ATKHIT_PARAM_OFFSETS = (0x38, 0x3C, 0x40, 0x44, 0x48)
+FUNC_FIELD_OFFSET = 0x34
 
 
 def _decode_func(raw, off):
@@ -241,6 +254,9 @@ def _wstr_preserve_tail(buf, off, s, size):
 
 def _wu32le(buf, off, v):
     struct.pack_into('<I', buf, off, int(v))
+
+def _wi32le(buf, off, v):
+    struct.pack_into('<i', buf, off, int(v))
 
 def _wf32le(buf, off, v):
     struct.pack_into('<f', buf, off, float(v))
@@ -485,15 +501,42 @@ def parse_mot(raw):
                 break
 
             bone      = _cstr(raw, sub_off+0x08, 32)
-            dtype     = _u32le(raw, sub_off+0x34) if sub_off+0x38 <= len(raw) else 0
+            dtype     = _u32le(raw, sub_off+FUNC_FIELD_OFFSET) if sub_off+0x38 <= len(raw) else 0
             dname     = DATA_TYPE_MAP.get(dtype, str(dtype))
             func_name = _decode_func(raw, sub_off)
+            func_param_bytes = [0, 0, 0]
+            if sub_off+FUNC_FIELD_OFFSET+4 <= len(raw):
+                func_param_bytes = [
+                    raw[sub_off+FUNC_FIELD_OFFSET+1],
+                    raw[sub_off+FUNC_FIELD_OFFSET+2],
+                    raw[sub_off+FUNC_FIELD_OFFSET+3],
+                ]
             dmg       = raw[sub_off+0x6C] if sub_off+0x6C < len(raw) else 0
             grd       = raw[sub_off+0x7C] if sub_off+0x7C < len(raw) else 0
             speed_multiplier = 1.0
             if func_name in ANM_SPEED_FUNC_NAMES and sub_off+ANM_SPEED_MULTIPLIER_OFFSET+4 <= len(raw):
                 sr = _f32le(raw, sub_off+ANM_SPEED_MULTIPLIER_OFFSET)
                 speed_multiplier = 1.0 if not math.isfinite(sr) else sr
+            fwd_velocity = 0
+            fwd_velocity_duration = 0
+            if func_name in FWD_VELOCITY_FUNC_NAMES:
+                if sub_off+FWD_VELOCITY_VALUE_OFFSET+4 <= len(raw):
+                    fwd_velocity = struct.unpack_from('<i', raw, sub_off+FWD_VELOCITY_VALUE_OFFSET)[0]
+                if sub_off+FWD_VELOCITY_DURATION_OFFSET+4 <= len(raw):
+                    fwd_velocity_duration = struct.unpack_from('<i', raw, sub_off+FWD_VELOCITY_DURATION_OFFSET)[0]
+            gion_scale = 1.0
+            gion_id = ''
+            if func_name in GION_FUNC_NAMES:
+                if sub_off+GION_SCALE_OFFSET+4 <= len(raw):
+                    gr = _f32le(raw, sub_off+GION_SCALE_OFFSET)
+                    gion_scale = 1.0 if not math.isfinite(gr) else gr
+                if sub_off+GION_ID_OFFSET+GION_ID_SIZE <= len(raw):
+                    gion_id = _cstr(raw, sub_off+GION_ID_OFFSET, GION_ID_SIZE)
+            atkhit_params = [0, 0, 0, 0, 0]
+            if func_name in ATKHIT_FUNC_NAMES:
+                for pi, rel in enumerate(ATKHIT_PARAM_OFFSETS):
+                    if sub_off+rel+4 <= len(raw):
+                        atkhit_params[pi] = struct.unpack_from('<i', raw, sub_off+rel)[0]
 
             # Frame label: Int16 LE at +0x30
             frame_w = struct.unpack_from('<H', raw, sub_off+0x30)[0] if sub_off+0x32 <= len(raw) else 0
@@ -546,10 +589,12 @@ def parse_mot(raw):
 
             subs.append({
                 'sub_off':   sub_off,
+                'raw_bytes': bytes(raw[sub_off:sub_off+MOT_SUB_SIZE]),
                 'bone':      bone,
                 'dtype':     dtype,
                 'dname':     dname,
                 'func_name': func_name,
+                'func_param_bytes': func_param_bytes,
                 'frame_w':   frame_w,
                 'frame_str': frame_str,
                 'dmg':       dmg,
@@ -560,6 +605,11 @@ def parse_mot(raw):
                 'attack':    attack,
                 'push':      push,
                 'speed_multiplier': speed_multiplier,
+                'fwd_velocity': fwd_velocity,
+                'fwd_velocity_duration': fwd_velocity_duration,
+                'gion_scale': gion_scale,
+                'gion_id': gion_id,
+                'atkhit_params': atkhit_params,
             })
 
         entries.append({
@@ -613,9 +663,31 @@ def write_mot_subentry(raw_buf, sub):
         _wstr_preserve_tail(raw_buf, off+0x18, dmg_label, 32)
     else:
         _wstr(raw_buf, off+0x08, sub['bone'], 32)
-    _wu32le(raw_buf, off+0x34, sub['dtype'])
+    dtype = int(sub.get('dtype', 0))
+    if 'func_param_bytes' in sub:
+        params = list(sub.get('func_param_bytes', [0, 0, 0]))
+        params.extend([0] * (3 - len(params)))
+        dtype = (dtype & 0xFF) | ((int(params[0]) & 0xFF) << 8) | ((int(params[1]) & 0xFF) << 16) | ((int(params[2]) & 0xFF) << 24)
+        sub['dtype'] = dtype
+    _wu32le(raw_buf, off+FUNC_FIELD_OFFSET, dtype)
     if sub.get('func_name') in ANM_SPEED_FUNC_NAMES and off+ANM_SPEED_MULTIPLIER_OFFSET+4 <= len(raw_buf):
         _wf32le(raw_buf, off+ANM_SPEED_MULTIPLIER_OFFSET, sub.get('speed_multiplier', 1.0))
+    if sub.get('func_name') in FWD_VELOCITY_FUNC_NAMES:
+        if off+FWD_VELOCITY_VALUE_OFFSET+4 <= len(raw_buf):
+            _wi32le(raw_buf, off+FWD_VELOCITY_VALUE_OFFSET, sub.get('fwd_velocity', 0))
+        if off+FWD_VELOCITY_DURATION_OFFSET+4 <= len(raw_buf):
+            _wi32le(raw_buf, off+FWD_VELOCITY_DURATION_OFFSET, sub.get('fwd_velocity_duration', 0))
+    if sub.get('func_name') in GION_FUNC_NAMES:
+        if off+GION_SCALE_OFFSET+4 <= len(raw_buf):
+            _wf32le(raw_buf, off+GION_SCALE_OFFSET, sub.get('gion_scale', 1.0))
+        if off+GION_ID_OFFSET+GION_ID_SIZE <= len(raw_buf):
+            _wstr(raw_buf, off+GION_ID_OFFSET, sub.get('gion_id', ''), GION_ID_SIZE)
+    if sub.get('func_name') in ATKHIT_FUNC_NAMES:
+        params = list(sub.get('atkhit_params', [0, 0, 0, 0, 0]))
+        params.extend([0] * (len(ATKHIT_PARAM_OFFSETS) - len(params)))
+        for value, rel in zip(params, ATKHIT_PARAM_OFFSETS):
+            if off+rel+4 <= len(raw_buf):
+                _wi32le(raw_buf, off+rel, value)
     _wu8(raw_buf, off+0x6C, sub['dmg'])
     _wu8(raw_buf, off+0x7C, sub['grd'])
     # frame: Int16 LE at +0x30
@@ -651,10 +723,12 @@ def make_default_mot_subentry(index=0):
     """Return a safe blank prm_mot subentry dict."""
     return {
         'sub_off': None,
+        'raw_bytes': bytes(MOT_SUB_SIZE),
         'bone': '',
         'dtype': 0,
         'dname': DATA_TYPE_MAP.get(0, '0'),
         'func_name': FUNC_MAP_1B.get(0, 'ME_ENEMY_CTRL_ON'),
+        'func_param_bytes': [0, 0, 0],
         'frame_w': 0,
         'frame_str': '0',
         'dmg': 0,
@@ -665,6 +739,11 @@ def make_default_mot_subentry(index=0):
         'attack': '',
         'push': 0,
         'speed_multiplier': 1.0,
+        'fwd_velocity': 0,
+        'fwd_velocity_duration': 0,
+        'gion_scale': 1.0,
+        'gion_id': '',
+        'atkhit_params': [0, 0, 0, 0, 0],
     }
 
 
@@ -686,7 +765,6 @@ def write_mot(entries, original_raw):
         old_count = int(entry.get('raw_n_subs', entry.get('n_subs', len(subs))) or 0)
         old_sub_len = MOT_HDR_SIZE + old_count * MOT_SUB_SIZE
         old_len = max(int(entry.get('raw_size', old_sub_len) or old_sub_len), old_sub_len)
-        new_len = MOT_HDR_SIZE + len(subs) * MOT_SUB_SIZE
 
         if (
             old_off is not None
@@ -696,15 +774,23 @@ def write_mot(entries, original_raw):
         ):
             old_block = bytearray(original_raw[old_off:old_off + old_len])
             tail = old_block[old_sub_len:]
-            block = old_block[:min(len(old_block), old_sub_len)]
+            block = old_block[:min(len(old_block), MOT_HDR_SIZE)]
         else:
-            block = bytearray()
+            block = bytearray(MOT_HDR_SIZE)
             tail = bytearray()
 
-        if len(block) < new_len:
-            block.extend(bytes(new_len - len(block)))
-        elif len(block) > new_len:
-            block = block[:new_len]
+        if len(block) < MOT_HDR_SIZE:
+            block.extend(bytes(MOT_HDR_SIZE - len(block)))
+        elif len(block) > MOT_HDR_SIZE:
+            block = block[:MOT_HDR_SIZE]
+
+        for sub in subs:
+            raw_sub = bytearray(sub.get('raw_bytes', b''))
+            if len(raw_sub) < MOT_SUB_SIZE:
+                raw_sub.extend(bytes(MOT_SUB_SIZE - len(raw_sub)))
+            elif len(raw_sub) > MOT_SUB_SIZE:
+                raw_sub = raw_sub[:MOT_SUB_SIZE]
+            block.extend(raw_sub)
         block.extend(tail)
 
         new_off = len(out)
@@ -717,8 +803,8 @@ def write_mot(entries, original_raw):
         for i, sub in enumerate(subs):
             sub_off = MOT_HDR_SIZE + i * MOT_SUB_SIZE
             sub['sub_off'] = new_off + sub_off
-            if old_off is None or i >= old_count:
-                write_mot_subentry(block, {**sub, 'sub_off': sub_off})
+            write_mot_subentry(block, {**sub, 'sub_off': sub_off})
+            sub['raw_bytes'] = bytes(block[sub_off:sub_off+MOT_SUB_SIZE])
 
         out.extend(block)
 

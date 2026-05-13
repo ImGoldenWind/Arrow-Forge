@@ -70,6 +70,8 @@ def parse_info_xfbin(filepath):
             binary_chunk_idx = len(chunks) - 1
 
         offset += 12 + size
+        if offset % 4:
+            offset += 4 - (offset % 4)
 
     if binary_chunk_idx is None:
         raise ValueError("Could not find binary chunk in XFBIN")
@@ -184,7 +186,8 @@ def save_info_xfbin(filepath, data, sets, meta):
         else:
             result += chunk['header']
             result += chunk['data']
-
+        if len(result) % 4:
+            result += b'\x00' * (4 - (len(result) % 4))
 
     with open(filepath, 'wb') as f:
         f.write(result)

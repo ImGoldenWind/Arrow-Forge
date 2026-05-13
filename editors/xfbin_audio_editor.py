@@ -41,6 +41,7 @@ from core.style_helpers import (
     ss_blocking_overlay, ss_blocking_overlay_card, ss_progressbar,
 )
 from core.editor_file_state import set_file_label, set_file_label_empty
+from core.external_tools import find_vgaudio_cli, find_vgmstream_cli, is_tool_path, tool_command
 from core.skeleton import SkeletonListRow
 from core.settings import create_backup_on_open, load_settings, save_settings, game_files_dialog_dir
 from parsers.nus3bank_parser import (
@@ -51,7 +52,6 @@ from parsers.nus3bank_parser import (
     _align_up,
 )
 from core.translations import ui_text
-from core.runtime_paths import app_path
 
 
 # Audio format detection
@@ -102,19 +102,19 @@ def _detect_ext(data: bytes, fallback_path: str = '') -> str:
 
 def _detect_audio_tool() -> dict:
     """Find vgmstream for reading and VGAudio for writing."""
-    vgmstream = app_path('tools', 'vgmstream-cli.exe')
-    vgaudio = app_path('tools', ui_text("ui_sound_vgaudiocli_exe_2"))
+    vgmstream = find_vgmstream_cli()
+    vgaudio = find_vgaudio_cli()
     
     return {
-        'decode': vgmstream if os.path.isfile(vgmstream) else vgaudio if os.path.isfile(vgaudio) else '',
-        'encode': vgaudio if os.path.isfile(vgaudio) else ''
+        'decode': vgmstream or vgaudio,
+        'encode': vgaudio
     }
 
 
 def _detect_vgaudio() -> str:
     settings = load_settings()
     cli = settings.get('vgaudio_cli_path', '')
-    if cli and os.path.isfile(cli):
+    if cli and is_tool_path(cli):
         return cli
     return _detect_audio_tool().get('encode', '')
 
@@ -124,8 +124,8 @@ def _run_vgaudio(cli: str, in_path: str, out_path: str) -> bytes:
     # Some versions need the explicit `-i` flag (which triggers magic-byte detection rather
     # than relying solely on the file extension).
     cmds = [
-        [cli, '-i', in_path, '-o', out_path],   # newer / explicit input flag
-        [cli, in_path, '-o', out_path],          # older / positional input
+        [*tool_command(cli), '-i', in_path, '-o', out_path],   # newer / explicit input flag
+        [*tool_command(cli), in_path, '-o', out_path],          # older / positional input
     ]
     last_err = ''
     for cmd in cmds:
@@ -156,7 +156,7 @@ _IMA_STEP_TABLE = [
 _IMA_INDEX_TABLE = [-1, -1, -1, -1, 2, 4, 6, 8]
 
 def _run_vgmstream(cli: str, in_path: str, out_path: str) -> bytes:
-    cmd = [cli, '-o', out_path, in_path]
+    cmd = [*tool_command(cli), '-o', out_path, in_path]
     res = subprocess.run(cmd, capture_output=True, timeout=30)
     if os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
         with open(out_path, 'rb') as f:
@@ -1590,10 +1590,6 @@ class XfbinAudioEditor(QWidget):
     def _replace_audio(self):
         if self._cur_tone < 0:
             return
-        cli = _detect_vgaudio()
-        if not cli:
-            QMessageBox.warning(self, ui_text("ui_xfbin_audio_vgaudiocli"), ui_text("ui_xfbin_audio_vgaudiocli_exe_tools_vgaudiocli_exe_tools_vgaudi"))
-            return
 
         path, _ = QFileDialog.getOpenFileName(
             self, ui_text("xfa_import_replacement_audio"), game_files_dialog_dir(), _AUDIO_OPEN_FILTER)
@@ -1602,6 +1598,7 @@ class XfbinAudioEditor(QWidget):
 
         bank_idx = self._cur_bank
         tone_idx = self._cur_tone
+        cli = _detect_vgaudio()
 
         def worker():
             try:
@@ -1638,10 +1635,6 @@ class XfbinAudioEditor(QWidget):
     def _add_tone(self):
         if not self._banks:
             return
-        cli = _detect_vgaudio()
-        if not cli:
-            QMessageBox.warning(self, ui_text("ui_xfbin_audio_vgaudiocli"), ui_text("ui_xfbin_audio_vgaudiocli_exe_tools"))
-            return
 
         path, _ = QFileDialog.getOpenFileName(
             self, ui_text("xfa_import_new_tone_audio"), game_files_dialog_dir(), _AUDIO_OPEN_FILTER)
@@ -1649,6 +1642,7 @@ class XfbinAudioEditor(QWidget):
             return
 
         bank_idx = self._cur_bank
+        cli = _detect_vgaudio()
 
         def worker():
             try:
@@ -1812,10 +1806,6 @@ class XfbinAudioEditor(QWidget):
         """Import multiple audio files as new tones in the current bank."""
         if not self._banks:
             return
-        cli = _detect_vgaudio()
-        if not cli:
-            QMessageBox.warning(self, ui_text("ui_xfbin_audio_vgaudiocli"), ui_text("ui_xfbin_audio_vgaudiocli_exe_tools_2"))
-            return
 
         paths, _ = QFileDialog.getOpenFileNames(
             self, ui_text("xfa_import_audio_files"), game_files_dialog_dir(), _AUDIO_OPEN_FILTER)
@@ -1823,6 +1813,7 @@ class XfbinAudioEditor(QWidget):
             return
 
         bank_idx = self._cur_bank
+        cli = _detect_vgaudio()
 
         def worker():
             bank  = self._banks[bank_idx]

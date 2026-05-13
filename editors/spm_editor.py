@@ -28,10 +28,40 @@ from core.settings import create_backup_on_open, game_files_dialog_dir
 
 # Constants
 
+XML_SPECIAL_MOVE = 'SpecialMove'
+XML_ENTRY_SPM = 'EntrySPM'
+XML_DECORATOR = 'Decorator'
+XML_COMMAND = 'Command'
+XML_COM_ELEMENT = 'ComElement'
+XML_SELECT_ANM_LIST = 'SelectAnmList'
+
+ATTR_ACT_ID = 'actID'
+ATTR_ACT_KIND = 'actKind'
+ATTR_COMMAND_LIST_NUM = 'commandListNum'
+ATTR_ENABLE_TIME = 'enableTime'
+ATTR_AS_DERIVED = 'asDerived'
+ATTR_DISABLE_AIR_INV = 'disableAirInv'
+ATTR_START_ANM_ID = 'startAnmID'
+ATTR_START_SET_DIRC = 'startSetDirc'
+ATTR_IGNORE_END_POS_TYPE = 'ignoreEndPosType'
+ATTR_WAIT_END_LAND = 'waitEndLand'
+ATTR_USE_CANCEL_EFFECT = 'useCancelEffect'
+ATTR_DISABLE_MISS_HIT_CANCEL = 'disableMissHitCancel'
+ATTR_ACT_PRIORITY = 'actPriority'
+ATTR_CHECK_FLG = 'checkFlg'
+ATTR_WAIT_CANCEL_FLAG = 'waitCancelFlag'
+ATTR_CHECK_ONLY = 'checkOnly'
+ATTR_CHECK_GROUP_EX1 = 'checkGroupEx1'
+ATTR_GROUP_EX1_ON = 'groupEx1On'
+ATTR_CHECK_BEFORE_ANM = 'checkBeforeAnm'
+ATTR_BEFORE_ANM_ID = 'beforeAnmID'
+ATTR_ATTACK_FLAG = 'attackFlag'
+ATTR_HIGH_FLAG = 'highFlag'
+
 BOOL_ATTRS = {
-    ui_text("ui_spm_startsetdirc"), ui_text("ui_spm_ignoreendpostype"), ui_text("ui_spm_waitendland"), ui_text("ui_spm_usecanceleffect"),
-    ui_text("ui_spm_disablemisshitcancel"), ui_text("ui_spm_asderived"), ui_text("ui_spm_disableairinv"), ui_text("ui_spm_checkflg"),
-    ui_text("ui_spm_waitcancelflag"), ui_text("ui_spm_checkonly"), ui_text("ui_spm_checkgroupex1"), ui_text("ui_spm_groupex1on"), ui_text("ui_spm_checkbeforeanm"),
+    ATTR_START_SET_DIRC, ATTR_IGNORE_END_POS_TYPE, ATTR_WAIT_END_LAND, ATTR_USE_CANCEL_EFFECT,
+    ATTR_DISABLE_MISS_HIT_CANCEL, ATTR_AS_DERIVED, ATTR_DISABLE_AIR_INV, ATTR_CHECK_FLG,
+    ATTR_WAIT_CANCEL_FLAG, ATTR_CHECK_ONLY, ATTR_CHECK_GROUP_EX1, ATTR_GROUP_EX1_ON, ATTR_CHECK_BEFORE_ANM,
 }
 
 KEY_HINTS = {
@@ -48,13 +78,13 @@ NUMPAD_LAYOUT = [
 ]
 
 DEC_DEFAULTS = {
-    'hhaStart':       {'path': ui_text("ui_spm_hhastart_xml"),       'endCutInCnt': '30'},
-    'hitDerived':     {'path': ui_text("ui_spm_hitderived_xml"),      'hitDrvID': '1_spm',
+    'hhaStart':       {'path': 'hhaStart.xml',       'endCutInCnt': '30'},
+    'hitDerived':     {'path': 'hitDerived.xml',      'hitDrvID': '1_spm',
                        'hitType': '0', 'checkFlg': 'false', 'waitCancelFlag': 'false'},
-    'startAnmSelect': {'path': ui_text("ui_spm_startanmselect_xml")},
-    'gaugeCnsm':      {'path': ui_text("ui_spm_gaugecnsm_xml"),       'startConsumption': '25',
+    'startAnmSelect': {'path': 'startAnmSelect.xml'},
+    'gaugeCnsm':      {'path': 'gaugeCnsm.xml',       'startConsumption': '25',
                        'keepConsumption': '0', 'checkOnly': 'false'},
-    'styleMark':      {'path': ui_text("ui_spm_stylemark_xml")},
+    'styleMark':      {'path': 'styleMark.xml'},
 }
 
 DEC_TYPES = list(DEC_DEFAULTS.keys())
@@ -353,7 +383,7 @@ class _CommandsTab(QWidget):
         if self._entry_elem is None:
             self._cmd_list_layout.addStretch()
             return
-        for i, cmd in enumerate(self._entry_elem.findall(ui_text("skill_section_command"))):
+        for i, cmd in enumerate(self._entry_elem.findall(XML_COMMAND)):
             selected = cmd is self._selected_cmd
             btn = self._make_cmd_btn(i, cmd, selected)
             self._cmd_list_layout.insertWidget(self._cmd_list_layout.count(), btn)
@@ -415,10 +445,10 @@ class _CommandsTab(QWidget):
 
         fields_def = [
             ('trigger',       ui_text("ui_spm_trigger")),
-            (ui_text("ui_spm_enabletime"),    ui_text("ui_spm_enable_time")),
+            (ATTR_ENABLE_TIME,    ui_text("ui_spm_enable_time")),
             ('condition',     ui_text("ui_mainmodeparam_condition")),
-            (ui_text("ui_spm_asderived"),     ui_text("ui_spm_as_derived")),
-            (ui_text("ui_spm_disableairinv"), ui_text("ui_spm_disable_air_inv")),
+            (ATTR_AS_DERIVED,     ui_text("ui_spm_as_derived")),
+            (ATTR_DISABLE_AIR_INV, ui_text("ui_spm_disable_air_inv")),
         ]
         for ci, (key, label) in enumerate(fields_def):
             row, col = divmod(ci, 3)
@@ -443,7 +473,7 @@ class _CommandsTab(QWidget):
         sec_lbl.setStyleSheet(ss_section_label())
         cl.addWidget(sec_lbl)
 
-        els = list(cmd_elem.findall(ui_text("ui_spm_comelement")))
+        els = list(cmd_elem.findall(XML_COM_ELEMENT))
         if els:
             for el in els:
                 cl.addWidget(self._make_comel_row(el, cmd_elem))
@@ -521,7 +551,7 @@ class _CommandsTab(QWidget):
         return row_w
 
     def _add_direction(self, key, cmd_elem):
-        el = ET.SubElement(cmd_elem, ui_text("ui_spm_comelement"))
+        el = ET.SubElement(cmd_elem, XML_COM_ELEMENT)
         el.set('key', key)
         el.set('time', '0')
         self._build_cmd_editor(cmd_elem)
@@ -538,9 +568,9 @@ class _CommandsTab(QWidget):
     def _create_entry(self):
         if self._root_elem is None:
             return
-        e = ET.SubElement(self._root_elem, ui_text("ui_spm_entryspm"))
-        e.set(ui_text("ui_spm_actid"), self._actID)
-        e.set(ui_text("ui_spm_actkind"), self._actKind)
+        e = ET.SubElement(self._root_elem, XML_ENTRY_SPM)
+        e.set(ATTR_ACT_ID, self._actID)
+        e.set(ATTR_ACT_KIND, self._actKind)
         self._entry_elem = e
         self.entry_created.emit(e)
         self._stack.setCurrentIndex(1)
@@ -552,10 +582,10 @@ class _CommandsTab(QWidget):
     def _add_command(self):
         if self._entry_elem is None:
             return
-        cmd = ET.SubElement(self._entry_elem, ui_text("skill_section_command"))
-        for k, v in [('trigger', '262144'), (ui_text("ui_spm_enabletime"), '8'),
-                     ('condition', '0'), (ui_text("ui_spm_asderived"), 'false'),
-                     (ui_text("ui_spm_disableairinv"), 'false')]:
+        cmd = ET.SubElement(self._entry_elem, XML_COMMAND)
+        for k, v in [('trigger', '262144'), (ATTR_ENABLE_TIME, '8'),
+                     ('condition', '0'), (ATTR_AS_DERIVED, 'false'),
+                     (ATTR_DISABLE_AIR_INV, 'false')]:
             cmd.set(k, v)
         self._refresh_cmd_list()
 
@@ -584,6 +614,8 @@ class _CommandsTab(QWidget):
 # _DecoratorsTab
 
 class _DecoratorsTab(QWidget):
+    changed = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._elems     = []
@@ -670,6 +702,7 @@ class _DecoratorsTab(QWidget):
 
         # Right: attribute form (no header label)
         self._attr_form = _AttrForm()
+        self._attr_form.changed.connect(self.changed.emit)
         root.addWidget(self._attr_form, 1)
 
     # public
@@ -717,19 +750,31 @@ class _DecoratorsTab(QWidget):
         return item.data(0, Qt.ItemDataRole.UserRole)
 
     def _add_decorator(self):
+        self._add_decorator_of_type(self._type_combo.currentText().strip())
+
+    def _add_decorator_of_type(self, dtype):
         if self._root_elem is None:
             return
-        dtype = self._type_combo.currentText().strip()
         if not dtype:
             return
-        dec = ET.SubElement(self._root_elem, ui_text("ui_spm_decorator"))
+        dec = ET.Element(XML_DECORATOR)
         dec.set('type', dtype)
         for k, v in DEC_DEFAULTS.get(dtype, {'path': f'{dtype}.xml'}).items():
             dec.set(k, v)
-        dec.set(ui_text("ui_spm_actid"),   self._actID)
-        dec.set(ui_text("ui_spm_actkind"), self._actKind)
+        dec.set(ATTR_ACT_ID,   self._actID)
+        dec.set(ATTR_ACT_KIND, self._actKind)
+        self._insert_decorator(dec)
         self._elems.append(dec)
         self._refresh_tree()
+        self.changed.emit()
+
+    def _insert_decorator(self, dec):
+        root_children = list(self._root_elem)
+        insert_at = len(root_children)
+        for i, elem in enumerate(root_children):
+            if elem.get(ATTR_ACT_ID, '') == self._actID and elem.get(ATTR_ACT_KIND, '') == self._actKind:
+                insert_at = i + 1
+        self._root_elem.insert(insert_at, dec)
 
     def _dup_decorator(self):
         dec = self._sel_top_dec()
@@ -739,6 +784,7 @@ class _DecoratorsTab(QWidget):
         self._root_elem.append(new_dec)
         self._elems.append(new_dec)
         self._refresh_tree()
+        self.changed.emit()
 
     def _del_decorator(self):
         dec = self._sel_top_dec()
@@ -751,17 +797,19 @@ class _DecoratorsTab(QWidget):
             pass
         self._refresh_tree()
         self._attr_form.set_element(None)
+        self.changed.emit()
 
     def _add_child_item(self):
         dec = self._sel_top_dec()
         if dec is None:
             return
-        child = ET.SubElement(dec, ui_text("ui_spm_selectanmlist"))
-        for k, v in [(ui_text("ui_spm_startanmid"), '0'), (ui_text("ui_spm_checkgroupex1"), 'false'),
-                     (ui_text("ui_spm_groupex1on"), 'false'), (ui_text("ui_spm_checkbeforeanm"), 'false'),
-                     (ui_text("ui_spm_beforeanmid"), '0'), (ui_text("ui_spm_attackflag"), '1'), (ui_text("ui_spm_highflag"), '3')]:
+        child = ET.SubElement(dec, XML_SELECT_ANM_LIST)
+        for k, v in [(ATTR_START_ANM_ID, '0'), (ATTR_CHECK_GROUP_EX1, 'false'),
+                     (ATTR_GROUP_EX1_ON, 'false'), (ATTR_CHECK_BEFORE_ANM, 'false'),
+                     (ATTR_BEFORE_ANM_ID, '0'), (ATTR_ATTACK_FLAG, '1'), (ATTR_HIGH_FLAG, '3')]:
             child.set(k, v)
         self._refresh_tree()
+        self.changed.emit()
 
     def _del_child_item(self):
         items = self._tree.selectedItems()
@@ -779,6 +827,7 @@ class _DecoratorsTab(QWidget):
                 pass
         self._refresh_tree()
         self._attr_form.set_element(None)
+        self.changed.emit()
 
 
 # SpmEditor
@@ -899,6 +948,7 @@ class SpmEditor(QWidget):
         self._tabs.addTab(self._cmd_tab, ui_text("ui_spm_commands"))
 
         self._dec_tab = _DecoratorsTab()
+        self._dec_tab.changed.connect(self._mark_dirty)
         self._tabs.addTab(self._dec_tab, ui_text("ui_spm_decorators"))
 
         self._right_stack = QStackedWidget()
@@ -971,7 +1021,7 @@ class SpmEditor(QWidget):
 
     def _make_move_btn(self, move_dict):
         name = move_dict['spm_elem'].get('name', '?')
-        aid  = move_dict[ui_text("ui_spm_actid")]
+        aid  = move_dict[ATTR_ACT_ID]
         btn = QPushButton()
         btn.setFixedHeight(44)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -996,7 +1046,7 @@ class SpmEditor(QWidget):
         q = self._move_search.text().lower()
         for btn, m in self._move_btns:
             name = m['spm_elem'].get('name', '').lower()
-            aid  = m[ui_text("ui_spm_actid")].lower()
+            aid  = m[ATTR_ACT_ID].lower()
             btn.setVisible(q == '' or q in name or q in aid)
 
     def _select_move(self, move_dict):
@@ -1006,10 +1056,10 @@ class SpmEditor(QWidget):
         self._info_form.set_element(move_dict['spm_elem'])
         self._cmd_tab.load(
             move_dict['entry_elem'], self._result['root'],
-            move_dict[ui_text("ui_spm_actid")], move_dict[ui_text("ui_spm_actkind")])
+            move_dict[ATTR_ACT_ID], move_dict[ATTR_ACT_KIND])
         self._dec_tab.load(
             move_dict['decorator_elems'], self._result['root'],
-            move_dict[ui_text("ui_spm_actid")], move_dict[ui_text("ui_spm_actkind")])
+            move_dict[ATTR_ACT_ID], move_dict[ATTR_ACT_KIND])
 
     def _on_entry_created(self, entry_elem):
         if 0 <= self._cur_idx < len(self._moves):
@@ -1020,20 +1070,20 @@ class SpmEditor(QWidget):
     def _add_move(self):
         if self._result is None:
             return
-        existing = {(m[ui_text("ui_spm_actid")], m[ui_text("ui_spm_actkind")]) for m in self._moves}
+        existing = {(m[ATTR_ACT_ID], m[ATTR_ACT_KIND]) for m in self._moves}
         next_id = next(
             str(i) for i in range(1, 200)
             if (str(i), 'spm') not in existing)
 
-        elem = ET.SubElement(self._result['root'], ui_text("ui_spm_specialmove"))
+        elem = ET.SubElement(self._result['root'], XML_SPECIAL_MOVE)
         for k, v in [
-            ('name', ui_text("ui_spm_new_move")), ('view', '0'), ('type', 'normal'),
-            ('path', 'normal.xml'), (ui_text("ui_spm_commandlistnum"), '-1'),
-            (ui_text("ui_spm_actid"), next_id), (ui_text("ui_spm_actkind"), 'spm'),
-            (ui_text("ui_spm_startanmid"), '0'), (ui_text("ui_spm_startsetdirc"), 'true'),
-            (ui_text("ui_spm_ignoreendpostype"), 'false'), (ui_text("ui_spm_waitendland"), 'false'),
-            (ui_text("ui_spm_usecanceleffect"), 'true'), (ui_text("ui_spm_disablemisshitcancel"), 'false'),
-            (ui_text("ui_spm_actpriority"), '6'),
+            ('name', 'New Move'), ('view', '0'), ('type', 'normal'),
+            ('path', 'normal.xml'), (ATTR_COMMAND_LIST_NUM, '-1'),
+            (ATTR_ACT_ID, next_id), (ATTR_ACT_KIND, 'spm'),
+            (ATTR_START_ANM_ID, '0'), (ATTR_START_SET_DIRC, 'true'),
+            (ATTR_IGNORE_END_POS_TYPE, 'false'), (ATTR_WAIT_END_LAND, 'false'),
+            (ATTR_USE_CANCEL_EFFECT, 'true'), (ATTR_DISABLE_MISS_HIT_CANCEL, 'false'),
+            (ATTR_ACT_PRIORITY, '6'),
         ]:
             elem.set(k, v)
 
@@ -1047,30 +1097,30 @@ class SpmEditor(QWidget):
         if self._cur_idx < 0 or self._cur_idx >= len(self._moves) or self._result is None:
             return
         src = self._moves[self._cur_idx]
-        existing = {(m[ui_text("ui_spm_actid")], m[ui_text("ui_spm_actkind")]) for m in self._moves}
+        existing = {(m[ATTR_ACT_ID], m[ATTR_ACT_KIND]) for m in self._moves}
         next_id = next(
             str(i) for i in range(1, 200)
-            if (str(i), src[ui_text("ui_spm_actkind")]) not in existing)
+            if (str(i), src[ATTR_ACT_KIND]) not in existing)
 
         new_elem = copy.deepcopy(src['spm_elem'])
-        new_elem.set(ui_text("ui_spm_actid"), next_id)
-        new_elem.set('name', src['spm_elem'].get('name', '') + ui_text("ui_spm_copy"))
+        new_elem.set(ATTR_ACT_ID, next_id)
+        new_elem.set('name', src['spm_elem'].get('name', '') + ' (copy)')
         self._result['root'].append(new_elem)
 
         new_entry = None
         if src['entry_elem'] is not None:
             new_entry = copy.deepcopy(src['entry_elem'])
-            new_entry.set(ui_text("ui_spm_actid"), next_id)
+            new_entry.set(ATTR_ACT_ID, next_id)
             self._result['root'].append(new_entry)
 
         new_decs = []
         for dec in src['decorator_elems']:
             new_dec = copy.deepcopy(dec)
-            new_dec.set(ui_text("ui_spm_actid"), next_id)
+            new_dec.set(ATTR_ACT_ID, next_id)
             self._result['root'].append(new_dec)
             new_decs.append(new_dec)
 
-        m = {'actID': next_id, 'actKind': src[ui_text("ui_spm_actkind")],
+        m = {ATTR_ACT_ID: next_id, ATTR_ACT_KIND: src[ATTR_ACT_KIND],
              'spm_elem': new_elem, 'entry_elem': new_entry, 'decorator_elems': new_decs}
         self._moves.append(m)
         self._refresh_move_list(keep_idx=len(self._moves) - 1)

@@ -28,6 +28,10 @@ class UpdateError(Exception):
     pass
 
 
+def automatic_updates_supported() -> bool:
+    return os.name == "nt"
+
+
 def _request_json(url: str, timeout: int = 15) -> dict:
     req = urllib.request.Request(url, headers={
         "Accept": "application/vnd.github+json",
@@ -309,10 +313,14 @@ def check_for_update(current_version: str = APP_VERSION) -> dict:
         "asset_url": asset.get("browser_download_url") if asset else "",
         "asset_size": int(asset.get("size") or 0) if asset else 0,
         "asset_digest": asset.get("digest") or "",
+        "automatic_install_supported": automatic_updates_supported(),
     }
 
 
 def download_and_prepare_update(info: dict, progress_callback=None) -> dict:
+    if not automatic_updates_supported():
+        raise UpdateError("Automatic update installation is only supported on Windows builds.")
+
     asset_url = info.get("asset_url")
     asset_name = info.get("asset_name") or "ArrowForge-update"
     if not asset_url:
@@ -359,6 +367,8 @@ def download_and_prepare_update(info: dict, progress_callback=None) -> dict:
 
 
 def launch_prepared_update(script_path: str) -> None:
+    if not automatic_updates_supported():
+        raise UpdateError("Automatic update installation is only supported on Windows builds.")
     if not script_path or not os.path.isfile(script_path):
         raise UpdateError("The update script was not created.")
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)

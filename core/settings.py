@@ -3,7 +3,7 @@ import fnmatch
 import os
 import shutil
 
-from core.runtime_paths import app_path
+from core.runtime_paths import app_path, settings_path
 
 
 DEFAULT_SETTINGS = {
@@ -20,22 +20,29 @@ DEFAULT_SETTINGS = {
 
 
 def _settings_path():
+    return settings_path()
+
+
+def _legacy_settings_path():
     return app_path("asbr_settings.json")
 
 
 def load_settings() -> dict:
-    try:
-        with open(_settings_path(), "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if isinstance(data, dict):
-                return {**DEFAULT_SETTINGS, **data}
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
+    for path in (_settings_path(), _legacy_settings_path()):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return {**DEFAULT_SETTINGS, **data}
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            pass
     return DEFAULT_SETTINGS.copy()
 
 
 def save_settings(data: dict):
-    with open(_settings_path(), "w", encoding="utf-8") as f:
+    path = _settings_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 

@@ -43,24 +43,44 @@ _DEFAULT_SKILL_XML = (
     '<Skill id="new_skill" type="SKILL_TYPE_NORMAL"></Skill>'
 )
 
+XML_DETAILS = 'Details'
+XML_ACTIONS = 'Actions'
+XML_ACTION = 'Action'
+XML_HIT = 'Hit'
+XML_VELOCITY = 'Velocity'
+XML_SKILL_ATTACK = 'SkillAttack'
+
+ATTR_SHAPE = 'Shape'
+ATTR_HIT_RADIUS = 'hitRadius'
+ATTR_AMOUNT = 'Amount'
+ATTR_KNOCK_BACK = 'KnockBack'
+ATTR_GUARD_DAMAGE = 'GuardDamage'
+ATTR_STRENGTH = 'Strength'
+ATTR_HH_GAUGE = 'HHGauge'
+ATTR_STUN_DAMAGE = 'StunDamage'
+ATTR_HIT_STOP = 'HitStop'
+ATTR_REAC_XY = 'ReacXY'
+ATTR_REAC_Z = 'ReacZ'
+ATTR_DMG_ID = 'dmgId'
+
 # Fields per Action card: (label, xml_tag, xml_attr)
 # xml_tag=None means attribute lives directly on <Action>
 _ACTION_FIELDS = [
     (ui_text("ui_projectile_action_id"),  None,           'id'),
     (ui_text("ui_dlcinfoparam_type"),       None,           'type'),
-    (ui_text("ui_projectile_hit_shape"),  ui_text("ui_projectile_hit"),          ui_text("ui_projectile_shape")),
-    (ui_text("ui_projectile_hit_radius"), ui_text("ui_projectile_hit"),          ui_text("ui_projectile_hitradius")),
-    (ui_text("ui_projectile_velocity"),   ui_text("ui_projectile_velocity"),     'value'),
-    (ui_text("skill_param_damage"),     ui_text("ui_projectile_skillattack"),  ui_text("ui_projectile_amount")),
-    (ui_text("ui_projectile_knock_back"), ui_text("ui_projectile_skillattack"),  ui_text("ui_projectile_knockback")),
-    (ui_text("ui_projectile_guard_dmg"),  ui_text("ui_projectile_skillattack"),  ui_text("ui_projectile_guarddamage")),
-    (ui_text("ui_projectile_strength"),   ui_text("ui_projectile_skillattack"),  ui_text("ui_projectile_strength")),
-    (ui_text("ui_projectile_hh_gauge"),   ui_text("ui_projectile_skillattack"),  ui_text("ui_projectile_hhgauge")),
-    (ui_text("ui_projectile_stun"),       ui_text("ui_projectile_skillattack"),  ui_text("ui_projectile_stundamage")),
-    (ui_text("ui_projectile_hit_stop"),   ui_text("ui_projectile_skillattack"),  ui_text("ui_projectile_hitstop")),
-    (ui_text("ui_projectile_reacxy"),     ui_text("ui_projectile_skillattack"),  ui_text("ui_projectile_reacxy")),
-    (ui_text("ui_projectile_reacz"),      ui_text("ui_projectile_skillattack"),  ui_text("ui_projectile_reacz")),
-    (ui_text("ui_projectile_dmg_id"),     ui_text("ui_projectile_skillattack"),  ui_text("ui_projectile_dmgid")),
+    (ui_text("ui_projectile_hit_shape"),  XML_HIT,          ATTR_SHAPE),
+    (ui_text("ui_projectile_hit_radius"), XML_HIT,          ATTR_HIT_RADIUS),
+    (ui_text("ui_projectile_velocity"),   XML_VELOCITY,     'value'),
+    (ui_text("skill_param_damage"),       XML_SKILL_ATTACK, ATTR_AMOUNT),
+    (ui_text("ui_projectile_knock_back"), XML_SKILL_ATTACK, ATTR_KNOCK_BACK),
+    (ui_text("ui_projectile_guard_dmg"),  XML_SKILL_ATTACK, ATTR_GUARD_DAMAGE),
+    (ui_text("ui_projectile_strength"),   XML_SKILL_ATTACK, ATTR_STRENGTH),
+    (ui_text("ui_projectile_hh_gauge"),   XML_SKILL_ATTACK, ATTR_HH_GAUGE),
+    (ui_text("ui_projectile_stun"),       XML_SKILL_ATTACK, ATTR_STUN_DAMAGE),
+    (ui_text("ui_projectile_hit_stop"),   XML_SKILL_ATTACK, ATTR_HIT_STOP),
+    (ui_text("ui_projectile_reacxy"),     XML_SKILL_ATTACK, ATTR_REAC_XY),
+    (ui_text("ui_projectile_reacz"),      XML_SKILL_ATTACK, ATTR_REAC_Z),
+    (ui_text("ui_projectile_dmg_id"),     XML_SKILL_ATTACK, ATTR_DMG_ID),
 ]
 _CARD_COLS = 5
 
@@ -185,7 +205,7 @@ class _SkillTable(QWidget):
 
         self._id_fld.setText(self._root_el.get('id', ''))
         self._type_fld.setText(self._root_el.get('type', ''))
-        det_el = self._root_el.find(ui_text("ui_projectile_details"))
+        det_el = self._root_el.find(XML_DETAILS)
         self._det_fld.setText(det_el.get('text', '') if det_el is not None else '')
 
         self._id_fld.blockSignals(False)
@@ -203,7 +223,7 @@ class _SkillTable(QWidget):
         self._action_cards = []
 
         if self._root_el is not None:
-            for idx, action_el in enumerate(list(self._root_el.iter(ui_text("ui_projectile_action")))):
+            for idx, action_el in enumerate(list(self._root_el.iter(XML_ACTION))):
                 card = self._make_action_card(action_el, idx)
                 self._cards_layout.addWidget(card)
                 self._action_cards.append(card)
@@ -319,10 +339,10 @@ class _SkillTable(QWidget):
         self._root_el.set('id', self._id_fld.text())
         self._root_el.set('type', self._type_fld.text())
         det_text = self._det_fld.text()
-        det_el = self._root_el.find(ui_text("ui_projectile_details"))
+        det_el = self._root_el.find(XML_DETAILS)
         if det_text:
             if det_el is None:
-                det_el = ET.Element(ui_text("ui_projectile_details"))
+                det_el = ET.Element(XML_DETAILS)
                 self._root_el.insert(0, det_el)
             det_el.set('text', det_text)
         self.skill_id_changed.emit(self._id_fld.text())
@@ -341,10 +361,10 @@ class _SkillTable(QWidget):
     def _add_action(self):
         if self._root_el is None:
             return
-        all_actions = list(self._root_el.iter(ui_text("ui_projectile_action")))
+        all_actions = list(self._root_el.iter(XML_ACTION))
         new_id = str(len(all_actions))
-        container = self._root_el.find(ui_text("sound_section_actions")) or self._root_el
-        new_el = ET.SubElement(container, ui_text("ui_projectile_action"))
+        container = self._root_el.find(XML_ACTIONS) or self._root_el
+        new_el = ET.SubElement(container, XML_ACTION)
         new_el.set('id', new_id)
         new_el.set('type', 'SKILL_ACTION_TYPE_ARROW')
         self._rebuild_cards()

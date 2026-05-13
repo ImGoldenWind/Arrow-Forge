@@ -24,9 +24,17 @@ from parsers.skill_parser import (
     write_mot_entry, write_mot_subentry,
     make_default_mot_entry, make_default_mot_subentry, write_mot,
     DATA_TYPE_MAP, FUNC_MAP_1B, PRMLOAD_TYPE_NAMES, ANM_SPEED_FUNC_NAMES,
+    FWD_VELOCITY_FUNC_NAMES, GION_FUNC_NAMES, ATKHIT_FUNC_NAMES,
+    MOT_SUB_SIZE,
 )
 from core.translations import ui_text
 from core.settings import create_backup_on_open, game_files_dialog_dir
+
+FUNC_PARAM_FIELD_NAMES = {
+    'ME_CANCEL_OP_ADD', 'ME_CANCEL_OP_SUB', 'ME_CANCEL_OP_SET',
+    'ME_BODHIT_ON', 'ME_BODHIT_OFF',
+    'ME_INVINCIBLE_ON', 'ME_INVINCIBLE_OFF',
+}
 
 
 # Shared helpers
@@ -733,7 +741,16 @@ class _MotTab(QWidget):
         text = text.lower()
         filtered = [
             e for e in self._entries
-            if text in e['event_id'].lower() or text in e.get('anim_id', '').lower()
+            if (
+                text in e['event_id'].lower()
+                or text in e.get('anim_id', '').lower()
+                or any(
+                    text in sub.get('bone', '').lower()
+                    or text in sub.get('dmg_label', '').lower()
+                    or text in sub.get('func_name', '').lower()
+                    for sub in e.get('subentries', [])
+                )
+            )
         ]
         self._populate_list(filtered)
 
@@ -887,44 +904,56 @@ class _MotTab(QWidget):
         if subs:
             self._editor_layout.addWidget(_section_label(ui_text("ui_skill_subentries")))
             for r, s in enumerate(subs):
-                self._editor_layout.addWidget(self._make_sub_card(r, s))
+                self._editor_layout.addWidget(self._make_sub_card(entry, r, s))
 
         self._editor_layout.addStretch()
 
     def _add_subentry(self, entry):
         subs = entry.setdefault('subentries', [])
-        subs.append(make_default_mot_subentry(len(subs) + 1))
-        entry['n_subs'] = len(subs)
-        self._structural_dirty = True
-        self._refresh_list()
-        self._show_entry(entry)
-        self.changed.emit()
+        self._insert_subentry(entry, len(subs))
 
     def _dup_last_subentry(self, entry):
         subs = entry.setdefault('subentries', [])
         if not subs:
             return
-        new_sub = copy.deepcopy(subs[-1])
-        new_sub['sub_off'] = None
-        subs.append(new_sub)
-        entry['n_subs'] = len(subs)
-        self._structural_dirty = True
-        self._refresh_list()
-        self._show_entry(entry)
-        self.changed.emit()
+        self._duplicate_subentry(entry, len(subs) - 1)
 
     def _del_last_subentry(self, entry):
         subs = entry.setdefault('subentries', [])
         if not subs:
             return
-        subs.pop()
+        self._delete_subentry(entry, len(subs) - 1)
+
+    def _insert_subentry(self, entry, index, template=None):
+        subs = entry.setdefault('subentries', [])
+        index = max(0, min(index, len(subs)))
+        new_sub = copy.deepcopy(template) if template is not None else make_default_mot_subentry(index + 1)
+        new_sub['sub_off'] = None
+        subs.insert(index, new_sub)
         entry['n_subs'] = len(subs)
         self._structural_dirty = True
         self._refresh_list()
         self._show_entry(entry)
         self.changed.emit()
 
-    def _make_sub_card(self, r, s):
+    def _duplicate_subentry(self, entry, index):
+        subs = entry.setdefault('subentries', [])
+        if not (0 <= index < len(subs)):
+            return
+        self._insert_subentry(entry, index + 1, subs[index])
+
+    def _delete_subentry(self, entry, index):
+        subs = entry.setdefault('subentries', [])
+        if not (0 <= index < len(subs)):
+            return
+        subs.pop(index)
+        entry['n_subs'] = len(subs)
+        self._structural_dirty = True
+        self._refresh_list()
+        self._show_entry(entry)
+        self.changed.emit()
+
+    def _make_sub_card(self, entry, r, s):
         card = _card_frame()
         cl = QVBoxLayout(card)
         cl.setContentsMargins(12, 12, 12, 12)
@@ -934,6 +963,44 @@ class _MotTab(QWidget):
         hdr_lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         hdr_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
         cl.addWidget(hdr_lbl)
+
+        sub_action_row = QWidget()
+        sub_action_row.setStyleSheet("background: transparent;")
+        sub_action_layout = QHBoxLayout(sub_action_row)
+        sub_action_layout.setContentsMargins(0, 0, 0, 0)
+        sub_action_layout.setSpacing(6)
+        sf = QFont("Segoe UI", 9)
+
+        insert_above_btn = QPushButton(ui_text("ui_skill_insert_subentry_above"))
+        insert_above_btn.setFixedHeight(26)
+        insert_above_btn.setFont(sf)
+        insert_above_btn.setStyleSheet(ss_btn())
+        insert_above_btn.clicked.connect(lambda _, e=entry, idx=r: self._insert_subentry(e, idx))
+        sub_action_layout.addWidget(insert_above_btn)
+
+        insert_below_btn = QPushButton(ui_text("ui_skill_insert_subentry_below"))
+        insert_below_btn.setFixedHeight(26)
+        insert_below_btn.setFont(sf)
+        insert_below_btn.setStyleSheet(ss_btn())
+        insert_below_btn.clicked.connect(lambda _, e=entry, idx=r: self._insert_subentry(e, idx + 1))
+        sub_action_layout.addWidget(insert_below_btn)
+
+        duplicate_here_btn = QPushButton(ui_text("ui_skill_duplicate_subentry_here"))
+        duplicate_here_btn.setFixedHeight(26)
+        duplicate_here_btn.setFont(sf)
+        duplicate_here_btn.setStyleSheet(ss_btn())
+        duplicate_here_btn.clicked.connect(lambda _, e=entry, idx=r: self._duplicate_subentry(e, idx))
+        sub_action_layout.addWidget(duplicate_here_btn)
+
+        delete_here_btn = QPushButton(ui_text("ui_skill_delete_subentry_here"))
+        delete_here_btn.setFixedHeight(26)
+        delete_here_btn.setFont(sf)
+        delete_here_btn.setStyleSheet(ss_btn(danger=True))
+        delete_here_btn.clicked.connect(lambda _, e=entry, idx=r: self._delete_subentry(e, idx))
+        sub_action_layout.addWidget(delete_here_btn)
+
+        sub_action_layout.addStretch()
+        cl.addWidget(sub_action_row)
 
         grid = QGridLayout()
         grid.setSpacing(8)
@@ -963,7 +1030,7 @@ class _MotTab(QWidget):
         grid.addWidget(fw6, 1, 2)
         grid.addWidget(fw7, 1, 3)
 
-        # Row 2: Push | Speed | Function (spans 2 cols)
+        # Row 2: Push | Speed/FWD params | Function (spans 2 cols)
         fw8, f_push = _make_field(ui_text("ui_skill_push"), s.get('push', 0))
         grid.addWidget(fw8, 2, 0)
 
@@ -972,6 +1039,54 @@ class _MotTab(QWidget):
             f"{s.get('speed_multiplier', 1.0):.6g}",
         )
         grid.addWidget(fw_speed, 2, 1)
+
+        fw_fwd_vel, f_fwd_vel = _make_field(
+            ui_text("skill_field_fwd_velocity"),
+            s.get('fwd_velocity', 0),
+        )
+        grid.addWidget(fw_fwd_vel, 3, 0)
+
+        fw_fwd_dur, f_fwd_dur = _make_field(
+            ui_text("skill_field_duration_frames"),
+            s.get('fwd_velocity_duration', 0),
+        )
+        grid.addWidget(fw_fwd_dur, 3, 1)
+
+        fw_gion_id, f_gion_id = _make_field(
+            ui_text("skill_field_gion_id"),
+            s.get('gion_id', ''),
+        )
+        grid.addWidget(fw_gion_id, 3, 2)
+
+        fw_gion_scale, f_gion_scale = _make_field(
+            ui_text("skill_field_gion_scale"),
+            f"{s.get('gion_scale', 1.0):.6g}",
+        )
+        grid.addWidget(fw_gion_scale, 3, 3)
+
+        atkhit_values = list(s.get('atkhit_params', [0, 0, 0, 0, 0]))
+        atkhit_values.extend([0] * (5 - len(atkhit_values)))
+        atkhit_fields = []
+        for i in range(5):
+            fw_param, f_param = _make_field(
+                ui_text("skill_field_atkhit_param_n", n=i + 1),
+                atkhit_values[i],
+            )
+            row = 4 + (i // 4)
+            col = i % 4
+            grid.addWidget(fw_param, row, col)
+            atkhit_fields.append((fw_param, f_param))
+
+        func_param_values = list(s.get('func_param_bytes', [0, 0, 0]))
+        func_param_values.extend([0] * (3 - len(func_param_values)))
+        func_param_fields = []
+        for i in range(3):
+            fw_param, f_param = _make_field(
+                ui_text("skill_field_func_byte_n", n=i + 1),
+                func_param_values[i],
+            )
+            grid.addWidget(fw_param, 6, i)
+            func_param_fields.append((fw_param, f_param))
 
         fw_func_w, f_func = _make_combo_field(ui_text("skill_field_function"), [], s.get('func_name', ''))
         f_func.setEditable(True)
@@ -983,12 +1098,34 @@ class _MotTab(QWidget):
         f_func.blockSignals(False)
         grid.addWidget(fw_func_w, 2, 2, 1, 2)
 
-        def update_speed_visibility():
+        def update_func_param_visibility():
             is_speed_func = f_func.currentText().strip() in ANM_SPEED_FUNC_NAMES
+            is_fwd_velocity_func = f_func.currentText().strip() in FWD_VELOCITY_FUNC_NAMES
+            is_gion_func = f_func.currentText().strip() in GION_FUNC_NAMES
+            is_atkhit_func = f_func.currentText().strip() in ATKHIT_FUNC_NAMES
+            func_params = list(s.get('func_param_bytes', [0, 0, 0]))
+            show_func_params = (
+                f_func.currentText().strip() in FUNC_PARAM_FIELD_NAMES
+                or any(int(v or 0) for v in func_params)
+            )
             fw_speed.setVisible(is_speed_func)
             f_speed.setEnabled(is_speed_func)
+            fw_fwd_vel.setVisible(is_fwd_velocity_func)
+            f_fwd_vel.setEnabled(is_fwd_velocity_func)
+            fw_fwd_dur.setVisible(is_fwd_velocity_func)
+            f_fwd_dur.setEnabled(is_fwd_velocity_func)
+            fw_gion_id.setVisible(is_gion_func)
+            f_gion_id.setEnabled(is_gion_func)
+            fw_gion_scale.setVisible(is_gion_func)
+            f_gion_scale.setEnabled(is_gion_func)
+            for fw_param, f_param in atkhit_fields:
+                fw_param.setVisible(is_atkhit_func)
+                f_param.setEnabled(is_atkhit_func)
+            for fw_param, f_param in func_param_fields:
+                fw_param.setVisible(show_func_params)
+                f_param.setEnabled(show_func_params)
 
-        update_speed_visibility()
+        update_func_param_visibility()
 
         cl.addLayout(grid)
 
@@ -1033,21 +1170,77 @@ class _MotTab(QWidget):
                 s['speed_multiplier'] = float(f_speed.text())
             except Exception:
                 pass
+            try:
+                s['fwd_velocity'] = int(f_fwd_vel.text())
+            except Exception:
+                pass
+            try:
+                s['fwd_velocity_duration'] = int(f_fwd_dur.text())
+            except Exception:
+                pass
+            s['gion_id'] = f_gion_id.text()
+            try:
+                s['gion_scale'] = float(f_gion_scale.text())
+            except Exception:
+                pass
+            atkhit_params = list(s.get('atkhit_params', [0, 0, 0, 0, 0]))
+            atkhit_params.extend([0] * (5 - len(atkhit_params)))
+            for i, (_, f_param) in enumerate(atkhit_fields):
+                try:
+                    atkhit_params[i] = int(f_param.text())
+                except Exception:
+                    pass
+            s['atkhit_params'] = atkhit_params[:5]
+            func_param_bytes = list(s.get('func_param_bytes', [0, 0, 0]))
+            func_param_bytes.extend([0] * (3 - len(func_param_bytes)))
+            for i, (_, f_param) in enumerate(func_param_fields):
+                try:
+                    func_param_bytes[i] = max(0, min(255, int(f_param.text())))
+                except Exception:
+                    pass
+            s['func_param_bytes'] = func_param_bytes[:3]
             func_txt = f_func.currentText().strip()
             _func_rev = {v: k for k, v in FUNC_MAP_1B.items()}
             if func_txt in _func_rev:
-                s['dtype'] = _func_rev[func_txt]
+                s['dtype'] = (
+                    _func_rev[func_txt]
+                    | (s['func_param_bytes'][0] << 8)
+                    | (s['func_param_bytes'][1] << 16)
+                    | (s['func_param_bytes'][2] << 24)
+                )
                 s['func_name'] = func_txt
             else:
                 s['func_name'] = FUNC_MAP_1B.get(s['dtype'], s.get('func_name', ''))
             if s.get('func_name') in ANM_SPEED_FUNC_NAMES and 'speed_multiplier' not in s:
                 s['speed_multiplier'] = 1.0
                 f_speed.setText("1")
+            if s.get('func_name') in FWD_VELOCITY_FUNC_NAMES:
+                if 'fwd_velocity' not in s:
+                    s['fwd_velocity'] = 0
+                    f_fwd_vel.setText("0")
+                if 'fwd_velocity_duration' not in s:
+                    s['fwd_velocity_duration'] = 0
+                    f_fwd_dur.setText("0")
+            if s.get('func_name') in GION_FUNC_NAMES:
+                if 'gion_scale' not in s:
+                    s['gion_scale'] = 1.0
+                    f_gion_scale.setText("1")
+                if 'gion_id' not in s:
+                    s['gion_id'] = ''
+                    f_gion_id.setText("")
+            if s.get('func_name') in ATKHIT_FUNC_NAMES and 'atkhit_params' not in s:
+                s['atkhit_params'] = [0, 0, 0, 0, 0]
+                for _, f_param in atkhit_fields:
+                    f_param.setText("0")
             s['dname'] = DATA_TYPE_MAP.get(s['dtype'], str(s['dtype']))
+            f_type.setText(str(s['dtype']))
             hdr_lbl.setText(ui_text("ui_skill_value_value_value", p0=r, p1=s['bone'], p2=s.get('func_name', '')))
-            update_speed_visibility()
-            if self._mot_raw is not None and s.get('sub_off') is not None:
+            update_func_param_visibility()
+            if self._mot_raw is not None and s.get('sub_off') is not None and not self._structural_dirty:
                 write_mot_subentry(self._mot_raw, s)
+                sub_off = s.get('sub_off')
+                if 0 <= sub_off and sub_off+MOT_SUB_SIZE <= len(self._mot_raw):
+                    s['raw_bytes'] = bytes(self._mot_raw[sub_off:sub_off+MOT_SUB_SIZE])
             self.changed.emit()
 
         f_bone.editingFinished.connect(commit)
@@ -1060,6 +1253,14 @@ class _MotTab(QWidget):
         f_y.editingFinished.connect(commit)
         f_push.editingFinished.connect(commit)
         f_speed.editingFinished.connect(commit)
+        f_fwd_vel.editingFinished.connect(commit)
+        f_fwd_dur.editingFinished.connect(commit)
+        f_gion_id.editingFinished.connect(commit)
+        f_gion_scale.editingFinished.connect(commit)
+        for _, f_param in atkhit_fields:
+            f_param.editingFinished.connect(commit)
+        for _, f_param in func_param_fields:
+            f_param.editingFinished.connect(commit)
         f_func.currentTextChanged.connect(lambda _: commit())
 
         return card
@@ -1171,6 +1372,9 @@ class SkillEditor(QWidget):
         self._mot_tab = _MotTab()
         self._mot_tab.changed.connect(self._mark_dirty)
 
+        self._gha_tab = _MotTab()
+        self._gha_tab.changed.connect(self._mark_dirty)
+
         self._prmload_tab = _PrmLoadStandaloneTab()
         self._prmload_tab.changed.connect(self._mark_dirty)
 
@@ -1233,16 +1437,16 @@ class SkillEditor(QWidget):
         self._tabs.clear()
         errors = []
 
-        # Tab order: Motion Data → Load Config → Skill Slots
+        # Tab order: Motion Data → GHA Motion Data → Load Config → Skill Slots
         for mot_key, mot_label in [('mot', ui_text("ui_skill_motion_data")), ('gha', ui_text("ui_skill_gha_motion_data"))]:
             if mot_key in result:
                 try:
                     n = len(result[mot_key]['entries'])
-                    self._mot_tab.load(result[mot_key]['entries'], result[mot_key]['raw'])
-                    self._tabs.addTab(self._mot_tab, f"{mot_label}  ({n})")
+                    tab = self._mot_tab if mot_key == 'mot' else self._gha_tab
+                    tab.load(result[mot_key]['entries'], result[mot_key]['raw'])
+                    self._tabs.addTab(tab, f"{mot_label}  ({n})")
                 except Exception as e:
                     errors.append(f"{mot_label}: {e}")
-                break
 
         if 'load' in result:
             try:
@@ -1302,11 +1506,12 @@ class SkillEditor(QWidget):
                     self._result['sklslot']['entries'] = self._sklslot_tab.get_entries()
                 if 'load' in self._result:
                     self._result['load']['entries'] = self._load_tab.get_entries()
-                for mot_key in ('mot', 'gha'):
-                    if mot_key in self._result:
-                        self._result[mot_key]['entries'] = self._mot_tab.get_entries()
-                        self._result[mot_key]['raw'] = self._mot_tab.get_raw()
-                        break
+                if 'mot' in self._result:
+                    self._result['mot']['entries'] = self._mot_tab.get_entries()
+                    self._result['mot']['raw'] = self._mot_tab.get_raw()
+                if 'gha' in self._result:
+                    self._result['gha']['entries'] = self._gha_tab.get_entries()
+                    self._result['gha']['raw'] = self._gha_tab.get_raw()
                 save_prm_xfbin(path, self._raw, self._result)
 
             self._dirty = False
