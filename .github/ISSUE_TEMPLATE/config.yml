@@ -2,7 +2,7 @@ blank_issues_enabled: true
 
 contact_links:
   - name: Read Before Posting
-    url: https://github.com/ImGoldenWind/ArrowForge
+    url: https://github.com/ImGoldenWind/Arrow-Forge
     about: Issues are ONLY for Arrow Forge bugs, improvements, and feature requests. Modding help/questions will be closed.
   - name: JoJo's Bizarre Modding Community
     url: https://discord.gg/bfWPHBwbr9
