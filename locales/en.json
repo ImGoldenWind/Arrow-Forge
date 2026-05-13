@@ -170,7 +170,7 @@
   "backup_on_open": "Create backup when opening files",
   "backup_on_open_hint": "Backups are saved next to the selected file using the _backup suffix.",
   "updates_title": "Updates",
-  "updates_hint": "Current version: {version}. Arrow Forge checks GitHub Releases and opens the release page when a new build is available.",
+  "updates_hint": "Current version: {version}.",
   "updates_check_on_startup": "Check for updates on startup",
   "updates_check_now": "Check Now",
   "updates_idle": "Current version: {version}",
