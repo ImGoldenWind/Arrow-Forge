@@ -89,14 +89,34 @@ Download the current source archive:
 
 Python 3.11 or newer is recommended.
 
+Windows:
+
 ```powershell
 python -m pip install -U pip
 pip install PyQt6 Pillow numpy qtawesome
 python ASBR-Tools.py
 ```
 
+Linux:
+
+```bash
+python3 -m pip install -U pip
+python3 -m pip install PyQt6 Pillow numpy qtawesome
+python3 ASBR-Tools.py
+```
+
 Some audio tools also use bundled files from `tools/`, so keep that folder next
-to the application when running from source.
+to the application when running from source. Put vgmstream builds in
+`tools/vgmstream/` and VGAudioCLI builds in `tools/VGAudioCLI/`. On Linux,
+vgmstream should be named `vgmstream-cli`. VGAudioCLI official releases only
+ship `VGAudioCli.exe`; Linux import/encode features need a custom native
+`VGAudioCli` build or a dotnet-runnable `VGAudioCli.dll` bundle. The app also
+checks `PATH` and the directory set by `ASBR_TOOLS_TOOLS_DIR`.
+
+On Linux and macOS, user settings are written outside the application folder:
+`$XDG_CONFIG_HOME/arrow-forge/asbr_settings.json` on Linux, or
+`~/.config/arrow-forge/asbr_settings.json` when `XDG_CONFIG_HOME` is not set.
+Use `ASBR_TOOLS_CONFIG_DIR` to override that location.
 
 ## Project Layout
 
@@ -109,6 +129,8 @@ parsers/             Format readers and writers
 locales/             Translation files
 resources/           Bundled application assets
 tools/               Helper binaries and support files
+tools/vgmstream/     vgmstream CLI and its runtime libraries
+tools/VGAudioCLI/    VGAudioCLI builds and its runtime files
 ```
 
 ## Building
@@ -129,7 +151,9 @@ dist/ASBR-Tools/
 ```
 
 Zip that folder for GitHub Releases. The app can check for new releases,
-download the release asset, and apply the update from the app folder.
+download the release asset, and apply the update from the app folder on
+Windows. Linux builds still check releases and open the release page, but
+updates are installed manually.
 
 ## Safety Notes
 

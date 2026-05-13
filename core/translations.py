@@ -2,7 +2,7 @@
 import json
 import os
 
-from core.runtime_paths import app_path
+from core.runtime_paths import app_path, settings_path
 
 def _locales_dir():
     """Return the external locales directory for source and packaged builds."""
@@ -37,15 +37,20 @@ def available_languages(translations):
 TRANSLATIONS = load_translations()
 
 def _settings_path():
+    return settings_path()
+
+def _legacy_settings_path():
     return app_path("asbr_settings.json")
 
 def current_language(default="en"):
-    try:
-        with open(_settings_path(), "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data.get("language", default)
-    except (json.JSONDecodeError, OSError):
-        return default
+    for path in (_settings_path(), _legacy_settings_path()):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("language", default)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return default
 
 def ui_text(key, **kw):
     lang = current_language()

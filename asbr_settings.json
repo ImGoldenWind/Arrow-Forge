@@ -1,11 +1,21 @@
 {
   "language": "en",
   "theme": "Wonder of U",
-  "game_files_dir": "",
-  "backup_on_open": true,
+  "game_files_dir": "D:\\Users\\ImGoldenWind\\Documents\\.ASBR MODDING\\ASBR files\\data",
+  "backup_on_open": false,
   "check_updates_on_startup": true,
-  "last_update_check": "2026-05-09",
-  "recent_tools": [],
+  "last_update_check": "2026-05-13",
+  "recent_tools": [
+    "dlg_texture",
+    "dlg_xfbin_audio",
+    "dlg_sound",
+    "dlg_char_stats",
+    "dlg_battle_adj",
+    "dlg_custom_card",
+    "dlg_movelist",
+    "dlg_char_skill",
+    "dlg_char_const"
+  ],
   "favorite_tools": [],
   "pinned_tools": {}
 }

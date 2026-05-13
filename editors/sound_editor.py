@@ -21,6 +21,7 @@ from core.style_helpers import (
     ss_blocking_overlay, ss_blocking_overlay_card, ss_progressbar,
 )
 from core.editor_file_state import set_file_label, set_file_label_empty
+from core.external_tools import find_vgaudio_cli, find_vgmstream_cli, is_tool_path, tool_command
 from core.skeleton import SkeletonListRow
 from core.settings import create_backup_on_open, load_settings, save_settings, game_files_dialog_dir
 from parsers.awb_parser import (
@@ -29,7 +30,6 @@ from parsers.awb_parser import (
 )
 from parsers.hca_decoder import parse_hca_info, decode_hca_to_wav, set_hca_volume
 from core.translations import ui_text
-from core.runtime_paths import app_path
 
 
 # Audio format detection
@@ -68,6 +68,14 @@ def _ensure_file_ext(path: str, ext: str) -> str:
     return path if os.path.splitext(path)[1] else path + ext
 
 
+def _import_pyaudio():
+    try:
+        import pyaudiowpatch as pyaudio
+    except ImportError:
+        import pyaudio
+    return pyaudio
+
+
 def _detect_audio_input_format(data: bytes, fallback_path: str = '') -> str:
     """Return a suitable file extension for *data*, or raise ValueError.
 
@@ -96,7 +104,7 @@ def _run_vgaudio_conversion(
     target_ext: str = '.hca',
     source_path: str = '',
 ) -> bytes:
-    """Convert audio bytes to HCA using VGAudioCli.exe at the given path.
+    """Convert audio bytes to HCA using VGAudioCli at the given path.
 
     Raises
     ValueError
@@ -112,8 +120,8 @@ def _run_vgaudio_conversion(
         with open(in_path, 'wb') as f:
             f.write(audio_data)
         commands = (
-            [cli_path, '-i', in_path, '-o', out_path],
-            [cli_path, in_path, '-o', out_path],
+            [*tool_command(cli_path), '-i', in_path, '-o', out_path],
+            [*tool_command(cli_path), in_path, '-o', out_path],
         )
         last_result = None
         for command in commands:
@@ -146,11 +154,11 @@ def _run_tool_decode_to_wav(cli_path: str, audio_data: bytes, source_path: str =
             f.write(audio_data)
 
         if 'vgmstream' in os.path.basename(cli_path).lower():
-            cmd = [cli_path, '-o', out_path, in_path]
+            cmd = [*tool_command(cli_path), '-o', out_path, in_path]
         else:
             commands = (
-                [cli_path, '-i', in_path, '-o', out_path],
-                [cli_path, in_path, '-o', out_path],
+                [*tool_command(cli_path), '-i', in_path, '-o', out_path],
+                [*tool_command(cli_path), in_path, '-o', out_path],
             )
             last_result = None
             for command in commands:
@@ -182,22 +190,21 @@ def _run_tool_decode_to_wav(cli_path: str, audio_data: bytes, source_path: str =
 
 
 def _auto_detect_vgaudio_cli() -> str:
-    """Return VGAudioCli.exe path from settings or the tools/ directory.
+    """Return VGAudioCli path from settings, tools/, or PATH.
 
     Never shows a dialog — returns an empty string when not found.
     """
     settings = load_settings()
     cli = settings.get('vgaudio_cli_path', '')
-    if cli and os.path.isfile(cli):
+    if cli and is_tool_path(cli):
         return cli
-    candidate = app_path('tools', ui_text("ui_sound_vgaudiocli_exe_2"))
-    return candidate if os.path.isfile(candidate) else ''
+    return find_vgaudio_cli()
 
 
 def _auto_detect_decode_cli() -> str:
     """Return the best bundled decoder: vgmstream first, then VGAudioCli."""
-    candidate = app_path('tools', 'vgmstream-cli.exe')
-    if os.path.isfile(candidate):
+    candidate = find_vgmstream_cli()
+    if candidate:
         return candidate
     return _auto_detect_vgaudio_cli()
 
@@ -1084,7 +1091,7 @@ class SoundEditor(QWidget):
         return extract_entry(self._raw_data, entry)
 
     def _resolve_vgaudio_cli(self) -> str:
-        """Return VGAudioCli.exe path, prompting the user if not yet configured.
+        """Return VGAudioCli path, prompting the user if not yet configured.
 
         Must be called from the main (UI) thread because it may open a file
         dialog.  Raises RuntimeError when the user cancels or the path is
@@ -1092,18 +1099,16 @@ class SoundEditor(QWidget):
         """
         settings = load_settings()
         cli = settings.get('vgaudio_cli_path', '')
-        if cli and not os.path.isfile(cli):
+        if cli and not is_tool_path(cli):
             cli = ''
 
         if not cli:
-            candidate = app_path('tools', ui_text("ui_sound_vgaudiocli_exe_2"))
-            if os.path.isfile(candidate):
-                cli = candidate
+            cli = _auto_detect_vgaudio_cli()
 
         if not cli:
             cli, _ = QFileDialog.getOpenFileName(
-                self, ui_text("ui_sound_vgaudiocli_exe"), "", "VGAudioCli (VGAudioCli.exe);;All files (*.*)")
-            if not cli or not os.path.isfile(cli):
+                self, ui_text("ui_sound_vgaudiocli_exe"), "", "VGAudioCli (VGAudioCli VGAudioCli.exe VGAudioCli.dll);;All files (*.*)")
+            if not cli or not is_tool_path(cli):
                 raise RuntimeError(ui_text("sound_vgaudio_not_selected"))
             settings['vgaudio_cli_path'] = cli
             save_settings(settings)
@@ -1126,7 +1131,7 @@ class SoundEditor(QWidget):
 
     def _ensure_pyaudio(self):
         if self._pa is None:
-            import pyaudiowpatch as pyaudio
+            pyaudio = _import_pyaudio()
             self._pa = pyaudio.PyAudio()
         return self._pa
 
@@ -1196,7 +1201,6 @@ class SoundEditor(QWidget):
         def play_worker():
             try:
                 pa = self._ensure_pyaudio()
-                import pyaudiowpatch as pyaudio
 
                 wf = wave.open(io.BytesIO(wav_data), 'rb')
                 stream = pa.open(

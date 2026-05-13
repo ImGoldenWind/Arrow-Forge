@@ -75,18 +75,34 @@ def parse_spm_xfbin(filepath):
     prefix, xml_text = _extract_xml(payload)
     root = ET.fromstring(xml_text)
 
+    # nuccChunkBinary stores an inner BE uint32 data_size before the XML/BOM.
+    # Keep supporting raw XML payloads, but update this field on save when present.
+    has_inner_size = False
+    if len(prefix) >= 4:
+        declared_size = struct.unpack('>I', prefix[:4])[0]
+        inner_end = 4 + declared_size
+        has_inner_size = inner_end <= chunk_size and all(b == 0 for b in payload[inner_end:])
+
     return raw, {
         'root':     root,
         'prefix':   prefix,
         'hdr_off':  hdr_off,
         'data_off': data_off,
+        'has_inner_size': has_inner_size,
     }
 
 
 def save_spm_xfbin(filepath, raw, result):
     """Write modified SPM XFBIN back to filepath."""
-    xml_str  = _to_xml_str(result['root'])
-    new_data = result['prefix'] + xml_str.encode('utf-8')
+    xml_str = _to_xml_str(result['root'])
+    xml_bytes = xml_str.encode('utf-8')
+
+    prefix = result['prefix']
+    if result.get('has_inner_size') and len(prefix) >= 4:
+        binary_data = prefix[4:] + xml_bytes
+        new_data = struct.pack('>I', len(binary_data)) + binary_data
+    else:
+        new_data = prefix + xml_bytes
 
     hdr_off  = result['hdr_off']
     data_off = result['data_off']

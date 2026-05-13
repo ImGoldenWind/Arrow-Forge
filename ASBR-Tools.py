@@ -781,12 +781,20 @@ class App(QMainWindow):
         summary.setWordWrap(True)
         layout.addWidget(summary)
 
+        can_auto_install = bool(info.get("asset_url") and info.get("automatic_install_supported", True))
+
         if not info.get("asset_url"):
             no_asset = QLabel(self.t("updates_no_download_asset_dialog"))
             no_asset.setFont(QFont("Segoe UI", 10))
             no_asset.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
             no_asset.setWordWrap(True)
             layout.addWidget(no_asset)
+        elif not can_auto_install:
+            manual_only = QLabel(self.t("updates_manual_install_only"))
+            manual_only.setFont(QFont("Segoe UI", 10))
+            manual_only.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+            manual_only.setWordWrap(True)
+            layout.addWidget(manual_only)
 
         changelog_label = QLabel(self.t("updates_changelog_label"))
         changelog_label.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
@@ -819,8 +827,8 @@ class App(QMainWindow):
             return btn
 
         if info.get("release_url"):
-            add_dialog_button(self.t("updates_open_release"), "release", accent=not info.get("asset_url"))
-        if info.get("asset_url"):
+            add_dialog_button(self.t("updates_open_release"), "release", accent=not can_auto_install)
+        if can_auto_install:
             add_dialog_button(self.t("updates_install_now"), "download", accent=True)
         cancel_btn = QPushButton(self.t("unsaved_changes_cancel"))
         cancel_btn.setFixedHeight(32)
@@ -1778,13 +1786,26 @@ class App(QMainWindow):
 
     def _on_avatar_click(self, event=None):
         if self._current_cat == "CHARACTER":
+            wav_path = app_path("resources", "DiMolto.wav")
+            if not os.path.exists(wav_path):
+                return
+            if os.name != "nt":
+                try:
+                    from PyQt6.QtMultimedia import QSoundEffect
+                    effect = getattr(self, "_avatar_sound_effect", None)
+                    if effect is None:
+                        effect = QSoundEffect(self)
+                        effect.setSource(QUrl.fromLocalFile(wav_path))
+                        effect.setVolume(0.5)
+                        self._avatar_sound_effect = effect
+                    effect.play()
+                except Exception:
+                    pass
+                return
             import wave, array, io
             try:
                 import winsound
             except ImportError:
-                return
-            wav_path = app_path("resources", "DiMolto.wav")
-            if not os.path.exists(wav_path):
                 return
             try:
                 with wave.open(wav_path, "rb") as wf:
