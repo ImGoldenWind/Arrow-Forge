@@ -70,3 +70,31 @@ def find_vgaudio_cli() -> str:
 
 def find_vgmstream_cli() -> str:
     return find_tool("vgmstream-cli.exe", "vgmstream-cli", subdirs=("vgmstream",))
+
+
+def find_ffmpeg() -> str:
+    return find_tool(executable_name("ffmpeg"), "ffmpeg", subdirs=("ffmpeg",))
+
+
+def find_ffprobe() -> str:
+    return find_tool(executable_name("ffprobe"), "ffprobe", subdirs=("ffmpeg",))
+
+
+def find_sofdec2_encoder() -> str:
+    return find_tool(executable_name("sofdec2enc"), "sofdec2enc", subdirs=("Sofdec2", "sofdec2"))
+
+
+def find_sofdec2_h264_encoder() -> str:
+    return find_tool(executable_name("sofdec2encH264"), "sofdec2encH264", subdirs=("Sofdec2", "sofdec2"))
+
+
+def find_usm_repacker() -> str:
+    return find_sofdec2_encoder() or find_tool(
+        executable_name("usm_repack"),
+        executable_name("usm-repack"),
+        executable_name("usmtool"),
+        "usm_repack",
+        "usm-repack",
+        "usmtool",
+        subdirs=("usm", "cri", "sofdec"),
+    )

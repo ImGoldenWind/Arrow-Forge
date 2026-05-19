@@ -14,7 +14,7 @@ import zipfile
 from core.runtime_paths import app_root
 
 
-APP_VERSION = "1.2"
+APP_VERSION = "1.3"
 GITHUB_REPO = "ImGoldenWind/Arrow-Forge"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 USER_AGENT = f"ArrowForge-Updater/{APP_VERSION}"

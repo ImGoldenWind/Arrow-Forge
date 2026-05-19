@@ -1,11 +1,11 @@
 from core.icons import (
     icon_person, icon_swords, icon_arrow, icon_play, icon_grid,
-    icon_gallery_cat, icon_profile_cat, icon_audio_assets,
-    icon_stats, icon_id, icon_costume, icon_sound, icon_skill,
-    icon_hit, icon_damage, icon_balance, icon_projectile, icon_effect,
-    icon_movelist, icon_constraint, icon_story, icon_dialogue,
-    icon_assist, icon_game_text, icon_stage, icon_ui, icon_gimmick,
-    icon_texture, icon_xfbin,
+    icon_gallery_cat, icon_multiplayer_cat, icon_audio_assets,
+    icon_stats, icon_id, icon_costume, icon_sound, icon_skill, icon_cpu_ai,
+    icon_hit, icon_damage, icon_balance, icon_battle_result, icon_arcade_reward, icon_net_result, icon_projectile, icon_effect,
+    icon_movelist, icon_command_list_param, icon_constraint, icon_story, icon_dialogue,
+    icon_assist, icon_game_text, icon_term_list, icon_stage, icon_ui, icon_gimmick,
+    icon_texture, icon_xfbin, icon_usm_video,
     icon_char_viewer, icon_guide_char, icon_dictionary, icon_custom_card,
     icon_custom_default, icon_dlc_info, icon_gallery, icon_player_title,
     icon_sound_param, icon_sound_test,
@@ -25,16 +25,20 @@ TOOLS = {
     "MOVESET": [
         ("0xxx00prm.bin, prm_gha.bin",         icon_skill,      "tool_char_skill", "dlg_char_skill"),
         ("0xxx00_SPM",            icon_movelist,   "tool_movelist",   "dlg_movelist"),
+        ("CommandListParam.bin",   icon_command_list_param, "tool_command_list_param", "dlg_command_list_param"),
         ("0xxx00_x",              icon_projectile, "tool_projectile", "dlg_projectile"),
         ("SupportCharaParam.bin", icon_assist,     "tool_assist",     "dlg_assist"),
     ],
 
     # Global battle tuning and reaction rules.
     "BATTLE_PARAMS": [
+        ("CPU AI / ArcadeCpuParam.bin", icon_cpu_ai,    "tool_cpu_ai",     "dlg_cpu_ai"),
         ("0xxx00_constParam", icon_constraint, "tool_char_const",  "dlg_char_const"),
         ("damageprm.bin",    icon_hit,        "tool_hit_react",   "dlg_hit_react"),
         ("damageeff.bin",    icon_damage,     "tool_dmg_effect",  "dlg_dmg_effect"),
         ("btladjprm.bin",    icon_balance,    "tool_battle_adj",  "dlg_battle_adj"),
+        ("BattleResultParam.bin, ArcadeResultParam.bin", icon_battle_result, "tool_battle_result", "dlg_battle_result"),
+        ("ArcadeRewardParam.bin", icon_arcade_reward, "tool_arcade_reward", "dlg_arcade_reward"),
     ],
 
     # Story panels, special lines, menu guide characters, and localization text.
@@ -43,6 +47,7 @@ TOOLS = {
         ("SpeakingLineParam.bin", icon_dialogue,   "tool_dialogue",   "dlg_dialogue"),
         ("GuideCharParam.xfbin",  icon_guide_char, "tool_guide_char", "dlg_guide_char"),
         ("messageinfo",           icon_game_text,  "tool_game_text",  "dlg_game_text"),
+        ("TermListParam.bin",     icon_term_list,  "tool_term_list",  "dlg_term_list"),
     ],
 
     # Stage data and menu hit/click regions.
@@ -61,10 +66,11 @@ TOOLS = {
         ("SoundTestParam.xfbin",        icon_sound_test,     "tool_sound_test",     "dlg_sound_test"),
     ],
 
-    # Lobby player card and title data.
+    # Multiplayer profile, title, card, and online result data.
     "PROFILE": [
         ("CustomCardParam.xfbin",  icon_custom_card,  "tool_custom_card",  "dlg_custom_card"),
         ("PlayerTitleParam.xfbin", icon_player_title, "tool_player_title", "dlg_player_title"),
+        ("NetResultParam.bin", icon_net_result, "tool_net_result", "dlg_net_result"),
     ],
 
     # Raw resource editors and audio playback parameters.
@@ -72,6 +78,7 @@ TOOLS = {
         (".awb \\ .acb",        icon_sound,       "tool_sound",       "dlg_sound"),
         (".xfbin textures",     icon_texture,     "tool_texture",     "dlg_texture"),
         (".xfbin sounds",       icon_xfbin,       "tool_xfbin_audio", "dlg_xfbin_audio"),
+        (".usm",                icon_usm_video,   "tool_usm_video",   "dlg_usm_video"),
         ("effectprm.bin",       icon_effect,      "tool_effect",      "dlg_effect"),
         ("sndcmnparam.xfbin",   icon_sound_param, "tool_sound_param", "dlg_sound_param"),
     ],
@@ -89,15 +96,15 @@ CAT_KEYS = [
 ]
 
 CAT_PORTRAIT = {
-    "FAVORITES":     "resources/guide_favorites.png",
-    "CHARACTER":     "resources/guide_characters.png",
-    "MOVESET":       "resources/guide_moveset.png",
-    "BATTLE_PARAMS": "resources/guide_battle_params.png",
-    "STORY_TEXT":    "resources/guide_story_text.png",
-    "STAGE_UI":      "resources/guide_stages_ui.png",
-    "GALLERY":       "resources/guide_gallery.png",
-    "PROFILE":       "resources/guide_player_profile.png",
-    "ASSETS":        "resources/guide_assets.png",
+    "FAVORITES":     "resources/guides/guide_favorites.png",
+    "CHARACTER":     "resources/guides/guide_characters.png",
+    "MOVESET":       "resources/guides/guide_moveset.png",
+    "BATTLE_PARAMS": "resources/guides/guide_battle_params.png",
+    "STORY_TEXT":    "resources/guides/guide_story_text.png",
+    "STAGE_UI":      "resources/guides/guide_stages_ui.png",
+    "GALLERY":       "resources/guides/guide_gallery.png",
+    "PROFILE":       "resources/guides/guide_player_profile.png",
+    "ASSETS":        "resources/guides/guide_assets.png",
 }
 
 # (icon_func, i18n_key, speaker_i18n_key)
@@ -108,6 +115,6 @@ CAT_META = {
     "STORY_TEXT":    (icon_play,         "cat_STORY_TEXT",    "speaker_STORY_TEXT"),
     "STAGE_UI":      (icon_grid,         "cat_STAGE_UI",      "speaker_STAGE_UI"),
     "GALLERY":       (icon_gallery_cat,  "cat_GALLERY",       "speaker_GALLERY"),
-    "PROFILE":       (icon_profile_cat,  "cat_PROFILE",       "speaker_PROFILE"),
+    "PROFILE":       (icon_multiplayer_cat, "cat_PROFILE",       "speaker_PROFILE"),
     "ASSETS":        (icon_audio_assets, "cat_ASSETS",        "speaker_ASSETS"),
 }

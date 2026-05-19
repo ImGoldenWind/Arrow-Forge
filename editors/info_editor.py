@@ -10,8 +10,8 @@ from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont, QPainter, QColor, QPen, QBrush, QCursor
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_sep, ss_input, ss_search, ss_tab_widget, ss_scrollarea,
-    ss_tab_bar, TOOLBAR_H, TOOLBAR_BTN_H,
+    ss_btn, ss_sep, ss_accent_sep, ss_input, ss_search, ss_tab_widget, ss_scrollarea,
+    ss_scrollarea_transparent, ss_tab_bar, TOOLBAR_H, TOOLBAR_BTN_H,
 )
 from core.editor_file_state import set_file_label
 from core.skeleton import SkeletonListRow
@@ -586,8 +586,8 @@ class InfoEditor(QWidget):
         root_layout.addWidget(top)
 
         sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(ss_sep())
+        sep.setFixedHeight(2)
+        sep.setStyleSheet(ss_accent_sep())
         root_layout.addWidget(sep)
 
         # Main area: left sidebar (scenes) + collision tabs + editor
@@ -695,13 +695,7 @@ class InfoEditor(QWidget):
         self._set_scroll = QScrollArea()
         self._set_scroll.setWidgetResizable(True)
         self._set_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._set_scroll.setStyleSheet(
-            f"QScrollArea {{ background: transparent; border: none; }}"
-            f"QScrollBar:vertical {{ background: transparent; width: 10px; }}"
-            f"QScrollBar::handle:vertical {{ background: {P['mid']}; border-radius: 5px; min-height: 20px; }}"
-            f"QScrollBar::handle:vertical:hover {{ background: {P['secondary']}; }}"
-            f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}"
-        )
+        self._set_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._set_list_widget = QWidget()
         self._set_list_widget.setStyleSheet("background: transparent;")
         self._set_list_layout = QVBoxLayout(self._set_list_widget)

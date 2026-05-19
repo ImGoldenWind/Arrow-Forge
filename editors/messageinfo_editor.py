@@ -2,21 +2,25 @@
 
 import os
 import copy
+import threading
 
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit,
     QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QMessageBox,
-    QScrollArea, QTextEdit, QSizePolicy,
+    QScrollArea, QTextEdit, QSizePolicy, QTableView, QAbstractItemView,
+    QHeaderView, QProgressBar,
 )
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QAbstractTableModel, QModelIndex, QSortFilterProxyModel
 from PyQt6.QtGui import QFont
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn,
+    ss_btn, ss_accent_sep, ss_input, ss_table, ss_textedit, ss_progressbar,
+    ss_scrollarea_transparent,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
-from core.editor_file_state import set_file_label
+from core.editor_file_state import set_file_label, set_file_label_empty
+from core.skeleton import SkeletonBar, SkeletonListRow
 from parsers.messageinfo_parser import (
     parse_messageinfo_xfbin, save_messageinfo_xfbin,
 )
@@ -102,9 +106,16 @@ _CHAR_NAMES: dict[int, str] = {
 }
 
 
+_ALL_STRINGS = "__all_strings__"
+
+
 def _char_label(char_id: int) -> str:
     name = _CHAR_NAMES.get(char_id)
     return name if name else f"ID {char_id}"
+
+
+def _scope_label(scope) -> str:
+    return ui_text("ui_messageinfo_all_strings") if scope == _ALL_STRINGS else _char_label(scope)
 
 
 def _clear_layout(layout):
@@ -140,7 +151,121 @@ class _FocusTextEdit(QTextEdit):
         self._focus_cb()
 
 
+class _MessageInfoTableModel(QAbstractTableModel):
+    _HEADERS = (
+        "ui_messageinfo_crc32_id",
+        "ui_assist_char_id",
+        "ui_messageinfo_cue_id",
+        "ui_dlcinfoparam_type",
+        "ui_messageinfo_ref_crc32",
+        "ui_messageinfo_message",
+    )
+
+    def __init__(self, entries: list[dict], indices: list[int], parent=None):
+        super().__init__(parent)
+        self._entries = entries
+        self._indices = indices
+
+    def rowCount(self, parent=QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self._indices)
+
+    def columnCount(self, parent=QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self._HEADERS)
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role=Qt.ItemDataRole.DisplayRole):
+        if role != Qt.ItemDataRole.DisplayRole or orientation != Qt.Orientation.Horizontal:
+            return None
+        if 0 <= section < len(self._HEADERS):
+            return ui_text(self._HEADERS[section])
+        return None
+
+    def flags(self, index: QModelIndex):
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+
+    def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or index.row() >= len(self._indices):
+            return None
+        entry_idx = self._indices[index.row()]
+        entry = self._entries[entry_idx]
+
+        if role == Qt.ItemDataRole.UserRole:
+            return entry_idx
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+
+        col = index.column()
+        if col == 0:
+            return f"{entry['crc32_id']:08X}"
+        if col == 1:
+            return str(entry["char_id"])
+        if col == 2:
+            return str(entry["cue_id"])
+        if col == 3:
+            return ui_text("ui_messageinfo_reference") if entry["is_ref"] == 1 else ui_text("ui_mainmodeparam_normal")
+        if col == 4:
+            return f"{entry['ref_crc32']:08X}" if entry.get("ref_crc32") else ""
+        if col == 5:
+            return entry["message"].replace("\n", " ")
+        return None
+
+    def entry_index(self, row: int) -> int | None:
+        if 0 <= row < len(self._indices):
+            return self._indices[row]
+        return None
+
+    def row_for_entry(self, entry_idx: int) -> int:
+        try:
+            return self._indices.index(entry_idx)
+        except ValueError:
+            return -1
+
+    def refresh_entry(self, entry_idx: int):
+        row = self.row_for_entry(entry_idx)
+        if row < 0:
+            return
+        left = self.index(row, 0)
+        right = self.index(row, self.columnCount() - 1)
+        self.dataChanged.emit(left, right, [Qt.ItemDataRole.DisplayRole])
+
+
+class _MessageInfoFilterProxy(QSortFilterProxyModel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._needle = ""
+
+    def set_filter_text(self, text: str):
+        self._needle = text.lower().strip()
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
+        if not self._needle:
+            return True
+        model = self.sourceModel()
+        if model is None:
+            return True
+        entry_idx = model.entry_index(source_row)
+        if entry_idx is None:
+            return True
+        entry = model._entries[entry_idx]
+        type_text = ui_text("ui_messageinfo_reference") if entry["is_ref"] == 1 else ui_text("ui_mainmodeparam_normal")
+        haystack = " ".join((
+            f"{entry['crc32_id']:08x}",
+            str(entry["char_id"]),
+            _char_label(entry["char_id"]).lower(),
+            str(entry["cue_id"]),
+            f"{entry.get('ref_crc32', 0):08x}",
+            type_text.lower(),
+            entry["message"].lower(),
+        ))
+        return self._needle in haystack
+
+
 class MessageInfoEditor(QWidget):
+    _load_done_signal = pyqtSignal(str, object, int, object)
+    _load_error_signal = pyqtSignal(str)
+
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
         self._t = t or (lambda k, **kw: k)
@@ -151,22 +276,23 @@ class MessageInfoEditor(QWidget):
         self._entries: list[dict] = []
         self._orig_entries: list[dict] = []
 
-        self._current_char_id: int | None = None
+        self._current_char_id = None
         self._char_buttons: list[tuple] = []      # (QPushButton, char_id)
         self._selected_entry_idx: int | None = None
-        self._card_widgets: list[tuple] = []       # (entry_idx, QFrame)
-
-        # Pagination state for right panel
-        self._all_char_entries: list[tuple] = []  # full (idx, entry) list for current char
-        self._loaded_count: int = 0
-        self._cards_layout = None                  # layout to append more cards into
-        self._load_more_btn: QPushButton | None = None
+        self._table_model: _MessageInfoTableModel | None = None
+        self._proxy_model: _MessageInfoFilterProxy | None = None
+        self._entries_table: QTableView | None = None
+        self._loading_detail = False
+        self._detail_widgets: list[QWidget] = []
 
         # Debounce for right-panel entry search
         self._entry_search_timer = QTimer()
         self._entry_search_timer.setSingleShot(True)
         self._entry_search_timer.setInterval(250)
         self._entry_search_timer.timeout.connect(self._do_entry_search)
+
+        self._load_done_signal.connect(self._on_load_done)
+        self._load_error_signal.connect(self._on_load_error)
 
         self._build_ui()
 
@@ -209,8 +335,8 @@ class MessageInfoEditor(QWidget):
         root.addWidget(top)
 
         sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background-color: {P['mid']};")
+        sep.setFixedHeight(2)
+        sep.setStyleSheet(ss_accent_sep())
         root.addWidget(sep)
 
         # Main area
@@ -277,7 +403,7 @@ class MessageInfoEditor(QWidget):
         self._char_scroll = QScrollArea()
         self._char_scroll.setWidgetResizable(True)
         self._char_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._char_scroll.setStyleSheet("QScrollArea { background-color: transparent; border: none; }")
+        self._char_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._char_list_widget = QWidget()
         self._char_list_widget.setStyleSheet("background-color: transparent;")
         self._char_list_layout = QVBoxLayout(self._char_list_widget)
@@ -294,7 +420,7 @@ class MessageInfoEditor(QWidget):
         divider.setStyleSheet(f"background-color: {P['mid']};")
         main_layout.addWidget(divider)
 
-        # Right panel container (header + scrollable cards)
+        # Right panel container (header + virtualized table/detail editor)
         right_container = QWidget()
         right_container.setStyleSheet(f"background-color: {P['bg_dark']};")
         right_vlayout = QVBoxLayout(right_container)
@@ -334,27 +460,23 @@ class MessageInfoEditor(QWidget):
         rh_sep.setStyleSheet(f"background-color: {P['mid']};")
         right_vlayout.addWidget(rh_sep)
 
-        self._editor_scroll = QScrollArea()
-        self._editor_scroll.setWidgetResizable(True)
-        self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._editor_scroll.setStyleSheet(
-            f"QScrollArea {{ background-color: {P['bg_dark']}; border: none; }}"
-        )
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(f"background-color: {P['bg_dark']};")
         self._editor_layout = QVBoxLayout(self._editor_widget)
         self._editor_layout.setContentsMargins(0, 0, 0, 0)
         self._editor_layout.setSpacing(0)
-        self._editor_scroll.setWidget(self._editor_widget)
         self._show_placeholder(ui_text("ui_messageinfo_open_a_messageinfo_bin_xfbin_file_to_begin_editing"))
 
-        right_vlayout.addWidget(self._editor_scroll, 1)
+        right_vlayout.addWidget(self._editor_widget, 1)
         main_layout.addWidget(right_container, 1)
         root.addWidget(main, 1)
 
     def _show_placeholder(self, text: str):
         _clear_layout(self._editor_layout)
-        self._card_widgets = []
+        self._entries_table = None
+        self._table_model = None
+        self._proxy_model = None
+        self._detail_widgets = []
         lbl = QLabel(text)
         lbl.setFont(QFont("Segoe UI", 16))
         lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
@@ -377,6 +499,12 @@ class MessageInfoEditor(QWidget):
         self._char_list_layout.addStretch()
 
         s = search.lower().strip()
+        all_label = ui_text("ui_messageinfo_all_strings")
+        if not s or s in all_label.lower():
+            btn = self._make_char_button(_ALL_STRINGS, len(self._entries))
+            self._char_list_layout.insertWidget(self._char_list_layout.count() - 1, btn)
+            self._char_buttons.append((btn, _ALL_STRINGS))
+
         for char_id, indices in self._get_char_groups().items():
             if s:
                 if s not in _char_label(char_id).lower() and s not in str(char_id):
@@ -388,7 +516,7 @@ class MessageInfoEditor(QWidget):
 
         self._update_char_button_styles()
 
-    def _make_char_button(self, char_id: int, count: int) -> QPushButton:
+    def _make_char_button(self, char_id, count: int) -> QPushButton:
         btn = QPushButton()
         btn.setFixedHeight(44)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -402,7 +530,7 @@ class MessageInfoEditor(QWidget):
         inner.setContentsMargins(10, 3, 10, 3)
         inner.setSpacing(0)
 
-        name_lbl = QLabel(_char_label(char_id))
+        name_lbl = QLabel(_scope_label(char_id))
         name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         name_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
         name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -436,20 +564,17 @@ class MessageInfoEditor(QWidget):
         self._populate_char_list(self._search_entry.text())
 
     def _do_entry_search(self):
-        """Scroll the right panel to the first entry matching the search bar."""
-        s = self._entry_search.text().lower().strip()
-        if not s or not self._all_char_entries:
+        """Filter the virtualized entry table without creating extra widgets."""
+        if self._proxy_model is None:
             return
-        for idx, entry in self._all_char_entries:
-            if s in entry["message"].lower() or s in f"{entry['crc32_id']:08x}":
-                self._scroll_to_entry(idx)
-                return
+        self._proxy_model.set_filter_text(self._entry_search.text())
+        self._select_first_visible_row()
 
-    def _select_char(self, char_id: int):
+    def _select_char(self, char_id):
         self._current_char_id = char_id
         self._selected_entry_idx = None
-        self._dup_btn.setEnabled(False)
-        self._del_btn.setEnabled(False)
+        self._dup_btn.setEnabled(char_id != _ALL_STRINGS)
+        self._del_btn.setEnabled(char_id != _ALL_STRINGS)
         self._entry_search.clear()
         self._update_char_button_styles()
         self._build_entries_panel(char_id)
@@ -717,6 +842,271 @@ class MessageInfoEditor(QWidget):
         self._dup_btn.setEnabled(True)
         self._del_btn.setEnabled(True)
 
+    # Virtualized entries panel (overrides the legacy paged-card renderer above)
+
+    def _entry_indices_for_scope(self, scope) -> list[int]:
+        if scope == _ALL_STRINGS:
+            return list(range(len(self._entries)))
+        return [i for i, entry in enumerate(self._entries) if entry["char_id"] == scope]
+
+    def _build_entries_panel(self, scope, select_idx: int | None = None):
+        _clear_layout(self._editor_layout)
+        self._selected_entry_idx = None
+        self._detail_widgets = []
+        self._right_title_lbl.setText(_scope_label(scope))
+
+        indices = self._entry_indices_for_scope(scope)
+        if not indices:
+            self._show_empty_entries_message()
+            return
+
+        panel = QWidget()
+        panel.setStyleSheet(f"background-color: {P['bg_dark']};")
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(12, 10, 12, 12)
+        panel_layout.setSpacing(8)
+
+        self._table_model = _MessageInfoTableModel(self._entries, indices, self)
+        self._proxy_model = _MessageInfoFilterProxy(self)
+        self._proxy_model.setSourceModel(self._table_model)
+        self._proxy_model.set_filter_text(self._entry_search.text())
+
+        self._entries_table = QTableView(panel)
+        self._entries_table.setModel(self._proxy_model)
+        self._entries_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._entries_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._entries_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._entries_table.setAlternatingRowColors(False)
+        self._entries_table.setShowGrid(False)
+        self._entries_table.setSortingEnabled(False)
+        self._entries_table.verticalHeader().setVisible(False)
+        self._entries_table.verticalHeader().setDefaultSectionSize(28)
+        self._entries_table.horizontalHeader().setStretchLastSection(True)
+        self._entries_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self._entries_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._entries_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._entries_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self._entries_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self._entries_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self._entries_table.setStyleSheet(ss_table())
+        self._entries_table.selectionModel().selectionChanged.connect(self._on_table_selection_changed)
+        panel_layout.addWidget(self._entries_table, 1)
+
+        panel_layout.addWidget(self._make_detail_panel(panel))
+        self._editor_layout.addWidget(panel, 1)
+
+        if select_idx is not None:
+            self._select_entry_in_table(select_idx)
+        else:
+            self._select_first_visible_row()
+
+    def _show_empty_entries_message(self):
+        self._entries_table = None
+        self._table_model = None
+        self._proxy_model = None
+        lbl = QLabel(ui_text("ui_messageinfo_no_entries_for_this_character"))
+        lbl.setFont(QFont("Segoe UI", 13))
+        lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._editor_layout.addStretch()
+        self._editor_layout.addWidget(lbl)
+        self._editor_layout.addStretch()
+
+    def _make_detail_panel(self, parent=None) -> QFrame:
+        detail = QFrame(parent)
+        detail.setStyleSheet(
+            f"QFrame {{ background-color: {P['bg_panel']}; border: 1px solid {P['border']}; "
+            f"border-radius: 8px; }}"
+        )
+        layout = QVBoxLayout(detail)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
+
+        fields = QWidget(detail)
+        fields.setStyleSheet("background: transparent;")
+        fields_layout = QGridLayout(fields)
+        fields_layout.setContentsMargins(0, 0, 0, 0)
+        fields_layout.setHorizontalSpacing(10)
+        fields_layout.setVerticalSpacing(6)
+
+        def make_field(label_text: str, col: int, read_only: bool = False) -> QLineEdit:
+            box = QWidget(fields)
+            box.setStyleSheet("background: transparent;")
+            box_layout = QVBoxLayout(box)
+            box_layout.setContentsMargins(0, 0, 0, 0)
+            box_layout.setSpacing(2)
+            lbl = QLabel(label_text, box)
+            lbl.setFont(QFont("Segoe UI", 10))
+            lbl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
+            box_layout.addWidget(lbl)
+            edit = QLineEdit(box)
+            edit.setFixedHeight(28)
+            edit.setFont(QFont("Consolas", 11))
+            edit.setReadOnly(read_only)
+            edit.setStyleSheet(ss_input())
+            box_layout.addWidget(edit)
+            fields_layout.addWidget(box, 0, col)
+            fields_layout.setColumnStretch(col, 1)
+            self._detail_widgets.append(edit)
+            return edit
+
+        self._detail_crc = make_field(ui_text("ui_messageinfo_crc32_id"), 0)
+        self._detail_char = make_field(ui_text("ui_assist_char_id"), 1)
+        self._detail_cue = make_field(ui_text("ui_messageinfo_cue_id"), 2)
+        self._detail_type = make_field(ui_text("ui_dlcinfoparam_type"), 3, read_only=True)
+        self._detail_ref = make_field(ui_text("ui_messageinfo_ref_crc32"), 4)
+        layout.addWidget(fields)
+
+        msg_lbl = QLabel(ui_text("ui_messageinfo_message"), detail)
+        msg_lbl.setFont(QFont("Segoe UI", 10))
+        msg_lbl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
+        layout.addWidget(msg_lbl)
+
+        self._detail_message = QTextEdit(detail)
+        self._detail_message.setFont(QFont("Segoe UI", 10))
+        self._detail_message.setFixedHeight(92)
+        self._detail_message.setStyleSheet(ss_textedit())
+        layout.addWidget(self._detail_message)
+        self._detail_widgets.append(self._detail_message)
+
+        btn_row = QWidget(detail)
+        btn_row.setStyleSheet("background: transparent;")
+        btn_layout = QHBoxLayout(btn_row)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(4)
+
+        self._detail_add_btn = QPushButton(ui_text("ui_messageinfo_add"), btn_row)
+        self._detail_add_btn.setFixedHeight(26)
+        self._detail_add_btn.setStyleSheet(ss_btn())
+        self._detail_add_btn.clicked.connect(self._detail_add_entry)
+        btn_layout.addWidget(self._detail_add_btn)
+
+        self._detail_dup_btn = QPushButton(ui_text("btn_dup_short"), btn_row)
+        self._detail_dup_btn.setFixedHeight(26)
+        self._detail_dup_btn.setStyleSheet(ss_btn())
+        self._detail_dup_btn.clicked.connect(self._detail_dup_entry)
+        btn_layout.addWidget(self._detail_dup_btn)
+
+        self._detail_del_btn = QPushButton(ui_text("btn_delete"), btn_row)
+        self._detail_del_btn.setFixedHeight(26)
+        self._detail_del_btn.setStyleSheet(ss_btn(danger=True))
+        self._detail_del_btn.clicked.connect(self._detail_delete_entry)
+        btn_layout.addWidget(self._detail_del_btn)
+
+        btn_layout.addStretch()
+        layout.addWidget(btn_row)
+        self._detail_widgets.extend((self._detail_add_btn, self._detail_dup_btn, self._detail_del_btn))
+
+        self._detail_crc.editingFinished.connect(self._apply_detail_fields)
+        self._detail_char.editingFinished.connect(self._apply_detail_fields)
+        self._detail_cue.editingFinished.connect(self._apply_detail_fields)
+        self._detail_ref.editingFinished.connect(self._apply_detail_fields)
+        self._detail_message.textChanged.connect(self._apply_detail_message)
+        self._set_detail_enabled(False)
+        return detail
+
+    def _set_detail_enabled(self, enabled: bool):
+        for widget in self._detail_widgets:
+            widget.setEnabled(enabled)
+        if not enabled and hasattr(self, "_detail_message"):
+            self._loading_detail = True
+            self._detail_crc.clear()
+            self._detail_char.clear()
+            self._detail_cue.clear()
+            self._detail_type.clear()
+            self._detail_ref.clear()
+            self._detail_message.setPlainText(ui_text("ui_messageinfo_select_an_entry"))
+            self._loading_detail = False
+
+    def _on_table_selection_changed(self):
+        if self._entries_table is None or self._proxy_model is None:
+            return
+        rows = self._entries_table.selectionModel().selectedRows()
+        if not rows:
+            self._selected_entry_idx = None
+            self._set_detail_enabled(False)
+            return
+        source_index = self._proxy_model.mapToSource(rows[0])
+        entry_idx = self._table_model.entry_index(source_index.row()) if self._table_model else None
+        if entry_idx is None:
+            self._selected_entry_idx = None
+            self._set_detail_enabled(False)
+            return
+        self._load_detail(entry_idx)
+
+    def _load_detail(self, entry_idx: int):
+        entry = self._entries[entry_idx]
+        self._selected_entry_idx = entry_idx
+        self._loading_detail = True
+        self._detail_crc.setText(f"{entry['crc32_id']:08X}")
+        self._detail_char.setText(str(entry["char_id"]))
+        self._detail_cue.setText(str(entry["cue_id"]))
+        self._detail_type.setText(
+            ui_text("ui_messageinfo_reference") if entry["is_ref"] == 1 else ui_text("ui_mainmodeparam_normal")
+        )
+        self._detail_ref.setText(f"{entry['ref_crc32']:08X}" if entry.get("ref_crc32") else "00000000")
+        self._detail_message.setPlainText(entry["message"])
+        self._loading_detail = False
+        self._set_detail_enabled(True)
+
+    def _select_first_visible_row(self):
+        if self._entries_table is None or self._proxy_model is None:
+            return
+        if self._proxy_model.rowCount() <= 0:
+            self._selected_entry_idx = None
+            self._set_detail_enabled(False)
+            return
+        index = self._proxy_model.index(0, 0)
+        self._entries_table.selectRow(0)
+        self._entries_table.scrollTo(index, QAbstractItemView.ScrollHint.PositionAtTop)
+        self._on_table_selection_changed()
+
+    def _select_entry_in_table(self, entry_idx: int):
+        if self._entries_table is None or self._proxy_model is None or self._table_model is None:
+            return
+        source_row = self._table_model.row_for_entry(entry_idx)
+        if source_row < 0:
+            self._select_first_visible_row()
+            return
+        proxy_index = self._proxy_model.mapFromSource(self._table_model.index(source_row, 0))
+        if not proxy_index.isValid():
+            self._select_first_visible_row()
+            return
+        self._entries_table.selectRow(proxy_index.row())
+        self._entries_table.scrollTo(proxy_index, QAbstractItemView.ScrollHint.PositionAtCenter)
+        self._on_table_selection_changed()
+
+    def _refresh_entry_row(self, entry_idx: int):
+        if self._table_model is not None:
+            self._table_model.refresh_entry(entry_idx)
+
+    def _apply_detail_fields(self):
+        if self._loading_detail or self._selected_entry_idx is None:
+            return
+        idx = self._selected_entry_idx
+        entry = self._entries[idx]
+        old_char = entry["char_id"]
+        try:
+            entry["crc32_id"] = int(self._detail_crc.text().strip() or "0", 16) & 0xFFFFFFFF
+            entry["char_id"] = int(self._detail_char.text().strip() or "0")
+            entry["cue_id"] = int(self._detail_cue.text().strip() or "0")
+            entry["ref_crc32"] = int(self._detail_ref.text().strip() or "0", 16) & 0xFFFFFFFF
+        except ValueError:
+            self._load_detail(idx)
+            return
+        self._mark_dirty()
+        self._refresh_entry_row(idx)
+        if entry["char_id"] != old_char:
+            self._populate_char_list(self._search_entry.text())
+
+    def _apply_detail_message(self):
+        if self._loading_detail or self._selected_entry_idx is None:
+            return
+        idx = self._selected_entry_idx
+        self._entries[idx]["message"] = self._detail_message.toPlainText()
+        self._mark_dirty()
+        self._refresh_entry_row(idx)
+
     # Left panel CRUD (operates on character groups)
 
     def _next_free_char_id(self) -> int:
@@ -748,7 +1138,7 @@ class MessageInfoEditor(QWidget):
 
     def _on_dup_entry(self):
         """Duplicate current character group into a new char_id."""
-        if self._current_char_id is None:
+        if self._current_char_id is None or self._current_char_id == _ALL_STRINGS:
             return
         src_id = self._current_char_id
         src_entries = [e for e in self._entries if e["char_id"] == src_id]
@@ -766,7 +1156,7 @@ class MessageInfoEditor(QWidget):
 
     def _on_delete_entry(self):
         """Delete all entries for the current character group."""
-        if self._current_char_id is None:
+        if self._current_char_id is None or self._current_char_id == _ALL_STRINGS:
             return
         char_id = self._current_char_id
         count = sum(1 for e in self._entries if e["char_id"] == char_id)
@@ -872,6 +1262,84 @@ class MessageInfoEditor(QWidget):
             self._show_placeholder(ui_text("ui_messageinfo_select_a_character"))
             self._update_char_button_styles()
 
+    def _detail_add_entry(self):
+        if self._selected_entry_idx is None:
+            return
+        self._card_add_entry(self._selected_entry_idx)
+
+    def _detail_dup_entry(self):
+        if self._selected_entry_idx is None:
+            return
+        self._card_dup_entry(self._selected_entry_idx)
+
+    def _detail_delete_entry(self):
+        if self._selected_entry_idx is None:
+            return
+        self._card_delete_entry(self._selected_entry_idx)
+
+    def _card_add_entry(self, after_idx: int):
+        """Insert a new blank entry after the selected table row."""
+        char_id = self._entries[after_idx]["char_id"]
+        new_entry = {
+            "crc32_id": 0,
+            "unk1": 0, "unk2": 0, "unk3": 0,
+            "message": "",
+            "ref_crc32": 0,
+            "is_ref": -1,
+            "char_id": char_id,
+            "cue_id": -1,
+            "unk6": -1,
+            "unk7": 0,
+        }
+        insert_pos = after_idx + 1
+        self._entries.insert(insert_pos, new_entry)
+        self._orig_entries.insert(insert_pos, dict(new_entry))
+        self._mark_dirty()
+        self._populate_char_list(self._search_entry.text())
+        self._build_entries_panel(self._current_char_id, select_idx=insert_pos)
+
+    def _card_dup_entry(self, entry_idx: int):
+        """Duplicate the selected table row."""
+        dup = copy.deepcopy(self._entries[entry_idx])
+        insert_pos = entry_idx + 1
+        self._entries.insert(insert_pos, dup)
+        self._orig_entries.insert(insert_pos, copy.deepcopy(dup))
+        self._mark_dirty()
+        self._populate_char_list(self._search_entry.text())
+        self._build_entries_panel(self._current_char_id, select_idx=insert_pos)
+
+    def _card_delete_entry(self, entry_idx: int):
+        """Delete the selected table row."""
+        char_id = self._entries[entry_idx]["char_id"]
+        ans = QMessageBox.question(
+            self, ui_text("ui_messageinfo_confirm"), ui_text("ui_messageinfo_delete_this_entry"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+
+        next_select = entry_idx if entry_idx + 1 < len(self._entries) else entry_idx - 1
+        del self._entries[entry_idx]
+        if entry_idx < len(self._orig_entries):
+            del self._orig_entries[entry_idx]
+
+        self._selected_entry_idx = None
+        self._mark_dirty()
+        self._populate_char_list(self._search_entry.text())
+
+        if not self._entries:
+            self._current_char_id = None
+            self._show_placeholder(ui_text("ui_messageinfo_select_a_character"))
+            self._update_char_button_styles()
+            return
+
+        if self._current_char_id != _ALL_STRINGS and char_id not in self._get_char_groups():
+            self._current_char_id = _ALL_STRINGS
+            self._update_char_button_styles()
+        if next_select >= len(self._entries):
+            next_select = len(self._entries) - 1
+        self._build_entries_panel(self._current_char_id, select_idx=max(0, next_select))
+
     # Dirty state
 
     def _mark_dirty(self):
@@ -879,6 +1347,58 @@ class MessageInfoEditor(QWidget):
         set_file_label(self._file_lbl, self._filepath, dirty=True)
 
     # File operations
+
+    def _show_char_skeleton(self):
+        _clear_layout(self._char_list_layout)
+        self._char_buttons = []
+        for _ in range(12):
+            self._char_list_layout.addWidget(SkeletonListRow())
+        self._char_list_layout.addStretch()
+
+    def _show_editor_skeleton(self):
+        _clear_layout(self._editor_layout)
+        self._entries_table = None
+        self._table_model = None
+        self._proxy_model = None
+
+        shell = QWidget()
+        shell.setStyleSheet(f"background-color: {P['bg_dark']};")
+        shell_layout = QVBoxLayout(shell)
+        shell_layout.setContentsMargins(12, 10, 12, 12)
+        shell_layout.setSpacing(8)
+
+        progress = QProgressBar(shell)
+        progress.setRange(0, 0)
+        progress.setFixedHeight(14)
+        progress.setTextVisible(False)
+        progress.setStyleSheet(ss_progressbar())
+        shell_layout.addWidget(progress)
+
+        table_shell = QFrame(shell)
+        table_shell.setStyleSheet(
+            f"QFrame {{ background-color: {P['bg_panel']}; border: 1px solid {P['border']}; "
+            f"border-radius: 8px; }}"
+        )
+        table_layout = QVBoxLayout(table_shell)
+        table_layout.setContentsMargins(12, 12, 12, 12)
+        table_layout.setSpacing(8)
+        for _ in range(12):
+            table_layout.addWidget(SkeletonBar(table_shell, height=18, corner_radius=4))
+        shell_layout.addWidget(table_shell, 1)
+
+        detail_shell = QFrame(shell)
+        detail_shell.setStyleSheet(
+            f"QFrame {{ background-color: {P['bg_panel']}; border: 1px solid {P['border']}; "
+            f"border-radius: 8px; }}"
+        )
+        detail_layout = QVBoxLayout(detail_shell)
+        detail_layout.setContentsMargins(12, 12, 12, 12)
+        detail_layout.setSpacing(8)
+        detail_layout.addWidget(SkeletonBar(detail_shell, height=28, corner_radius=4))
+        detail_layout.addWidget(SkeletonBar(detail_shell, height=92, corner_radius=4))
+        shell_layout.addWidget(detail_shell)
+
+        self._editor_layout.addWidget(shell, 1)
 
     def _on_open(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -890,12 +1410,46 @@ class MessageInfoEditor(QWidget):
 
     def _load_file(self, filepath: str):
         create_backup_on_open(filepath)
-        try:
-            data, version, entries = parse_messageinfo_xfbin(filepath)
-        except Exception as exc:
-            QMessageBox.critical(self, ui_text("dlg_title_error"), ui_text("ui_assist_failed_to_open_file_value", p0=exc))
-            return
+        set_file_label_empty(self._file_lbl, ui_text("loading"))
+        self._btn_open.setEnabled(False)
+        self._btn_save.setEnabled(False)
+        self._add_btn.setEnabled(False)
+        self._dup_btn.setEnabled(False)
+        self._del_btn.setEnabled(False)
+        self._entry_search.clear()
+        self._right_title_lbl.setText("")
+        self._show_char_skeleton()
+        self._show_editor_skeleton()
 
+        def worker():
+            try:
+                data, version, entries = parse_messageinfo_xfbin(filepath)
+            except Exception as exc:
+                self._load_error_signal.emit(str(exc))
+                return
+            self._load_done_signal.emit(filepath, data, version, entries)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_load_error(self, msg: str):
+        self._btn_open.setEnabled(True)
+        self._btn_save.setEnabled(False)
+        self._add_btn.setEnabled(False)
+        self._dup_btn.setEnabled(False)
+        self._del_btn.setEnabled(False)
+        self._filepath = None
+        self._original_data = None
+        self._entries = []
+        self._orig_entries = []
+        self._current_char_id = None
+        self._selected_entry_idx = None
+        _clear_layout(self._char_list_layout)
+        self._char_list_layout.addStretch()
+        set_file_label_empty(self._file_lbl, ui_text("no_file_loaded"))
+        self._show_placeholder(ui_text("ui_messageinfo_open_a_messageinfo_bin_xfbin_file_to_begin_editing"))
+        QMessageBox.critical(self, ui_text("dlg_title_error"), ui_text("ui_assist_failed_to_open_file_value", p0=msg))
+
+    def _on_load_done(self, filepath: str, data, version: int, entries):
         self._filepath = filepath
         self._original_data = data
         self._version = version
@@ -904,14 +1458,14 @@ class MessageInfoEditor(QWidget):
         self._current_char_id = None
         self._selected_entry_idx = None
 
+        self._btn_open.setEnabled(True)
         set_file_label(self._file_lbl, filepath)
         self._btn_save.setEnabled(True)
         self._add_btn.setEnabled(True)
 
         self._populate_char_list()
-        groups = self._get_char_groups()
-        if groups:
-            self._select_char(next(iter(groups)))
+        if self._entries:
+            self._select_char(_ALL_STRINGS)
         else:
             self._show_placeholder(ui_text("ui_assist_no_entries_found"))
 

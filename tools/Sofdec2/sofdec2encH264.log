@@ -1,0 +1,59 @@
+I: -------------------------------- Start Program --------------------------------
+I: Product            : Sofdec2 Encoder H.264
+I:                    : AsmVersion= 2.20.7066.30843
+I:                    : FileVersion= 2.20.0.0
+I:                    : Build= 2019-05-07T17:08:06
+I:                    : Start= 2026-05-13T22:54:40
+I: OS                 : Майкрософт Windows 11 Pro
+I:                    : Architecture=64-разрядная
+I:                    : CsdVersion=?
+I:                    : Version=6.2.9200.0
+I: CPU                : 13th Gen Intel(R) Core(TM) i5-13400F
+I:                    : AddressWidth=64
+I:                    : NumberOfProcessors=1
+I:                    : NumberOfCores=10
+I:                    : NumberOfLogicalProcessors=16
+I:                    : RAM-VTotal=38 323 448[KBytes]
+I:                    : RAM-PTotal=34 142 937 088[Bytes]
+I:                    : RAM-Type=Unknown (ID=0)
+I: GPU                : Meta Virtual Monitor
+I:                    : Driver=5.3.57.114
+I:                    : RefreshRate=?
+I:                    : Mode=?
+I:                    : VRAM=0[Bytes]
+I: PC                 : IMGOLDENWIND
+I:                    : Manufacturer=Micro-Star International Co., Ltd.
+I:                    : Model=MS-7D46
+I: Battery            : ?
+I:                    : Availability=?
+I:                    : Chemistry=?
+I:                    : Remaining=0[%]
+I:                    : RunTime=0[min]
+I:                    : Status=?
+I: Running Framework  : .NET Framework Ver.2.0.50727.9179 (2.0.50727.9179)
+I: Installed Framework: 1049 v1.0.3705 v1.1.4322 v2.0.50727 v3.0 v3.5 v4.0.30319
+I: Apartment          : MTA
+I: Argument[1]        : D:\Users\ImGoldenWind\Documents\.ASBR MODDING\All Star Battle R - ToolBox\tools\Sofdec2\sofdec2encH264.exe
+I: Argument[2]        : -in=C:\Users\IMGOLD~1\AppData\Local\Temp\arrowforge_sofdec2_avi_test_88b77235e22c4e2a9f9c0e0120c79686\input.avi
+I: Argument[3]        : -target=ps4
+I: Argument[4]        : -out=C:\Users\IMGOLD~1\AppData\Local\Temp\arrowforge_sofdec2_avi_test_88b77235e22c4e2a9f9c0e0120c79686\h264.usm
+I: Argument[5]        : -hca=ON
+I: Argument[6]        : -hca_quality=4
+T:  Check the application settings.
+T:  Load a user settings.
+W: ************************* Start Encode Sofdec File****************************
+Input File  : C:\Users\IMGOLD~1\AppData\Local\Temp\arrowforge_sofdec2_avi_test_88b77235e22c4e2a9f9c0e0120c79686\input.avi
+Output File : C:\Users\ImGoldenWind\AppData\Local\Temp\arrowforge_sofdec2_avi_test_88b77235e22c4e2a9f9c0e0120c79686\h264.usm
+******************************************************************************
+I: Program Name = D:\Users\ImGoldenWind\Documents\.ASBR MODDING\All Star Battle R - ToolBox\tools\Sofdec2\crispeee_x264.dll
+I: Console Args = -in="C:\Users\IMGOLD~1\AppData\Local\Temp\arrowforge_sofdec2_avi_test_88b77235e22c4e2a9f9c0e0120c79686\input.avi" -out="C:\Users\ImGoldenWind\AppData\Local\Temp\arrowforge_sofdec2_avi_test_88b77235e22c4e2a9f9c0e0120c79686\h264.264" -exe=v -vengine=x264 -gui_mode -proc_prio=BELOW  -fill_mode=BLACK -tgt_dll="D:\Users\ImGoldenWind\Documents\.ASBR MODDING\All Star Battle R - ToolBox\tools\Sofdec2\crispeee_tgt_sofdec2.dll" -x264_param="--demuxer \"y4m\" --stats \"C:\Users\ImGoldenWind\AppData\Local\Temp\arrowforge_sofdec2_avi_test_88b77235e22c4e2a9f9c0e0120c79686\vecenc.stats\" --fps 30 --level 3.1 --slices 4 --no-scenecut --profile high --threads 0 --lookahead-threads 0 --aud --direct auto --me umh --nal-hrd vbr  --bitrate 3185 --vbv-maxrate 3822 --vbv-bufsize 797 --ref 2 --bframes 0 --b-adapt 0 --keyint 30 -o \"C:\Users\ImGoldenWind\AppData\Local\Temp\arrowforge_sofdec2_avi_test_88b77235e22c4e2a9f9c0e0120c79686\h264.264\" --pass 1"
+I:  
+I: Program Name = D:\Users\ImGoldenWind\Documents\.ASBR MODDING\All Star Battle R - ToolBox\tools\Sofdec2\crispeee_x264.dll
+I: Console Args = -in="C:\Users\IMGOLD~1\AppData\Local\Temp\arrowforge_sofdec2_avi_test_88b77235e22c4e2a9f9c0e0120c79686\input.avi" -out="C:\Users\ImGoldenWind\AppData\Local\Temp\arrowforge_sofdec2_avi_test_88b77235e22c4e2a9f9c0e0120c79686\h264.264" -exe=v -vengine=x264 -gui_mode -proc_prio=BELOW  -fill_mode=BLACK -tgt_dll="D:\Users\ImGoldenWind\Documents\.ASBR MODDING\All Star Battle R - ToolBox\tools\Sofdec2\crispeee_tgt_sofdec2.dll" -x264_param="--demuxer \"y4m\" --stats \"C:\Users\ImGoldenWind\AppData\Local\Temp\arrowforge_sofdec2_avi_test_88b77235e22c4e2a9f9c0e0120c79686\vecenc.stats\" --fps 30 --level 3.1 --slices 4 --no-scenecut --profile high --threads 0 --lookahead-threads 0 --aud --direct auto --me umh --nal-hrd vbr  --bitrate 3185 --vbv-maxrate 3822 --vbv-bufsize 797 --ref 2 --bframes 0 --b-adapt 0 --keyint 30 -o \"C:\Users\ImGoldenWind\AppData\Local\Temp\arrowforge_sofdec2_avi_test_88b77235e22c4e2a9f9c0e0120c79686\h264.264\" --pass 2"
+I:  
+I: Program Name = D:\Users\ImGoldenWind\Documents\.ASBR MODDING\All Star Battle R - ToolBox\tools\Sofdec2\crimed.exe
+I: Console Args = shrink -t264 -v=0 -dseit0020 -kvui "C:\Users\ImGoldenWind\AppData\Local\Temp\arrowforge_sofdec2_avi_test_88b77235e22c4e2a9f9c0e0120c79686\h264.264_med" "C:\Users\ImGoldenWind\AppData\Local\Temp\arrowforge_sofdec2_avi_test_88b77235e22c4e2a9f9c0e0120c79686\h264.264"
+I:  
+I: Program Name = D:\Users\ImGoldenWind\Documents\.ASBR MODDING\All Star Battle R - ToolBox\tools\Sofdec2\sofdec2enc.exe
+I: Console Args = -video00="C:\Users\ImGoldenWind\AppData\Local\Temp\arrowforge_sofdec2_avi_test_88b77235e22c4e2a9f9c0e0120c79686\h264.264_med" -out="C:\Users\ImGoldenWind\AppData\Local\Temp\arrowforge_sofdec2_avi_test_88b77235e22c4e2a9f9c0e0120c79686\h264.usm" -gui_mode=ON -disp_size=1280,720 -hca=ON -hca_quality=4  -work_dir=C:\Users\ImGoldenWind\AppData\Local\Temp\arrowforge_sofdec2_avi_test_88b77235e22c4e2a9f9c0e0120c79686 
+I:  

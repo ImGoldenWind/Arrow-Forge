@@ -12,6 +12,7 @@ import struct
 import os
 import math
 import zlib
+import sys
 
 _UTF_XOR_SEED = 0x0000655F
 _UTF_XOR_MULT = 0x00004115
@@ -151,12 +152,23 @@ def decrypt_utf_packet(data: bytes) -> bytes:
     return bytes(out)
 
 
-def crypt_jojo_asbr(data: bytes) -> bytes:
-    """Apply ASBR's per-file XOR stream. The operation is symmetric."""
+def crypt_jojo_asbr(
+    data: bytes,
+    total_size: int | None = None,
+    start_offset: int = 0,
+) -> bytes:
+    """Apply ASBR's per-file XOR stream. The operation is symmetric.
+
+    When *total_size* is provided, *data* is treated as the beginning of a
+    larger file of that size. This allows cheap magic checks before decrypting
+    a full payload. *start_offset* decrypts a slice from that absolute file
+    position.
+    """
     out = bytearray(data)
-    size = len(out)
-    remaining = size
+    size = len(out) if total_size is None else int(total_size)
+    remaining = len(out)
     pos = 0
+    start_offset = int(start_offset or 0)
 
     def u32(value: int) -> int:
         return value & 0xFFFFFFFF
@@ -166,6 +178,41 @@ def crypt_jojo_asbr(data: bytes) -> bytes:
     v2 = u32((v1 // 32 + 0x85C9C2) ^ u32(v1 * 0x1DA597))
     v3 = u32((v2 // 32 + 0x10B9384) ^ u32(v2 * 0x1DA597))
     v4 = u32((v3 // 32 + 0x1915D46) ^ u32(v3 * 0x1DA597))
+
+    skip_words = start_offset // 4
+    byte_shift = start_offset % 4
+    for _ in range(skip_words):
+        v1 = u32(u32(v1 * 2048) ^ v1)
+        v5 = u32(v4 ^ (((v4 // 2048) ^ v1) // 256) ^ v1)
+        v1, v2, v3, v4 = v2, v3, v4, v5
+
+    if byte_shift and remaining > 0:
+        v1 = u32(u32(v1 * 2048) ^ v1)
+        v5 = u32(v4 ^ (((v4 // 2048) ^ v1) // 256) ^ v1)
+        key = (
+            v5 & 0xFF,
+            (v5 >> 8) & 0xFF,
+            (v5 >> 16) & 0xFF,
+            (v5 >> 24) & 0xFF,
+        )
+        take = min(4 - byte_shift, remaining)
+        for i in range(take):
+            out[pos + i] ^= key[byte_shift + i]
+        remaining -= take
+        pos += take
+        v1, v2, v3, v4 = v2, v3, v4, v5
+
+    if sys.byteorder == "little":
+        word_count = remaining // 4
+        words = memoryview(out)[pos:pos + word_count * 4].cast("I")
+        for word_pos in range(word_count):
+            v1 = u32(u32(v1 * 2048) ^ v1)
+            v5 = u32(v4 ^ (((v4 // 2048) ^ v1) // 256) ^ v1)
+            words[word_pos] ^= v5
+
+            pos += 4
+            remaining -= 4
+            v1, v2, v3, v4 = v2, v3, v4, v5
 
     while remaining > 0:
         v1 = u32(u32(v1 * 2048) ^ v1)

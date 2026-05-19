@@ -12,7 +12,7 @@ from PyQt6.QtGui import QFont
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_sep, ss_search, ss_file_label, ss_section_label,
+    ss_btn, ss_sep, ss_accent_sep, ss_search, ss_file_label, ss_section_label,
     ss_panel, ss_scrollarea, ss_placeholder, ss_dim_label, ss_input,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
@@ -174,8 +174,8 @@ class BtlAdjPrmEditor(QWidget):
 
         # Separator
         sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(ss_sep())
+        sep.setFixedHeight(2)
+        sep.setStyleSheet(ss_accent_sep())
         root.addWidget(sep)
 
         # Body

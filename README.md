@@ -128,6 +128,11 @@ editors/             Editor windows for supported ASBR file types
 parsers/             Format readers and writers
 locales/             Translation files
 resources/           Bundled application assets
+resources/audio/     App sound effects
+resources/animations/Animated app easter-egg assets
+resources/backgrounds/Theme background decorations
+resources/guides/    Category guide portraits
+resources/themes/    Theme-specific texture assets
 tools/               Helper binaries and support files
 tools/vgmstream/     vgmstream CLI and its runtime libraries
 tools/VGAudioCLI/    VGAudioCLI builds and its runtime files

@@ -10,11 +10,13 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_toolbar, ss_accent_sep, ss_sep, ss_input, ss_scrollarea, ss_file_label,
+    ss_btn, ss_toolbar, ss_accent_sep, ss_sep, ss_input, ss_scrollarea,
+    ss_scrollarea_transparent, ss_file_label,
 )
 from core.editor_file_state import set_file_label, set_file_label_empty
 from core.skeleton import SkeletonListRow, SkeletonBar
 from core.settings import create_backup_on_open, game_files_dialog_dir
+from core.quiet_unlocks import request_and_cascade
 from parsers.characode_parser import (
     parse_characode_xfbin, save_characode_xfbin,
     suggest_next_slot,
@@ -110,7 +112,7 @@ class CharacodeEditor(QWidget):
         # Accent separator
         sep = QFrame(self)
         sep.setFixedHeight(2)
-        sep.setStyleSheet(f"background-color: {P['accent_dim']};")
+        sep.setStyleSheet(ss_accent_sep())
         root_layout.addWidget(sep)
 
         # Main area: entry list + editor
@@ -177,12 +179,7 @@ class CharacodeEditor(QWidget):
         self._entry_scroll = QScrollArea(list_frame)
         self._entry_scroll.setWidgetResizable(True)
         self._entry_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._entry_scroll.setStyleSheet(
-            f"QScrollArea {{ background-color: transparent; border: none; }}"
-            f"QScrollBar:vertical {{ background: transparent; width: 6px; }}"
-            f"QScrollBar::handle:vertical {{ background: {P['mid']}; border-radius: 3px; min-height: 20px; }}"
-            f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; border: none; }}"
-        )
+        self._entry_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._entry_list_widget = QWidget()
         self._entry_list_widget.setStyleSheet("background-color: transparent;")
         self._entry_list_layout = QVBoxLayout(self._entry_list_widget)
@@ -567,11 +564,14 @@ class CharacodeEditor(QWidget):
             return
         code = self._current_entry['char_code']
         slot = self._current_entry['slot_index']
+        name = self._current_entry.get("name", "")
         result = QMessageBox.question(
             self, self.t("dlg_title_confirm_delete"),
             self.t("msg_confirm_delete_slot", slot=slot, code=code))
         if result != QMessageBox.StandardButton.Yes:
             return
+        if code == "3slc01" or name == "Silver Chariot":
+            request_and_cascade(self, "Chariot Requiem")
         self._fields = {}
         self._entries.remove(self._current_entry)
         self._current_entry = None

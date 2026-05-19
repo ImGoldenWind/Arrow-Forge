@@ -1,0 +1,632 @@
+/****************************************************************************
+ *
+ * CRI Middleware SDK
+ *
+ * Copyright (c) 2010 CRI Middleware Co., Ltd.
+ *
+ * Title   : Sofdec2 tools
+ * Module  : Revision History
+ * File    : history_sofdec2_tools_e.txt
+ * Date    : 2019-05-07
+ * Version : 2.22.01
+ *
+ ****************************************************************************/
+
+/*--------------------------------------------------------------------------*
+ *
+ * [Table of Contents]
+ * 1.  Revision History of Sofdec2 Encoding Wizard
+ * 2.  Revision History of Sofdec2 Encoder/CUI
+ * 3.  Revision History of Sofdec2 Encoder/CUI H.264
+ * 4.  Revision History of Sofdec2 Encoder/CUI VP9
+ * 5.  Revision History of Sofdec2 Viewer
+ * 6ÅD Revision History of Convert To USM.VP9
+ *
+ *--------------------------------------------------------------------------*/
+
+/*==========================================================================*
+ *  1.  Revision History of Sofdec2 Encoding Wizard
+ *==========================================================================*/
+ [2019-05-07 Sofdec2 Encoding Wizard Ver.2.20.01]----------------------------
+(1) Bug fixes
+  (a) Fixed a bug where encoding failed when specifying multiple audio tracks
+      as input audio material in VP9 encoding.
+  (b) Fixed a bug where the end of video frame may not be encoded
+      in VP9 encoding.
+
+ [2019-02-25 Sofdec2 Encoding Wizard Ver.2.20.00]----------------------------
+(1) Bug fixes
+  (a) Fixed a bug where some mp4 data could not be read.
+
+ [2018-12-19 Sofdec2 Encoding Wizard Ver.2.19.02]----------------------------
+(1) Improvements
+  (a) For Standard platform, support H.264 codec.
+  (b) For Switch platform, support VP9 codec.
+(2) Bug fixes
+  (a) Incorrect output intermediate files.
+(3) Others
+  (a) Remove the unused modules.
+  (b) Modified some text on the Platform Page.
+
+ [2018-08-31 Sofdec2 Encoding Wizard Ver.2.19.01]----------------------------
+(1) Others
+  (a) Remove the unused modules.
+
+ [2018-04-04 Sofdec2 Encoding Wizard Ver.2.19.00]----------------------------
+(1) Function addition
+  (a) VP 9 was added to the video codec that can be encoded.
+      For detailed specifications please refer to the manual.
+
+(2) Bug fixes
+  (a) Sometimes you can not overwrite and save the project.
+  (b) In the confirmation dialog, pressing the minimize button makes the operation inoperable.
+  (c) Encoding may fail if switching input material.
+  (d) Data that can not be played back at H.264 output of 4K 30 fps may be output.
+  (e) Resolution upper limit error sometimes occurs when outputting alpha movies.
+  (f) Crash occurs when some video files are input.
+  (g) Exporting a batch file may cause a crash.
+  (h) Repeated creation of a new project may cause a crash.
+  (i) Subtitle encoding may fail when loading a project.
+  (j) Even though the specified video does not contain audio,
+      you can accidentally use "Use the audio tracks in the video" for video
+  (i) Other, minor defects
+
+ [2018-01-23 Sofdec2 Encoding Wizard Ver.2.18.00]----------------------------
+(1) Specification change
+  (a) The tool chain for H.264 encoding was updated.
+    Sofdec 2 Encoder / CUI It was a configuration that calls Sofdec 2 Encoder / CUI H.264 simply by calling the tool chain inside H.264 directly.
+
+(2) Bug fixes
+  (a) Video codec: H.264, Fixed an issue where an inappropriate H.264 level was set for Alpha movies created by validating Alpha's checkbox, and normal playback could not be performed at runtime.
+  (b) Video codec: Fixed a case where the encoding result became a low bit rate of about half even if the specified bit rate was increased at a high resolution such as H.264, 4 K, etc.
+     (For example, even when 35 Mbps is specified, there were cases where it became about 17 Mbps)
+
+ [2017-11-21 Sofdec2 Encoding Wizard Ver.2.17.00]----------------------------
+(1) Specification change
+  (a) The upper limit value of H.264 parameters that can be encoded with PS4 has been changed.
+    <Before change>
+    - Resolution: 1920 x 1088
+    - Level: 4.2
+    <After change>
+    - Resolution: 4096 x 2160
+    - Level: 5.2
+
+ [2017-11-09 Sofdec2 Encoding Wizard Ver.2.16.02]----------------------------
+(1) Fixed problem
+  (a) When loading the project file, the problem that the check box
+    "Encode as Ambisonics" of the page of the input speech material specified
+    becomes effective became corrected.
+
+ [2017-10-16 Sofdec2 Encoding Wizard Ver.2.16.01]----------------------------
+(1) Fixed problem
+  (a) Fixed an issue where part of the error message was output
+    in Japanese when the Japanese version Windows and the user language environment is English.
+
+ [2017-10-10 Sofdec2 Encoding Wizard Ver.2.16.00]----------------------------
+(1) Specification change
+  (a) License authentication module, license file name was changed.
+    If you use this version or later, please use the changed license file.
+    <Before change>
+    - cri_sofdec2_tools.lic
+    - crispeee_x264.lic
+    <After change>
+    - cri_sofdec2_tools.v2.lic
+    - crispeee_x264.v2.lic
+
+ [2017-08-09 Sofdec2 Encoding Wizard Ver.2.15.01]----------------------------
+(1) Internal update
+  (a) Updated the following CUI version used in the tool chain at encoding time.
+    For troubleshooting etc. please refer to each CUI version history described later together.
+    - Sofdec 2 Encoder/CUI Ver.2.41.00
+    - Sofdec 2 Encoder/CUI H.264 Ver.2.15.01
+
+ [2017-06-27 Sofdec2 Encoding Wizard Ver.2.15.00]----------------------------
+(1) Function addition
+  (a) In the input page of the input audio material to input the audio material file for Ambisonics
+    Added ambisonics checkbox for correspondence.
+    Please refer to the manual for the specification of the audio material for Ambisonics.
+(2) Specification change
+  (a) Data encryption in manual: We added about usmbreak tool.
+  (b) I deleted the unnecessary hcaenc_lite.dll file.
+(3) Bug fixes
+  (a) Output the wrong option when batch output is done by H.264, Éø movie setting,
+    Fixed a problem that could not be executed as it was.
+    (Corrected what was wrong with "- alpha = 256" to "- alpha 00 = filename of input source material")
+
+ [2017-05-17 Sofdec2 Encoding Wizard Ver.2.14.00]----------------------------
+(1) Internal update
+     - Update of enclosed module (EXE, DLL).
+       - CriMed.exe
+       - CRIEncodingGears.dll
+       - crispeee_gears_sofdec2.dll
+
+ [2017-03-28 Sofdec2 Encoding Wizard Ver.2.13.00]----------------------------
+(1) Function addition
+  (a) Switch was added on the platform specified page.
+
+ [2016-12-26 Sofdec2 Encoding Wizard Ver.2.12.01]----------------------------
+(1) Specification changes
+  (a) The bit rate was adjusted such as Alfa Movie's auto setting.
+  (b) Various tools making up the encoder, DLL 64bit compatibility was done.
+  (c) Adjustment was made because there was a case where the set value was too large when setting the bit rate of the automatic setting with 4K material.
+  (d) The menu> priority setting function has been deleted.
+
+(2) New features
+  (a) It corresponded to MP4, MOV input.
+      * It is limited to the format that can be read by the Microsoft Windows Media Foundation interface.
+  (b) It corresponded to H.264 Alpha movie.
+
+(3) Bug fixes
+  (a) Fixed the problem that the pitch was distorted due at Sofdec.Prime when the resolution was not multiplied by 16.
+  (b) Fixed a problem that rounding up when resolution was non-16 times was rounded up by 64 times.
+
+ [2016-10-31 Sofdec2 Encoding Wizard Ver.2.10.00]----------------------------
+(1) Specification changes
+  (a) Added 64bit support in the encoding core dlls so now 64bit os is only supported.
+  (b) QuickTime format(.mov) is now unsuppoted due to Apple finshed supporting QuickTime format for Windwos.
+  (c) Disabled subtitle channel's top alignment by the encoding tool.
+      The encoding tool used to align subtitle channel to the top when blank channels exists.
+      For example, when ch0 and ch3 are specified, ch0 and ch1 get used.
+      Since this version, subtitle data will be contained as specified by users.
+
+(2) Bug fixes
+  (a) Fixed an issue where an division by zero exception occurs when encoding big size video source such as 50GB. 
+
+ [2016-02-02 Sofdec2 Encoding Wizard Ver.2.06.00]----------------------------
+(1) Specification changes
+  (a) The upper limit of maximum resolution for input video material or 
+      resize is changed from 1920x1088 to the appropriate value for
+      each target depending on the decoder specification.
+     (The maximum width is 4080 due to the known problem.)
+
+(2) Bug fixes
+  Fixed the following bugs.
+  (a) If video codec is changed on the Video page, video material resolution 
+      for inappropriate codec may be checked.
+
+ [2015-11-11 Sofdec2 Encoding Wizard Ver.2.05.00]----------------------------
+ [2015-10-22 Sofdec2 Encoding Wizard Ver.2.04.00]----------------------------
+ [2015-09-30 Sofdec2 Encoding Wizard Ver.2.03.00]----------------------------
+ [2015-06-30 Sofdec2 Encoding Wizard Ver.2.02.00]----------------------------
+ [2015-04-22 Sofdec2 Encoding Wizard Ver.2.01.00]----------------------------
+ [2014-06-20 Sofdec2 Encoding Wizard Ver.2.00.00]----------------------------
+ [2014-05-30 Sofdec2 Encoding Wizard Ver.1.07.00]----------------------------
+ [2014-05-08 Sofdec2 Encoding Wizard Ver.1.06.00]----------------------------
+ [2013-03-12 Sofdec2 Encoding Wizard Ver.1.05.00]----------------------------
+ [2013-02-27 Sofdec2 Encoding Wizard Ver.1.04.00]----------------------------
+ [2010-08-30 Sofdec2 Encoding Wizard Ver.1.00.00]----------------------------
+First release of the tool.
+It is included in the Sofdec2 tools Ver.1.00.00.
+
+/*==========================================================================*
+ * 2.  Revision History of Sofdec2 Encoder/CUI
+ *==========================================================================*/
+ [2019-02-25 Sofdec2 Encoder/CUI Ver.2.53.02]-------------------------------
+(1) Bug fixes
+  (a) Fixed a bug where some mp4 data could not be read.
+
+ [2018-12-19 Sofdec2 Encoder/CUI Ver.2.53.01]-------------------------------
+(1) Bug fixes
+  (a) Ignore the problem that it could not create the file because the output
+      folder has readonly protection or some reasons.
+  (b) Incorrect OS name displayed in '-enum_filters'.
+(2) Others
+  (a) Remove the unused modules
+  (b) Change the '-enum_filters' outputs.
+      This is because the Win32 API 'GetVersionInfo' is deprecated.
+
+ [2018-11-30 Sofdec2 Encoder/CUI Ver.2.53.00]-------------------------------
+(1) Improvement
+  (a) Add "-y2alpha" option for internal use.
+
+ [2018-08-31 Sofdec2 Encoder/CUI Ver.2.52.01]-------------------------------
+(1) Internal Correction
+
+ [2018-07-10 Sofdec2 Encoder/CUI Ver.2.52.00]-------------------------------
+(1) Fixed problem
+  (a) Fixed a problem that "Detected dead locking." error occurred 
+      when encoding with Audio codec:HCA.
+
+ [2018-06-19 Sofdec2 Encoder/CUI Ver.2.51.00]-------------------------------
+(1) Fixed problem
+  (a) Fixed a problem that all the audio tracks specified under the following conditions
+      become the contents of the first track:
+      - Audio Codec : HCA
+      - Setting multiple track with mca option
+
+ [2018-04-04 Sofdec2 Encoder/CUI Ver.2.50.00]-------------------------------
+(1) Internal modification
+
+ [2017-10-10 Sofdec2 Encoder/CUI Ver.2.43.00]-------------------------------
+(1) Specification change
+  (a) License authentication module, license file name was changed.
+    If you use this version or later, please use the changed license file.
+    <Before change>
+    - cri_sofdec2_tools.lic
+    <After change>
+    - cri_sofdec2_tools.v2.lic
+  (b) We changed the output of the warning message from 7 days before the license expiration date to output from 30 days ago.
+
+ [2017-08-09 Sofdec2 Encoder/CUI Ver.2.41.00]-------------------------------
+(1) Fixed problem
+  (a) Fixed that there was a case that encoding was not completed when input: video: mp4, audio: wav was specified.
+  (b) When the height information of avi on the input material is a negative value, it has addressed the problem that could not be encoded correctly.
+
+ [2017-06-29 Sofdec2 Encoder/CUI Ver.2.37.00]-------------------------------
+(1) Fixed problem
+  (a) Fixed a problem that HCA encode using audio included in avi hangs on the way.
+    (This trouble occurred between Ver.2.28.00 and Ver.2.31.00)
+  (b) When ADX encoding was performed using the audio included in mp4 / mov, there was a case where there was a case where noise was mixed.
+    (This trouble occurred between Ver.2.29.00 and Ver.2.32.00)
+  (c) Deadlock may occur at the time of encoding process (multiplexing process) with a combination of AVI with a relatively large size (eg, 25 GB, etc.) and video: H.264, audio: HCA Fixed.
+  (d) When encoding avi without sound, there was a case where video was not output correctly was fixed.
+    (This trouble occurred at Ver.2.34.00)
+  (e) We responded that error message was issued to terminate the crash when it was configured in YUV 422 (16 bit) format which avi does not support.
+  (f) Fixed a problem where 6 monaural audio materials for 5.1 ch were specified with the -mca ## _ ** option and did not end properly when HCA encoded.
+
+(2) Function addition
+  (a) Supported the -ambisonics option.
+
+ [2017-04-12 Sofdec2 Encoder/CUI Ver.2.30.00]-------------------------------
+(1) Fixed problem
+  (a) When BMP is a multiple of non-8 in input material, the problem that the pitch was shifted and it was not able to encode correctly was corrected.
+  (b) Video with Sound: mp4 with audio: Sofdec.Prime, Audio: When encoding by encoding HCA codec, there was a case where there was a case that sound did not enter from the middle and there was silence.
+    (This trouble occurred from Ver.2.16.00)
+  (c) Fix to stop processing due to an error occurred when a read error or file was corrupted when serial number BMP was encoded.
+  (d) Fixed a case where encode results did not become normal if different original materials were specified for -video00 and -alpha00 in alpha movie creation.
+
+ [2016-12-01 Sofdec2 Encoder/CUI Ver.2.25.01]-------------------------------
+(1) Specification changes
+  (a) The encoding became not to depend on DirectX.
+
+(2) New features
+  (a) It corresponded to MP4, MOV input.
+      * It is limited to the format that can be read by the Microsoft Windows Media Foundation interface.
+
+(3) Bug fixes
+  (a) Fixed the problem that the pitch was distorted due at Sofdec.Prime when the resolution was not multiplied by 16.
+
+ [2016-10-31 Sofdec2 Encoder/CUI Ver.2.09.00]-------------------------------
+(1) Specification changes
+  (a) Added 64bit support so the new tool does not run on 32bit OS. 
+
+(2) DLL update
+  (a) Added/Removed the following files:
+      + pgMovieSDK.lic
+      + EffcaAudioFilter.vme
+      + EffcaCore.vme
+      + EffcvCore.vme
+      + MovieMPEG.vme
+      + pgMovieSDK.dll
+      + VMESys.dll
+      + VMESysLib.dll
+      + CriMed.exe
+      - CriMfInfoQt.dll
+      - TMPGLib.dll
+
+(3) Bug fixes
+  (a) Fixed an issue where an error of 'Out of memory' occurs when encoding high resolution video files such as 4K.
+  (b) Fixed an issue where encoding failed when the windows screen is locked.
+  (c) Fixed a crash when encdoing movies with both -mca##_** option and -hca option.
+      (This issue occured since Ver.2.05.00)
+
+ [2016-01-15 Sofdec2 Encoder/CUI Ver.1.40.00]-------------------------------
+(1) DLL update
+  (a) Changed file name from CriFlexGuard.dll to CriFlexGuard32.dll.
+      Please be sure to use dll and exe files together that are 
+      contained in this package.
+
+ [2015-09-29 Sofdec2 Encoder/CUI Ver.1.39.00]-------------------------------
+ [2015-02-02 Sofdec2 Encoder/CUI Ver.1.38.00]-------------------------------
+ [2014-11-28 Sofdec2 Encoder/CUI Ver.1.37.00]----------------------------------
+ [2013-05-08 Sofdec2 Encoder/CUI Ver.1.34.00]----------------------------------
+ [2013-12-26 Sofdec2 Encoder/CUI Ver.1.32.00]----------------------------------
+ [2013-07-16 Sofdec2 Encoder/CUI Ver.1.26.00]----------------------------------
+ [2013-05-10 Sofdec2 Encoder/CUI Ver.1.23.00]----------------------------------
+ [2013-04-30 Sofdec2 Encoder/CUI Ver.1.22.00]----------------------------------
+ [2012-12-27 Sofdec2 Encoder/CUI Ver.1.19.00]----------------------------------
+ [2012-11-27 Sofdec2 Encoder/CUI Ver.1.18.00]----------------------------------
+ [2012-07-18 Sofdec2 Encoder/CUI Ver.1.15.00]----------------------------------
+ [2012-04-25 Sofdec2 Encoder/CUI Ver.1.12.00]----------------------------------
+ [2012-04-18 Sofdec2 Encoder/CUI Ver.1.11.00]----------------------------------
+ [2012-03-28 Sofdec2 Encoder/CUI Ver.1.10.00]----------------------------------
+ [2012-03-08 Sofdec2 Encoder/CUI Ver.1.09.00]----------------------------------
+ [2012-01-31 Sofdec2 Encoder/CUI Ver.1.08.00]----------------------------------
+ [2012-01-17 Sofdec2 Encoder/CUI Ver.1.07.00]----------------------------------
+ [2011-12-02 Sofdec2 Encoder/CUI Ver.1.06.00]----------------------------------
+ [2011-11-16 Sofdec2 Encoder/CUI Ver.1.05.00]----------------------------------
+ [2011-07-06 Sofdec2 Encoder/CUI Ver.1.04.00]----------------------------------
+ [2010-12-09 Sofdec2 Encoder/CUI Ver.1.03.06]----------------------------------
+ [2010-11-30 Sofdec2 Encoder/CUI Ver.1.03.05]----------------------------------
+ [2010-10-15 Sofdec2 Encoder/CUI Ver.1.01.00]----------------------------------
+ [2010-08-30 Sofdec2 Encoder/CUI Ver.1.00.00]----------------------------------
+First release of the tool.
+It is included in the Sofdec2 tools Ver.1.00.00.
+
+/*==========================================================================*
+ * 3.  Revision History of Sofdec2 Encoder/CUI H.264
+ *==========================================================================*/
+ [2019-02-25 Sofdec2 Encoder H.264 Ver.2.20.00]----------------------------
+(1) Bug fixes
+  (a) Fixed a bug where some mp4 data could not be read.
+
+ [2018-12-19 Sofdec2 Encoder H.264 Ver.2.19.02]----------------------------
+(1) Others
+  (a) Remove the unused files.
+
+ [2018-08-31 Sofdec2 Encoder H.264 Ver.2.19.01]----------------------------
+(1) Others
+  (a) Remove the unused files.
+
+ [2018-04-04 Sofdec2 Encoder H.264 Ver.2.19.00]----------------------------
+(1) Fixed problem
+   (a) Data that can not be played back at H.264 output of 4K 30 fps may be output.
+   (b) Other, minor defects
+
+ [2018-01-24 Sofdec2 Encoder H.264 Ver.2.18.00]----------------------------
+(1) Specification change
+  (a) Changed iOS / Android H.264 profile default from Baseline to Main.
+
+(2) Bug fixes
+  (a) When the material specified for -video00 and -alpha00 are different, there was a problem that there was a problem that encoding was not performed correctly and alpha value was not applied.
+  (b) Fixed an issue that unnecessary intermediate files (vecenc.status, vecenc.status.mbtree) remained after encoding.
+
+ [2017-11-21 Sofdec2 Encoder H.264 Ver.2.17.00]----------------------------
+(1) Specification change
+  (a) The upper limit value of H.264 parameters that can be encoded with PS4 has been changed.
+    <Before change>
+    - Resolution: 1920 x 1088
+    - Level: 4.2
+    <After change>
+    - Resolution: 4096 x 2160
+    - Level: 5.2
+
+ [2017-10-10 Sofdec2 Encoder H.264 Ver.2.16.00]----------------------------
+(1) Specification change
+  (a) License authentication module, license file name was changed.
+    If you use this version or later, please use the changed license file.
+    <Before change>
+    - cri_sofdec2_tools.lic
+    - crispeee_x264.lic
+    <After change>
+    - cri_sofdec2_tools.v2.lic
+    - crispeee_x264.v2.lic
+
+ [2017-08-09 Sofdec2 Encoder H.264 Ver.2.15.01]----------------------------
+(1) Fixed problem
+  (a) Fixed that there was a case that encoding was not completed when input: video: mp4, audio: wav was specified.
+  (b) When the height information of avi on the input material is a negative value, it has addressed the problem that could not be encoded correctly.
+
+ [2017-06-23 Sofdec2 Encoder H.264 Ver.2.15.00]----------------------------
+(1) Function addition
+  (a) Supported the -ambisonics option.
+
+ [2017-05-17 Sofdec2 Encoder H.264 Ver.2.14.00]----------------------------
+(1) Fixed problem
+  (a) There was a problem that MOV format file was not accepted with input material was fixed.
+
+ [2017-03-28 Sofdec2 Encoder H.264 Ver.2.13.00]----------------------------
+(1) Function addition
+  (a) Switch was added to the model that can be specified with the -target subcommand.
+    Please specify with "-target = switch".
+
+(2) internal update
+  (a) Updated to CriMed.exe Ver.1.018.
+
+ [2017-01-13 Sofdec2 Encoder H.264 Ver.2.12.02]----------------------------
+(1) Fixed problem
+  (a) Fixed a problem where the -hca option was not accepted, especially when it was in a state where batch new output by Sofdec 2 Encoding Wizard can not be executed as it is.
+    - Encode audio with HCA codec with -hca or -hca = ON.
+    - This trouble occurred from Ver.2.11.00.
+
+(2) Function addition
+  (a) Supported the -hca_key option (setting user encryption key for HCA encryption).
+
+ [2016-12-12 Sofdec2 Encoder H.264 Ver.2.12.01]----------------------------
+(1) Specification changes
+  (a) Various tools making up the encoder, DLL 64bit compatibility was done.
+
+(2) Bug fixes
+  (a) Fixed an issue where normal USM data was not created when creating H.264 alpha movies if resolution is non-16 multiples.
+  (b) Fixed a problem that rounding up when resolution was non-16 times was rounded up by 64 times.
+  (c) Fixed a problem that "-hca" option is not working.
+
+ [2016-10-31 Sofdec2 Encoder H.264 Ver.2.10.00]----------------------------
+(1) New features
+  (a) Added support encoding to H.264 movie with alpha channel.
+
+ [2016-03-02 Sofdec2 Encoder H.264 Ver.2.06.01]----------------------------
+(1) Bug fixes
+  (a) Corrected a problem that part of encoding log output was garbled
+      on the English edition of Windows.
+
+ [2016-01-29 Sofdec2 Encoder H.264 Ver.2.06.00]----------------------------
+ [2015-11-12 Sofdec2 Encoder H.264 Ver.2.05.00]------------------------------
+ [2015-10-15 Sofdec2 Encoder H.264 Ver.2.04.00]------------------------------
+ [2015-09-30 Sofdec2 Encoder H.264 Ver.2.03.00]------------------------------
+ [2015-06-30 Sofdec2 Encoder H.264 Ver.2.02.00]------------------------------
+ [2014-04-22 Sofdec2 Encoder H.264 Ver.2.01.00]------------------------------
+ [2014-06-20 Sofdec2 Encoder H.264 Ver.2.00.00]------------------------------
+ [2014-05-30 Sofdec2 Encoder H.264 Ver.1.10]---------------------------------
+ [2014-05-07 Sofdec2 Encoder H.264 Ver.1.09]---------------------------------
+ [2014-02-23 Sofdec2 Encoder H.264 Ver.1.08.03]------------------------------
+ [2014-02-05 Sofdec2 Encoder H.264 Ver.1.08.02]------------------------------
+ [2014-01-23 Sofdec2 Encoder H.264 Ver.1.08.01]------------------------------
+ [2013-12-13 Sofdec2 Encoder H.264 Ver.1.08.00]------------------------------
+ [2013-06-27 Sofdec2 Encoder H.264 Ver.1.07.00]------------------------------
+ [2013-04-17 Sofdec2 Encoder H.264 Ver.1.06.00]------------------------------
+ [2013-03-14 Sofdec2 Encoder H.264 Ver.1.05.00]------------------------------
+ [2012-07-26 Sofdec2 Encoder H.264 Ver.1.03.00]------------------------------
+ [2012-07-18 Sofdec2 Encoder H.264 Ver.1.02.00]------------------------------
+ [2011-08-04 Sofdec2 Encoder H.264 Ver.1.01.00]------------------------------
+ [2011-07-05 Sofdec2 Encoder H.264 Ver.1.00.00]------------------------------
+First release of the tool.
+It is included in the Sofdec2 tools Ver.1.14.
+
+/*==========================================================================*
+ * 4.  Revision History of Sofdec2 Encoder/CUI VP9
+ *==========================================================================*/
+ [2019-05-07 Sofdec2 Encoder VP9 Ver.1.06.00]------------------------------
+(1) Bug fixes
+  (a) Fixed a bug where encoding failed when specifying multiple audio tracks
+      as input audio material.
+      This bug occurred from Ver.1.05.00.
+  (b) Fixed a bug where the end of video frame may not be encoded.
+
+ [2019-02-25 Sofdec2 Encoder VP9 Ver.1.05.00]------------------------------
+(1) Bug fixes
+  (a) Fixed a bug where some mp4 data could not be read.
+
+ [2018-12-19 Sofdec2 Encoder VP9 Ver.1.04.01]------------------------------
+(1) Improvement
+  (a) Support output audio file path by '-output_audio' command.
+(2) Bug fixes
+  (a) Notation mistake.
+  (b) Crash when input a MP4 file.
+(3) Others
+  (a) Remove the unused files.
+
+ [2018-11-30 Sofdec2 Encoder VP9 Ver.1.04.00]------------------------------
+(1) Improvement
+  (a) Support USM (Prime codec) file for input.
+
+(2) Bug fixes
+  (a) Crashes on input a MP4 file.
+    Add error handling for invalid UUID box.
+
+ [2018-10-26 Sofdec2 Encoder VP9 Ver.1.03.01]------------------------------
+(1) Bug fixes
+  (a) Fixed a bug where encoding was unsuccessful if the specified encryption
+      key exceeded the maximum value of a signed 64-bit integer while using
+      the "-hca_key" option.
+
+ [2018-08-31 Sofdec2 Encoder VP9 Ver.1.03.00]------------------------------
+(1) Bug fixes
+  Fixed the following problems.
+  (a) It outputs different color.
+  (b) It could not read the input file.
+      The problem occures by the input format or runtime environment.
+  (c) It outputs insufficient bitrate data with resizing.
+      The problem occures by resizing to enlarge.
+
+ [2018-07-18 Sofdec2 Encoder VP9 Ver.1.02.00]------------------------------
+(1) Bug fixes
+  Fixed the following problems.
+  (a) Resizing image is less precise.
+  (b) When using HCA codec, it may end unexpectedly.
+  (c) When using ADX codec, it may output a file that cannot playback.
+
+ [2018-06-19 Sofdec2 Encoder VP9 Ver.1.01.00]------------------------------
+(1) Added
+   It was included with Sofdec 2 tool Ver.2.20.01.
+
+/*==========================================================================*
+ * 5.  Revision History of Sofdec2 Viewer
+ *==========================================================================*/
+ [2018-12-19 Sofdec2 Viewer Ver.2.09.02]----------------------------------------
+(1) Others
+  (a) Remove the unused modules.
+
+ [2018-08-31 Sofdec2 Viewer Ver.2.09.01]----------------------------------------
+(1) Others
+  (a) Remove the unused modules.
+
+ [2018-04-04 Sofdec2 Viewer Ver.2.09.00]----------------------------------------
+(1) Function addition
+  (a) VP9 codec support.
+(2) Bug fixes
+  (a) Operation impossible or may crash when screen locked.
+  (b) Other, minor defects
+
+ [2018-02-01 Sofdec2 Viewer Ver.2.08.00]----------------------------------------
+(1) Specification change
+  (a) Fixed the problem that 4K playback (4096 x 2160) can not be played normally.
+      We updated the following bundled modules (DLL) relatedly.
+      - libmfxsw32.dll
+  (b) After playing the movie for the first time, when playing another movie
+      By internally registering error callback functions multiple times
+      Fixed an issue where the error log file was always generated.
+
+ [2017-11-22 Sofdec2 Viewer Ver.2.07.00]----------------------------------------
+(1) Specification change
+  (a) It is now possible to play usm encoded with H.264 Level 5.2.
+      (Up to Level 5.1 up to Ver.2.06.00 could be played back)
+
+ [2017-10-24 Sofdec2 Viewer Ver.2.06.00]----------------------------------------
+(1) Bug fixes
+  (a) About moving movies with audio Fixed a problem that playback does not proceed if seek playback is performed
+     (This trouble occurred at Ver.2.05.00)
+
+ [2017-06-23 Sofdec2 Viewer Ver.2.05.00]----------------------------------------
+(1) Specification change
+  (a) Temporarily made usable for usm encoded as ambisonics.
+     Since it simply performs playback processing as audio data of 4 ch, it can not be used as a motion confirmation as to whether it is the intended sound source position.
+     Please use the sample of the model which supports ambisonics for the operation check.
+
+ [2016-10-03 Sofdec2 Viewer Ver.2.04.00]----------------------------------------
+(1) Bug fixes
+  (a) Fixed an issue where playback time display was incorrect when playing USM over 14 minutes.
+
+ [2016-10-31 Sofdec2 Viewer Ver.2.03.00]----------------------------------------
+(1) Specification changes
+  (a) Due to the change of the encoding tool, automatic subtitle channel selection is disabled.
+      The users must know which subtitle channel is valid and select the channel manually. 
+
+(2) Bug fixes
+  (a) Fixed an issue where the viewer crashes when playing encrypted H.264 movie files.
+
+ [2016-02-02 Sofdec2 Viewer Ver.2.01.00]--------------------------------------
+(1) Specification changes
+  (a) Changed the value that is displayed on the Size item on UI from movie resolution to movie effective resolution.
+  (b) Removed the feature of disabling alpah channel decoding.
+  (c) Removed the [Android encryption] checkbox on the Encryption tab.
+  (d) Removed the overlay rendering feature.
+
+(2) Bug fixes
+  (a) If USM is encrypted with the HCA specified, the movie cannot be played properly.
+  (b) frame-by-frame playback may not be performed properly.
+      Please note that frame-by-frame advance/rewind is possible by moving the selected seekbar with cursor key-left/right.
+
+ [2015-05-28 Sofdec2 Viewer Ver.2.00.02]--------------------------------------
+ [2014-07-11 Sofdec2 Viewer Ver.2.00.01]--------------------------------------
+ [2014-06-29 Sofdec2 Viewer Ver.2.00.00]--------------------------------------
+ [2013-07-16 Sofdec2 Viewer Ver.1.15]-----------------------------------------
+ [2013-04-30 Sofdec2 Viewer Ver.1.14.01]--------------------------------------
+ [2013-02-27 Sofdec2 Viewer Ver.1.14]-----------------------------------------
+ [2011-07-18 Sofdec2 Viewer Ver.1.13]-----------------------------------------
+ [2011-12-02 Sofdec2 Viewer Ver.1.11]-----------------------------------------
+ [2011-06-02 Sofdec2 Viewer Ver.1.10]-----------------------------------------
+ [2010-10-20 Sofdec2 Viewer Ver.1.01]-----------------------------------------
+ [2010-08-30 Sofdec2 Viewer Ver.1.00]-----------------------------------------
+First release of the tool.
+It is included in the Sofdec2 tools Ver.1.00.00.
+
+
+/*==========================================================================*
+ * 6.  Revision History of Convert To USM.VP9
+ *==========================================================================*/
+ [2019-02-22 Convert To USM.VP9 Ver.1.03.00]---------------------------------
+(1) Function addition
+  (a) Supports the following conversions:
+      - Cue point
+      - Subtitles
+      - Multitrack
+      * Added usf2chunk64.dll for this feature.
+
+ [2018-12-19 Convert To USM.VP9 Ver.1.01.00]---------------------------------
+(1) Improvement
+  (a) Supports USM.264 file for inputting.
+  (b) Supports the subfolder of the specified folder for inputting.
+(2) Bug fixes
+  (a) The data size of converted file becomes large.
+    - It's due to including alpha channel of HCA audio track.
+  (b) Could not work 'Overwrite' mode.
+  (c) Could not work 'VP9_QUALITY' variable.
+(3) Other
+  (a) Locate the folder as the other Sofdec2 tools.
+
+ [2018-11-30 Convert To USM.VP9 Ver.1.00.00]---------------------------------
+First release of the tool.
+
+/*--< end of file >---------------------------------------------------------*/
+

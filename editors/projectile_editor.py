@@ -16,7 +16,7 @@ from PyQt6.QtGui import QFont
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_sep, ss_scrollarea, ss_scrollarea_transparent,
+    ss_btn, ss_sep, ss_accent_sep, ss_scrollarea, ss_scrollarea_transparent,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
 from core.editor_file_state import set_file_label
@@ -453,8 +453,8 @@ class ProjectileEditor(QWidget):
         root.addWidget(top)
 
         sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(ss_sep())
+        sep.setFixedHeight(2)
+        sep.setStyleSheet(ss_accent_sep())
         root.addWidget(sep)
 
         # Main area: sidebar + editor (always visible)

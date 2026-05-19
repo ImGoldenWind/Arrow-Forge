@@ -228,6 +228,144 @@ def _decode_func(raw, off):
     return f"0x{b1:02X}"
 
 
+def _is_ascii_cstr_field(raw, off, size, allow_empty=False):
+    if off < 0 or off + size > len(raw):
+        return False
+    field = bytes(raw[off:off+size])
+    text = field.split(b'\x00', 1)[0]
+    if not text:
+        return allow_empty
+    return all(32 <= ch <= 126 for ch in text)
+
+
+def _mot_sub_capacity(raw, off):
+    if off + MOT_HDR_SIZE > len(raw):
+        return -1
+    return (len(raw) - off - MOT_HDR_SIZE) // MOT_SUB_SIZE
+
+
+def _mot_entry_sub_count(raw, off):
+    if off + 0x70 > len(raw):
+        return None
+    n_subs = _u32le(raw, off+0x6C)
+    capacity = _mot_sub_capacity(raw, off)
+    if capacity < 0 or n_subs > capacity:
+        return None
+    return n_subs
+
+
+def _looks_like_mot_entry(raw, off):
+    if off < 0 or off + MOT_HDR_SIZE > len(raw):
+        return False
+    if _mot_entry_sub_count(raw, off) is None:
+        return False
+    # Most entries are named PL_ANM_*, but some valid per-move sections only
+    # have a plain ASCII event id. Do not key detection solely off "PL_ANM".
+    return (
+        _is_ascii_cstr_field(raw, off, 32, allow_empty=False)
+        and _is_ascii_cstr_field(raw, off+0x20, 32, allow_empty=False)
+    )
+
+
+def _declared_mot_entry_counts(raw):
+    if len(raw) < MOT_GLOBAL_HDR:
+        return []
+    declared = _u32le(raw, 0x28)
+    max_possible = max(0, (len(raw) - MOT_GLOBAL_HDR) // MOT_HDR_SIZE)
+    counts = []
+    # Files seen by this editor store entry_count + 1 here; accept the direct
+    # value too for older or slightly different chunks.
+    for candidate in (declared - 1, declared):
+        if 0 < candidate <= max_possible and candidate not in counts:
+            counts.append(candidate)
+    return counts
+
+
+def _sequential_mot_offsets(raw, target_count=None):
+    offsets = []
+    off = MOT_GLOBAL_HDR
+    while _looks_like_mot_entry(raw, off):
+        offsets.append(off)
+        n_subs = _mot_entry_sub_count(raw, off)
+        off += MOT_HDR_SIZE + n_subs * MOT_SUB_SIZE
+        if target_count is not None and len(offsets) >= target_count:
+            break
+    if target_count is not None and len(offsets) != target_count:
+        return []
+    return offsets
+
+
+def _find_next_marked_mot_entry(raw, start):
+    raw_bytes = bytes(raw)
+    i = max(0, start)
+    while True:
+        j = raw_bytes.find(b'PL_ANM', i)
+        if j < 0:
+            return None
+        if _looks_like_mot_entry(raw, j):
+            return j
+        i = j + 1
+
+
+def _relaxed_mot_offsets(raw, target_count):
+    offsets = []
+    off = MOT_GLOBAL_HDR
+    while len(offsets) < target_count and _looks_like_mot_entry(raw, off):
+        offsets.append(off)
+        n_subs = _mot_entry_sub_count(raw, off)
+        next_off = off + MOT_HDR_SIZE + n_subs * MOT_SUB_SIZE
+        if len(offsets) >= target_count:
+            break
+        if _looks_like_mot_entry(raw, next_off):
+            off = next_off
+            continue
+        dmg_tail_next = next_off + MOT_DMGID_SIZE
+        if _looks_like_mot_entry(raw, dmg_tail_next):
+            off = dmg_tail_next
+            continue
+        marked_next = _find_next_marked_mot_entry(raw, next_off)
+        if marked_next is None:
+            break
+        off = marked_next
+    if len(offsets) != target_count:
+        return []
+    return offsets
+
+
+def _find_mot_entry_offsets(raw):
+    # Prefer the structural table walk. It catches valid sections whose event id
+    # does not contain the literal "PL_ANM", which the old scanner skipped.
+    for count in _declared_mot_entry_counts(raw):
+        sequential = _sequential_mot_offsets(raw, count)
+        if sequential:
+            return sequential
+        relaxed = _relaxed_mot_offsets(raw, count)
+        if relaxed:
+            return relaxed
+
+    sequential = _sequential_mot_offsets(raw)
+    if sequential and (
+        sequential[-1]
+        + MOT_HDR_SIZE
+        + (_mot_entry_sub_count(raw, sequential[-1]) or 0) * MOT_SUB_SIZE
+        >= len(raw)
+    ):
+        return sequential
+
+    marker_offsets = []
+    i = 0
+    raw_bytes = bytes(raw)
+    while True:
+        j = raw_bytes.find(b'PL_ANM', i)
+        if j < 0:
+            break
+        if _looks_like_mot_entry(raw, j):
+            marker_offsets.append(j)
+        i = j + 1
+
+    return sorted(set(marker_offsets))
+
+
 # Low-level helpers
 def _u32be(b, off):
     return struct.unpack_from('>I', b, off)[0]
@@ -470,14 +608,7 @@ def parse_mot(raw):
     Returns list of entry dicts; each has 'subentries' list.
     """
     entries = []
-    i = 0
-    offsets = []
-    while True:
-        j = bytes(raw).find(b'PL_ANM', i)
-        if j < 0:
-            break
-        offsets.append(j)
-        i = j + 1
+    offsets = _find_mot_entry_offsets(raw)
 
     for idx, off in enumerate(offsets):
         next_off = offsets[idx + 1] if idx + 1 < len(offsets) else len(raw)
@@ -493,9 +624,13 @@ def parse_mot(raw):
 
         # sub_count stored in header at +0x6C
         n_subs = _u32le(raw, off+0x6C) if off+0x70 <= len(raw) else 0
+        parsed_n_subs = min(
+            n_subs,
+            max(0, (next_off - off - MOT_HDR_SIZE) // MOT_SUB_SIZE),
+        )
 
         subs = []
-        for s in range(n_subs):
+        for s in range(parsed_n_subs):
             sub_off = off + MOT_HDR_SIZE + s * MOT_SUB_SIZE
             if sub_off + MOT_SUB_SIZE > len(raw):
                 break
@@ -594,6 +729,7 @@ def parse_mot(raw):
                 'dtype':     dtype,
                 'dname':     dname,
                 'func_name': func_name,
+                'raw_func_name': func_name,
                 'func_param_bytes': func_param_bytes,
                 'frame_w':   frame_w,
                 'frame_str': frame_str,
@@ -623,7 +759,7 @@ def parse_mot(raw):
             'fix_position':          fix_position,
             'frame_skip':            frame_skip,
             'file_id':               file_id,
-            'n_subs':     n_subs,
+            'n_subs':     len(subs),
             'subentries': subs,
         })
 
@@ -728,6 +864,7 @@ def make_default_mot_subentry(index=0):
         'dtype': 0,
         'dname': DATA_TYPE_MAP.get(0, '0'),
         'func_name': FUNC_MAP_1B.get(0, 'ME_ENEMY_CTRL_ON'),
+        'raw_func_name': FUNC_MAP_1B.get(0, 'ME_ENEMY_CTRL_ON'),
         'func_param_bytes': [0, 0, 0],
         'frame_w': 0,
         'frame_str': '0',
@@ -754,14 +891,21 @@ def write_mot(entries, original_raw):
     New entries/subentries are zero-filled and then populated with editable
     fields.
     """
+    old_entry_count = 0
+    count_bias = 1
     if original_raw and len(original_raw) >= MOT_GLOBAL_HDR:
         out = bytearray(original_raw[:MOT_GLOBAL_HDR])
+        old_entry_count = len(_find_mot_entry_offsets(original_raw))
+        if old_entry_count:
+            count_bias = _u32le(original_raw, 0x28) - old_entry_count
     else:
         out = bytearray(MOT_GLOBAL_HDR)
 
     for entry in entries:
         subs = entry.get('subentries', [])
         old_off = entry.get('offset')
+        if old_off is None:
+            old_off = entry.get('template_offset')
         old_count = int(entry.get('raw_n_subs', entry.get('n_subs', len(subs))) or 0)
         old_sub_len = MOT_HDR_SIZE + old_count * MOT_SUB_SIZE
         old_len = max(int(entry.get('raw_size', old_sub_len) or old_sub_len), old_sub_len)
@@ -791,6 +935,7 @@ def write_mot(entries, original_raw):
             elif len(raw_sub) > MOT_SUB_SIZE:
                 raw_sub = raw_sub[:MOT_SUB_SIZE]
             block.extend(raw_sub)
+
         block.extend(tail)
 
         new_off = len(out)
@@ -798,6 +943,7 @@ def write_mot(entries, original_raw):
         entry['raw_size'] = len(block)
         entry['raw_n_subs'] = len(subs)
         entry['n_subs'] = len(subs)
+        entry.pop('template_offset', None)
         write_mot_entry(block, {**entry, 'offset': 0})
 
         for i, sub in enumerate(subs):
@@ -810,7 +956,7 @@ def write_mot(entries, original_raw):
 
     struct.pack_into('>I', out, 0, len(out) - 4)
     if len(out) >= 0x2C:
-        _wu32le(out, 0x28, len(entries) + 1)
+        _wu32le(out, 0x28, len(entries) + count_bias)
     return out
 
 
@@ -899,12 +1045,27 @@ def _replace_chunk(raw, hdr_off, old_size, new_bytes):
     return len(chunk) - old_len
 
 
+def _mot_requires_rebuild(entries, chunk_raw):
+    if not chunk_raw:
+        return True
+    if len(entries) != len(_find_mot_entry_offsets(chunk_raw)):
+        return True
+    for entry in entries:
+        if entry.get('offset') is None or entry.get('template_offset') is not None:
+            return True
+        subs = entry.get('subentries', [])
+        if len(subs) != int(entry.get('raw_n_subs', entry.get('n_subs', len(subs))) or 0):
+            return True
+        if any(sub.get('sub_off') is None for sub in subs):
+            return True
+    return False
+
+
 def save_prm_xfbin(filepath, raw, result):
     """Write back modified chunks into raw bytearray and save to disk.
 
     Rebuild changed binary chunks and update their XFBIN chunk-size fields.
-    sklslot/load may grow or shrink when entries are added or removed; mot/gha
-    stay fixed-size payloads edited through their raw buffers.
+    sklslot/load/mot/gha may grow or shrink when entries are added or removed.
     """
     replacements = []
     for key in ('load', 'sklslot', 'mot', 'gha'):
@@ -914,7 +1075,11 @@ def save_prm_xfbin(filepath, raw, result):
         hdr_off = info.get('hdr_off', info['data_off'] - 12)
 
         if key in ('mot', 'gha'):
-            new_bytes = bytes(info['raw'])
+            chunk_raw = info.get('raw')
+            if _mot_requires_rebuild(info['entries'], chunk_raw):
+                new_bytes = bytes(write_mot(info['entries'], chunk_raw))
+            else:
+                new_bytes = bytes(chunk_raw)
 
         elif key == 'load':
             new_bytes = write_load(info['entries'])
@@ -947,8 +1112,7 @@ def save_prm_xfbin(filepath, raw, result):
         info['hdr_off'] = hdr_off
         info['data_off'] = hdr_off + 12
         info['data_size'] = len(new_bytes)
-        if key in ('mot', 'gha'):
-            info['raw'] = bytearray(new_bytes)
+        info['raw'] = bytearray(new_bytes)
 
         if delta:
             for other_key, other_info in result.items():
@@ -1032,8 +1196,10 @@ def parse_prmload_xfbin(filepath):
         'prmload_standalone': {
             'name':      name,
             'entries':   entries,
+            'hdr_off':   hdr_off,
             'data_off':  data_off,
             'data_size': size,
+            'raw':       bytearray(chunk_raw),
         }
     }
 
@@ -1041,17 +1207,14 @@ def parse_prmload_xfbin(filepath):
 def save_prmload_xfbin(filepath, raw, result):
     """Write back modified prm_load entries and save standalone file."""
     info = result['prmload_standalone']
-    data_off  = info['data_off']
+    hdr_off = info.get('hdr_off', info['data_off'] - 12)
     data_size = info['data_size']
 
     new_bytes = bytearray(write_prmload_chunk(info['entries']))
-    if len(new_bytes) < data_size:
-        new_bytes = new_bytes + bytes(data_size - len(new_bytes))
-    if len(new_bytes) != data_size:
-        raise ValueError(
-            f"prm_load chunk size changed {data_size} → {len(new_bytes)}. "
-            "Keep same entry count to avoid XFBIN re-packing."
-        )
-    raw[data_off:data_off+data_size] = new_bytes
+    _replace_chunk(raw, hdr_off, data_size, new_bytes)
+    info['hdr_off'] = hdr_off
+    info['data_off'] = hdr_off + 12
+    info['data_size'] = len(new_bytes)
+    info['raw'] = bytearray(new_bytes)
     with open(filepath, 'wb') as f:
         f.write(raw)

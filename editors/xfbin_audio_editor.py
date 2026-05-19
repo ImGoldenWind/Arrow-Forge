@@ -35,7 +35,7 @@ from PyQt6.QtGui import QFont, QPainter, QColor, QPen
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_check, ss_dim_label, ss_file_label, ss_input, ss_panel,
+    ss_btn, ss_accent_sep, ss_check, ss_dim_label, ss_file_label, ss_input, ss_panel,
     ss_placeholder, ss_scrollarea, ss_scrollarea_transparent, ss_search,
     ss_section_label, ss_sep, ss_sidebar_btn, ss_slider,
     ss_blocking_overlay, ss_blocking_overlay_card, ss_progressbar,
@@ -44,6 +44,7 @@ from core.editor_file_state import set_file_label, set_file_label_empty
 from core.external_tools import find_vgaudio_cli, find_vgmstream_cli, is_tool_path, tool_command
 from core.skeleton import SkeletonListRow
 from core.settings import create_backup_on_open, load_settings, save_settings, game_files_dialog_dir
+from core.quiet_unlocks import request_and_cascade
 from parsers.nus3bank_parser import (
     parse_xfbin_audio, save_xfbin_audio,
     get_tone_bnsf, set_tone_bnsf,
@@ -745,8 +746,8 @@ class XfbinAudioEditor(QWidget):
         tl.addWidget(self._bank_combo)
         root.addWidget(top)
         sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(ss_sep())
+        sep.setFixedHeight(2)
+        sep.setStyleSheet(ss_accent_sep())
         root.addWidget(sep)
         main = QWidget()
         main_layout = QHBoxLayout(main)
@@ -1882,6 +1883,7 @@ class XfbinAudioEditor(QWidget):
         if self._filepath and os.path.abspath(path) == os.path.abspath(self._filepath):
             self._dirty = False
             set_file_label(self._file_lbl, self._filepath)
+        request_and_cascade(self, "Geb")
         QMessageBox.information(
             self,
             ui_text("ui_xfbin_audio_ok"),

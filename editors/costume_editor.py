@@ -96,7 +96,7 @@ class CostumeEditor(QWidget):
         # Separator
         sep = QFrame(self)
         sep.setFixedHeight(2)
-        sep.setStyleSheet(f"background-color: {P['accent_dim']};")
+        sep.setStyleSheet(ss_accent_sep())
         outer_layout.addWidget(sep)
 
         # Main area

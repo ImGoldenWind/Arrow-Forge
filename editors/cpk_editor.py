@@ -17,6 +17,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from core.themes import P
 from core.translations import ui_text
 from core.settings import create_backup_on_open, game_files_dialog_dir
+from core.style_helpers import ss_vertical_scrollbar
 
 
 # Worker thread for long operations
@@ -106,10 +107,7 @@ class CpkTreeWidget(QTreeWidget):
             f"QHeaderView::section {{ background-color: {P['bg_panel']}; "
             f"color: {P['text_dim']}; border: none; padding: 4px 6px; "
             f"font: 10pt 'Segoe UI'; }}"
-            f"QScrollBar:vertical {{ background: {P['bg_dark']}; width: 10px; border-radius: 5px; }}"
-            f"QScrollBar::handle:vertical {{ background: {P['mid']}; border-radius: 5px; min-height: 20px; }}"
-            f"QScrollBar::handle:vertical:hover {{ background: {P['secondary']}; }}"
-            f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}"
+            f"{ss_vertical_scrollbar(P['bg_dark'], hover_color=P['secondary'])}"
         )
         self.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)
         self.setRootIsDecorated(True)

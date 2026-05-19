@@ -13,8 +13,8 @@ from PyQt6.QtGui import QFont
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_sep, ss_input, ss_panel,
-    ss_scrollarea, ss_section_label, ss_field_label,
+    ss_btn, ss_sep, ss_accent_sep, ss_input, ss_panel,
+    ss_scrollarea, ss_scrollarea_transparent, ss_section_label, ss_field_label,
     ss_placeholder, TOOLBAR_H, TOOLBAR_BTN_H,
 )
 from core.editor_file_state import set_file_label
@@ -86,8 +86,8 @@ class GuideCharParamEditor(QWidget):
         root.addWidget(self._build_top_bar())
 
         sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(ss_sep())
+        sep.setFixedHeight(2)
+        sep.setStyleSheet(ss_accent_sep())
         root.addWidget(sep)
 
         main = QWidget()
@@ -210,9 +210,7 @@ class GuideCharParamEditor(QWidget):
         self._list_scroll = QScrollArea()
         self._list_scroll.setWidgetResizable(True)
         self._list_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._list_scroll.setStyleSheet(
-            "QScrollArea { background-color: transparent; border: none; }"
-        )
+        self._list_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._list_widget = QWidget()
         self._list_widget.setStyleSheet("background-color: transparent;")
         self._list_layout = QVBoxLayout(self._list_widget)

@@ -10,7 +10,10 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
 from core.themes import P
-from core.style_helpers import ss_btn, ss_sep, TOOLBAR_H, TOOLBAR_BTN_H
+from core.style_helpers import (
+    ss_btn, ss_sep, ss_accent_sep, ss_scrollarea, ss_scrollarea_transparent,
+    TOOLBAR_H, TOOLBAR_BTN_H,
+)
 from parsers.speaking_parser import (
     parse_speaking_xfbin, save_speaking_xfbin,
     INTERACTION_NAMES,
@@ -124,8 +127,8 @@ class SpeakingEditor(QWidget):
 
         # Separator
         sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(ss_sep())
+        sep.setFixedHeight(2)
+        sep.setStyleSheet(ss_accent_sep())
         root.addWidget(sep)
 
         # Main area
@@ -190,9 +193,7 @@ class SpeakingEditor(QWidget):
         self._pair_scroll = QScrollArea()
         self._pair_scroll.setWidgetResizable(True)
         self._pair_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._pair_scroll.setStyleSheet(
-            "QScrollArea { background-color: transparent; border: none; }"
-        )
+        self._pair_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._pair_list_widget = QWidget()
         self._pair_list_widget.setStyleSheet("background-color: transparent;")
         self._pair_list_layout = QVBoxLayout(self._pair_list_widget)
@@ -214,9 +215,7 @@ class SpeakingEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._editor_scroll.setStyleSheet(
-            f"QScrollArea {{ background-color: {P['bg_dark']}; border: none; }}"
-        )
+        self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(f"background-color: {P['bg_dark']};")
         self._editor_layout = QVBoxLayout(self._editor_widget)

@@ -30,10 +30,11 @@ from PIL import Image, ImageEnhance, ImageOps, ImageFilter
 from core.themes import P
 from core.style_helpers import (
     TOOLBAR_BTN_H, TOOLBAR_H,
-    ss_bg_dark, ss_bg_panel, ss_btn, ss_dim_label,
+    ss_bg_dark, ss_bg_panel, ss_btn, ss_accent_sep, ss_dim_label,
     ss_check, ss_field_label, ss_gradient_slider, ss_input,
     ss_error_label, ss_file_label, ss_file_label_loaded, ss_main_label,
-    ss_scrollarea, ss_scrollarea_transparent, ss_section_label, ss_slider,
+    ss_scrollarea, ss_scrollarea_card, ss_scrollarea_panel_edge,
+    ss_scrollarea_transparent, ss_section_label, ss_slider,
     ss_search, ss_sep, ss_sidebar_btn, ss_sidebar_frame, ss_toggle_btn, ss_transparent,
 )
 from core.editor_file_state import set_file_label
@@ -206,13 +207,7 @@ class _ThumbnailGrid(QWidget):
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._scroll.setStyleSheet(
-            f"QScrollArea {{background:{P['bg_dark']}; border:none;}}"
-            f"QScrollBar:vertical {{background:{P['bg_dark']}; width:8px; border-radius:4px;}}"
-            f"QScrollBar::handle:vertical {{background:{P['mid']}; border-radius:4px; min-height:20px;}}"
-            f"QScrollBar::handle:vertical:hover {{background:{P['secondary']};}}"
-            f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{height:0; border:none;}}"
-        )
+        self._scroll.setStyleSheet(ss_scrollarea())
 
         self._container = QWidget()
         self._container.setStyleSheet(f"background:{P['bg_dark']};")
@@ -1249,8 +1244,8 @@ class TextureEditor(QWidget):
         root.addWidget(top)
 
         sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(ss_sep())
+        sep.setFixedHeight(2)
+        sep.setStyleSheet(ss_accent_sep())
         root.addWidget(sep)
 
         main = QWidget()
@@ -2105,15 +2100,7 @@ class _TextOverlayDialog(QDialog):
 
         self._preview_scroll = QScrollArea()
         self._preview_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._preview_scroll.setStyleSheet(
-            f"QScrollArea {{background:{P['bg_card']}; border:1px solid {P['border']}; border-radius:4px;}}"
-            f"QScrollBar:vertical {{background:{P['bg_dark']}; width:8px;}}"
-            f"QScrollBar::handle:vertical {{background:{P['mid']}; border-radius:4px;}}"
-            f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{height:0;}}"
-            f"QScrollBar:horizontal {{background:{P['bg_dark']}; height:8px;}}"
-            f"QScrollBar::handle:horizontal {{background:{P['mid']}; border-radius:4px;}}"
-            f"QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width:0;}}"
-        )
+        self._preview_scroll.setStyleSheet(ss_scrollarea_card())
         self._preview_lbl = _DraggablePreview()
         self._preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._preview_lbl.setStyleSheet(ui_text("ui_texture_background_transparent"))
@@ -2130,12 +2117,7 @@ class _TextOverlayDialog(QDialog):
         ctrl_scroll.setWidgetResizable(True)
         ctrl_scroll.setFrameShape(QFrame.Shape.NoFrame)
         ctrl_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        ctrl_scroll.setStyleSheet(
-            f"QScrollArea {{background:{P['bg_panel']}; border-left:1px solid {P['border']};}}"
-            f"QScrollBar:vertical {{background:{P['bg_panel']}; width:6px;}}"
-            f"QScrollBar::handle:vertical {{background:{P['mid']}; border-radius:3px;}}"
-            f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{height:0;}}"
-        )
+        ctrl_scroll.setStyleSheet(ss_scrollarea_panel_edge())
         ctrl = QWidget()
         ctrl.setStyleSheet(f"background:{P['bg_panel']};")
         cl = QVBoxLayout(ctrl)

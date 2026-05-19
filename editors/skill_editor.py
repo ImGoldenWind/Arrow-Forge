@@ -1,18 +1,17 @@
 import copy
 import os
-import threading
 
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QScrollArea,
     QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QMessageBox,
     QTabWidget, QComboBox,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_input, ss_search, ss_sidebar_btn,
+    ss_btn, ss_accent_sep, ss_input, ss_search, ss_sidebar_btn,
     ss_section_label, ss_field_label, ss_file_label, ss_scrollarea, ss_sep,
     ss_scrollarea_transparent, ss_tab_widget, ss_tab_bar,
     TOOLBAR_H, TOOLBAR_BTN_H,
@@ -25,7 +24,7 @@ from parsers.skill_parser import (
     make_default_mot_entry, make_default_mot_subentry, write_mot,
     DATA_TYPE_MAP, FUNC_MAP_1B, PRMLOAD_TYPE_NAMES, ANM_SPEED_FUNC_NAMES,
     FWD_VELOCITY_FUNC_NAMES, GION_FUNC_NAMES, ATKHIT_FUNC_NAMES,
-    MOT_SUB_SIZE,
+    MOT_HDR_SIZE, MOT_SUB_SIZE,
 )
 from core.translations import ui_text
 from core.settings import create_backup_on_open, game_files_dialog_dir
@@ -635,6 +634,7 @@ class _MotTab(QWidget):
         self._mot_raw = None
         self._cur_entry = None
         self._entry_btns = []  # list of (btn, entry)
+        self._subentry_templates = {}
         self._structural_dirty = False
         self._entry_add_btn = None
         self._entry_dup_btn = None
@@ -718,9 +718,33 @@ class _MotTab(QWidget):
         self._entries = entries
         self._mot_raw = mot_raw
         self._cur_entry = None
+        self._rebuild_subentry_templates()
         self._structural_dirty = False
         self._populate_list(entries)
         self._set_action_state()
+
+    def _rebuild_subentry_templates(self):
+        self._subentry_templates = {}
+        for entry in self._entries:
+            for sub in entry.get('subentries', []):
+                func_name = sub.get('func_name')
+                raw_bytes = sub.get('raw_bytes', b'')
+                if (
+                    func_name
+                    and func_name not in self._subentry_templates
+                    and not sub.get('dmg_label')
+                    and len(raw_bytes) >= MOT_SUB_SIZE
+                ):
+                    self._subentry_templates[func_name] = bytes(raw_bytes)[:MOT_SUB_SIZE]
+
+    def _apply_subentry_template(self, sub, func_name):
+        raw_template = self._subentry_templates.get(func_name)
+        sub['raw_bytes'] = (
+            bytes(raw_template)
+            if raw_template is not None
+            else bytes(MOT_SUB_SIZE)
+        )
+        sub['raw_func_name'] = func_name
 
     def _populate_list(self, entries):
         _clear_layout(self._list_layout)
@@ -769,6 +793,7 @@ class _MotTab(QWidget):
             return None
         if self._structural_dirty:
             self._mot_raw = write_mot(self._entries, self._mot_raw)
+            self._rebuild_subentry_templates()
             self._structural_dirty = False
         return self._mot_raw
 
@@ -781,8 +806,30 @@ class _MotTab(QWidget):
         self._editor_layout.addWidget(_placeholder_label(ui_text("ui_skill_select_an_animation_entry")))
         self._editor_layout.addStretch()
 
+    @staticmethod
+    def _subentry_capacity(entry):
+        raw_size = int(entry.get('raw_size') or 0)
+        if raw_size < MOT_HDR_SIZE:
+            return len(entry.get('subentries', []))
+        return (raw_size - MOT_HDR_SIZE) // MOT_SUB_SIZE
+
+    def _unique_entry_id(self, candidate):
+        existing = {e.get('event_id', '') for e in self._entries}
+        candidate = (candidate or 'PL_ANM_NEW').strip() or 'PL_ANM_NEW'
+        candidate = candidate[:32]
+        if candidate not in existing:
+            return candidate
+        for n in range(1, 10000):
+            suffix = f"_{n:03d}"
+            stem = candidate[:32 - len(suffix)]
+            value = f"{stem}{suffix}"
+            if value not in existing:
+                return value
+        return candidate[:32]
+
     def _add_entry(self):
-        new_entry = make_default_mot_entry(len(self._entries) + 1)
+        new_entry = make_default_mot_entry(len(self._entries))
+        new_entry['event_id'] = self._unique_entry_id(new_entry.get('event_id'))
         self._entries.append(new_entry)
         self._cur_entry = new_entry
         self._structural_dirty = True
@@ -793,12 +840,19 @@ class _MotTab(QWidget):
     def _dup_entry(self):
         if self._cur_entry is None:
             return
+        try:
+            idx = self._entries.index(self._cur_entry)
+        except ValueError:
+            idx = len(self._entries) - 1
         new_entry = copy.deepcopy(self._cur_entry)
+        template_offset = self._cur_entry.get('offset', self._cur_entry.get('template_offset'))
         new_entry['offset'] = None
-        new_entry['event_id'] = f"{new_entry.get('event_id', 'PL_ANM')}_copy"
+        if template_offset is not None:
+            new_entry['template_offset'] = template_offset
+        new_entry['event_id'] = self._unique_entry_id(f"{new_entry.get('event_id', 'PL_ANM')}_copy")
         for sub in new_entry.get('subentries', []):
             sub['sub_off'] = None
-        self._entries.append(new_entry)
+        self._entries.insert(idx + 1, new_entry)
         self._cur_entry = new_entry
         self._structural_dirty = True
         self._refresh_list()
@@ -815,11 +869,18 @@ class _MotTab(QWidget):
                 ui_text("msg_cannot_delete_last_entry"),
             )
             return
-        self._entries = [e for e in self._entries if e is not self._cur_entry]
-        self._cur_entry = None
+        try:
+            idx = self._entries.index(self._cur_entry)
+        except ValueError:
+            return
+        self._entries.pop(idx)
+        self._cur_entry = self._entries[min(idx, len(self._entries) - 1)] if self._entries else None
         self._structural_dirty = True
         self._refresh_list()
-        self._clear_editor_placeholder()
+        if self._cur_entry is not None:
+            self._show_entry(self._cur_entry)
+        else:
+            self._clear_editor_placeholder()
         self.changed.emit()
 
     def _show_entry(self, entry):
@@ -924,10 +985,45 @@ class _MotTab(QWidget):
             return
         self._delete_subentry(entry, len(subs) - 1)
 
+    def _make_inserted_subentry(self, entry, index):
+        subs = entry.setdefault('subentries', [])
+        new_sub = make_default_mot_subentry(index + 1)
+
+        neighbors = []
+        if index > 0:
+            neighbors.append(subs[index - 1])
+        if index < len(subs):
+            neighbors.append(subs[index])
+        neighbors.extend(sub for sub in subs if sub not in neighbors)
+
+        direct = neighbors[0] if neighbors else None
+        raw_template = next(
+            (
+                sub for sub in neighbors
+                if not sub.get('dmg_label') and len(sub.get('raw_bytes', b'')) >= MOT_SUB_SIZE
+            ),
+            None,
+        )
+
+        default_template = self._subentry_templates.get(new_sub.get('func_name'))
+        if default_template is not None:
+            new_sub['raw_bytes'] = bytes(default_template)
+            new_sub['raw_func_name'] = new_sub.get('func_name')
+        elif raw_template is not None:
+            new_sub['raw_bytes'] = bytes(raw_template.get('raw_bytes', b''))[:MOT_SUB_SIZE]
+            new_sub['raw_func_name'] = raw_template.get('func_name', new_sub.get('func_name'))
+
+        if direct is not None and not direct.get('dmg_label'):
+            new_sub['bone'] = direct.get('bone', '')
+            new_sub['frame_w'] = direct.get('frame_w', 0)
+            new_sub['frame_str'] = direct.get('frame_str', '0')
+
+        return new_sub
+
     def _insert_subentry(self, entry, index, template=None):
         subs = entry.setdefault('subentries', [])
         index = max(0, min(index, len(subs)))
-        new_sub = copy.deepcopy(template) if template is not None else make_default_mot_subentry(index + 1)
+        new_sub = copy.deepcopy(template) if template is not None else self._make_inserted_subentry(entry, index)
         new_sub['sub_off'] = None
         subs.insert(index, new_sub)
         entry['n_subs'] = len(subs)
@@ -1201,7 +1297,11 @@ class _MotTab(QWidget):
             s['func_param_bytes'] = func_param_bytes[:3]
             func_txt = f_func.currentText().strip()
             _func_rev = {v: k for k, v in FUNC_MAP_1B.items()}
+            resolved_func = s.get('func_name', '')
             if func_txt in _func_rev:
+                resolved_func = func_txt
+                if s.get('sub_off') is None and s.get('raw_func_name') != resolved_func:
+                    self._apply_subentry_template(s, resolved_func)
                 s['dtype'] = (
                     _func_rev[func_txt]
                     | (s['func_param_bytes'][0] << 8)
@@ -1210,7 +1310,10 @@ class _MotTab(QWidget):
                 )
                 s['func_name'] = func_txt
             else:
-                s['func_name'] = FUNC_MAP_1B.get(s['dtype'], s.get('func_name', ''))
+                resolved_func = FUNC_MAP_1B.get(s['dtype'], s.get('func_name', ''))
+                if s.get('sub_off') is None and s.get('raw_func_name') != resolved_func:
+                    self._apply_subentry_template(s, resolved_func)
+                s['func_name'] = resolved_func
             if s.get('func_name') in ANM_SPEED_FUNC_NAMES and 'speed_multiplier' not in s:
                 s['speed_multiplier'] = 1.0
                 f_speed.setText("1")
@@ -1273,20 +1376,20 @@ class _MotTab(QWidget):
                 if lbls:
                     lbls[0].setText(text)
                 break
-        if self._mot_raw is not None and entry.get('offset') is not None:
+        if self._mot_raw is not None and entry.get('offset') is not None and not self._structural_dirty:
             write_mot_entry(self._mot_raw, entry)
         self.changed.emit()
 
     def _on_an_edited(self, text, entry):
         entry['anim_id'] = text
-        if self._mot_raw is not None and entry.get('offset') is not None:
+        if self._mot_raw is not None and entry.get('offset') is not None and not self._structural_dirty:
             write_mot_entry(self._mot_raw, entry)
         self.changed.emit()
 
     def _on_flag_edited(self, key, field, entry):
         try:
             entry[key] = int(field.text())
-            if self._mot_raw is not None and entry.get('offset') is not None:
+            if self._mot_raw is not None and entry.get('offset') is not None and not self._structural_dirty:
                 write_mot_entry(self._mot_raw, entry)
             self.changed.emit()
         except Exception:
@@ -1349,8 +1452,8 @@ class SkillEditor(QWidget):
         root.addWidget(top)
 
         sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(ss_sep())
+        sep.setFixedHeight(2)
+        sep.setStyleSheet(ss_accent_sep())
         root.addWidget(sep)
 
         # Content area
@@ -1415,18 +1518,17 @@ class SkillEditor(QWidget):
         self._show_empty_state(ui_text("ui_effect_loading"))
 
         file_type = self._file_type
+        QTimer.singleShot(0, lambda p=path, ft=file_type: self._load_selected_path(p, ft))
 
-        def _worker():
-            try:
-                if file_type == 'prm_load_standalone':
-                    raw, result = parse_prmload_xfbin(path)
-                else:
-                    raw, result = parse_prm_xfbin(path)
-                self._load_done_signal.emit(path, raw, result)
-            except Exception as e:
-                self._load_error_signal.emit(str(e))
-
-        threading.Thread(target=_worker, daemon=True).start()
+    def _load_selected_path(self, path, file_type):
+        try:
+            if file_type == 'prm_load_standalone':
+                raw, result = parse_prmload_xfbin(path)
+            else:
+                raw, result = parse_prm_xfbin(path)
+            self._on_load_done(path, raw, result)
+        except Exception as e:
+            self._on_load_error(str(e))
 
     def _on_load_done(self, path, raw, result):
         self._raw    = raw

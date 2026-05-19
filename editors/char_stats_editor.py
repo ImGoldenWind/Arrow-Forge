@@ -12,7 +12,10 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
 from core.themes import P
-from core.style_helpers import ss_btn, ss_toolbar, ss_accent_sep, ss_sep, ss_input, ss_file_label
+from core.style_helpers import (
+    ss_btn, ss_toolbar, ss_accent_sep, ss_sep, ss_input, ss_file_label,
+    ss_scrollarea, ss_scrollarea_transparent,
+)
 from core.editor_file_state import set_file_label, set_file_label_empty
 from core.skeleton import SkeletonListRow, SkeletonBar
 from parsers.xfbin_parser import parse_xfbin, save_xfbin, CHUNK_SIZE
@@ -90,8 +93,8 @@ class CharacterStatsEditor(QWidget):
 
         # Separator
         sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background-color: {P['mid']};")
+        sep.setFixedHeight(2)
+        sep.setStyleSheet(ss_accent_sep())
         root_layout.addWidget(sep)
 
         # Main area: character list + editor
@@ -159,7 +162,7 @@ class CharacterStatsEditor(QWidget):
         self._char_scroll = QScrollArea()
         self._char_scroll.setWidgetResizable(True)
         self._char_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._char_scroll.setStyleSheet("QScrollArea { background-color: transparent; border: none; }")
+        self._char_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._char_list_widget = QWidget()
         self._char_list_widget.setStyleSheet("background-color: transparent;")
         self._char_list_layout = QVBoxLayout(self._char_list_widget)
@@ -181,9 +184,7 @@ class CharacterStatsEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._editor_scroll.setStyleSheet(
-            f"QScrollArea {{ background-color: {P['bg_dark']}; border: none; }}"
-        )
+        self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(f"background-color: {P['bg_dark']};")
         self._editor_layout = QVBoxLayout(self._editor_widget)

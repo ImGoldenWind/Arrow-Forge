@@ -23,6 +23,7 @@ from core.style_helpers import (
     TOOLBAR_H,
     ss_bg_dark,
     ss_bg_panel,
+    ss_accent_sep,
     ss_accent_label,
     ss_btn,
     ss_dim_label,
@@ -130,8 +131,8 @@ class SndCmnParamEditor(QWidget):
         root.addWidget(top)
 
         sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(ss_sep())
+        sep.setFixedHeight(2)
+        sep.setStyleSheet(ss_accent_sep())
         root.addWidget(sep)
 
         main = QWidget()

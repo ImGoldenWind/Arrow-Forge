@@ -15,15 +15,17 @@ from PyQt6.QtGui import QFont, QPainter, QColor, QPen
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_file_label, ss_input, ss_panel,
+    ss_btn, ss_accent_sep, ss_file_label, ss_input, ss_panel,
     ss_placeholder, ss_scrollarea, ss_scrollarea_transparent, ss_search,
     ss_section_label, ss_sep, ss_sidebar_btn, ss_slider,
     ss_blocking_overlay, ss_blocking_overlay_card, ss_progressbar,
+    ss_audio_format_badge,
 )
 from core.editor_file_state import set_file_label, set_file_label_empty
 from core.external_tools import find_vgaudio_cli, find_vgmstream_cli, is_tool_path, tool_command
 from core.skeleton import SkeletonListRow
 from core.settings import create_backup_on_open, load_settings, save_settings, game_files_dialog_dir
+from core.quiet_unlocks import request_and_cascade
 from parsers.awb_parser import (
     parse_awb, extract_entry, rebuild_awb, save_awb,
     add_entry, delete_entry, get_entry_label, _detect_format,
@@ -62,6 +64,8 @@ _AUDIO_OPEN_FILTER = (
     "*.m4a *.aac *.wv *.wma *.hca *.adx *.bin"
     ");;All files (*.*)"
 )
+
+_SLOW_ENCRYPTED_OFFSET = 64 * 1024 * 1024
 
 
 def _ensure_file_ext(path: str, ext: str) -> str:
@@ -287,6 +291,16 @@ def _fmt_size(n):
     return f"{n / (1024 * 1024):.2f} MB"
 
 
+def _entry_needs_slow_seek(entry: dict) -> bool:
+    return (
+        entry.get('encryption') == 'asbr_cpk'
+        and entry.get('size', 0) > 0
+        and entry.get('offset', 0) >= _SLOW_ENCRYPTED_OFFSET
+        and '_new_data' not in entry
+        and '_prepared_data' not in entry
+    )
+
+
 def _fmt_duration(sec):
     m, s = divmod(sec, 60)
     return f"{int(m)}:{s:05.2f}"
@@ -466,8 +480,8 @@ class SoundEditor(QWidget):
 
         # Separator
         sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(ss_sep())
+        sep.setFixedHeight(2)
+        sep.setStyleSheet(ss_accent_sep())
         root_layout.addWidget(sep)
 
         # Main area
@@ -768,13 +782,18 @@ class SoundEditor(QWidget):
             path = self._filepath
             new_raw, new_entries, new_meta = rebuild_awb(
                 self._entries, self._meta, self._raw_data)
-            save_awb(path, new_raw)
-            self._raw_data = bytearray(new_raw)
+            saved_raw = save_awb(path, new_raw, new_meta)
+            if new_meta.get('encryption') == 'asbr_cpk':
+                for entry in new_entries:
+                    entry['encryption'] = 'asbr_cpk'
+                    entry['container_size'] = len(saved_raw)
+            self._raw_data = bytearray(saved_raw)
             self._entries = new_entries
             self._meta = new_meta
             self._dirty = False
             set_file_label(self._file_label, path)
             self._wav_cache.clear()
+            request_and_cascade(self, "Geb")
             QMessageBox.information(self, self.t("dlg_title_success"),
                                     self.t("msg_save_success", path=os.path.basename(path)))
         except Exception as e:
@@ -812,7 +831,26 @@ class SoundEditor(QWidget):
             name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             text_layout.addWidget(name_lbl)
 
+            meta_bits = []
+            if entry.get('size', 0) <= 0:
+                meta_bits.append(ui_text("sound_badge_empty"))
+            else:
+                meta_bits.append(_fmt_size(entry.get('size', 0)))
+            if _entry_needs_slow_seek(entry):
+                meta_bits.append(ui_text("sound_badge_slow_encrypted"))
+            meta_lbl = QLabel("  ".join(meta_bits))
+            meta_lbl.setFont(QFont("Segoe UI", 9))
+            meta_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+            meta_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            text_layout.addWidget(meta_lbl)
+
             btn_layout.addWidget(text_col, 1)
+
+            fmt_lbl = QLabel(entry.get('format', 'unknown').upper())
+            fmt_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            fmt_lbl.setStyleSheet(ss_audio_format_badge(entry.get('format', 'unknown')))
+            fmt_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            btn_layout.addWidget(fmt_lbl)
 
             btn_widget.setGeometry(0, 0, 260, 44)
             btn_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -827,14 +865,21 @@ class SoundEditor(QWidget):
         self._entry_list_layout.addStretch()
 
         if self._entries:
-            self._select_entry(0)
+            first_audio = next(
+                (i for i, entry in enumerate(self._entries)
+                 if entry.get('size', 0) > 0 and entry.get('format') != 'unknown'),
+                0,
+            )
+            self._select_entry(first_audio)
 
     def _filter_list(self):
         query = self._search_entry.text().lower()
         for btn, entry, idx in self._entry_buttons:
             label = get_entry_label(entry['id']).lower()
             match = (query in label or query in str(entry['id'])
-                     or query in entry['format'].lower())
+                     or query in entry['format'].lower()
+                     or (query in ui_text("sound_badge_slow_encrypted").lower()
+                         and _entry_needs_slow_seek(entry)))
             btn.setVisible(match)
 
     def _select_entry(self, idx):
@@ -854,6 +899,9 @@ class SoundEditor(QWidget):
 
         def worker():
             entry = self._entries[idx]
+            if _entry_needs_slow_seek(entry) and idx not in self._wav_cache:
+                self._sig_editor_ready.emit(idx, None)
+                return
             hca_bytes = self._get_entry_bytes(idx)
             hca_info = None
             if entry['format'] == 'HCA':
@@ -870,6 +918,7 @@ class SoundEditor(QWidget):
     def _build_editor(self, idx, hca_info=None):
         if self._current_entry != idx:
             return  # User already clicked another entry
+        self._hide_decode_busy()
         _clear_layout(self._editor_layout)
         self._fields = {}
 
@@ -886,6 +935,28 @@ class SoundEditor(QWidget):
         title_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
         hdr_layout.addWidget(title_lbl)
         self._editor_layout.addWidget(hdr)
+
+        if _entry_needs_slow_seek(entry) and not hca_info:
+            sec_slow = self._make_section(ui_text("sound_slow_encrypted_title"))
+            slow_frame = QWidget()
+            slow_frame.setStyleSheet("background-color: transparent;")
+            slow_layout = QHBoxLayout(slow_frame)
+            slow_layout.setContentsMargins(12, 0, 12, 12)
+            slow_layout.setSpacing(8)
+
+            slow_lbl = QLabel(ui_text("sound_slow_encrypted_detail"))
+            slow_lbl.setWordWrap(True)
+            slow_lbl.setFont(QFont("Segoe UI", 11))
+            slow_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+            slow_layout.addWidget(slow_lbl, 1)
+
+            prepare_btn = QPushButton(ui_text("sound_btn_prepare_audio"))
+            prepare_btn.setFixedHeight(34)
+            prepare_btn.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+            prepare_btn.setStyleSheet(ss_btn(accent=True))
+            prepare_btn.clicked.connect(lambda: self._prepare_entry_info(idx))
+            slow_layout.addWidget(prepare_btn)
+            sec_slow.layout().addWidget(slow_frame)
 
         # Audio Info
         # Playback
@@ -1088,7 +1159,28 @@ class SoundEditor(QWidget):
         entry = self._entries[idx]
         if '_new_data' in entry:
             return entry['_new_data']
+        if '_prepared_data' in entry:
+            return entry['_prepared_data']
         return extract_entry(self._raw_data, entry)
+
+    def _prepare_entry_info(self, idx):
+        if idx < 0 or idx >= len(self._entries):
+            return
+        entry = self._entries[idx]
+        self._show_decode_busy(ui_text("sound_slow_prepare_detail", id=entry.get('id', idx)))
+
+        def worker():
+            hca_info = None
+            try:
+                hca_bytes = self._get_entry_bytes(idx)
+                entry['_prepared_data'] = hca_bytes
+                if entry.get('format') == 'HCA':
+                    hca_info = parse_hca_info(hca_bytes)
+            except Exception:
+                pass
+            self._sig_editor_ready.emit(idx, hca_info)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _resolve_vgaudio_cli(self) -> str:
         """Return VGAudioCli path, prompting the user if not yet configured.

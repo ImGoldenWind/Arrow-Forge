@@ -12,7 +12,8 @@ from PyQt6.QtGui import QFont
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_panel, ss_sidebar_btn,
+    ss_btn, ss_accent_sep, ss_panel, ss_sidebar_btn,
+    ss_scrollarea, ss_scrollarea_transparent,
     ss_section_label, ss_field_label,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
@@ -94,8 +95,8 @@ class EffectEditor(QWidget):
         root.addWidget(top)
 
         sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background-color: {P['mid']};")
+        sep.setFixedHeight(2)
+        sep.setStyleSheet(ss_accent_sep())
         root.addWidget(sep)
 
         # Main area (sidebar + editor)
@@ -160,7 +161,7 @@ class EffectEditor(QWidget):
         self._list_scroll = QScrollArea()
         self._list_scroll.setWidgetResizable(True)
         self._list_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._list_scroll.setStyleSheet("QScrollArea { background-color: transparent; border: none; }")
+        self._list_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._list_widget = QWidget()
         self._list_widget.setStyleSheet("background-color: transparent;")
         self._list_layout = QVBoxLayout(self._list_widget)
@@ -181,9 +182,7 @@ class EffectEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._editor_scroll.setStyleSheet(
-            f"QScrollArea {{ background-color: {P['bg_dark']}; border: none; }}"
-        )
+        self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(f"background-color: {P['bg_dark']};")
         self._editor_layout = QVBoxLayout(self._editor_widget)

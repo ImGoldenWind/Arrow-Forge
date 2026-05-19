@@ -1,0 +1,370 @@
+/****************************************************************************
+ *
+ * CRI Middleware SDK
+ *
+ * Copyright (c) 2010 CRI Middleware Co., Ltd.
+ *
+ * Title   : Sofdec2 tools
+ * Module  : Release Notes
+ * File    : release_sofdec2_tools_e.txt
+ * Date    : 2019-05-07
+ * Version : 2.22.01
+ *
+ ****************************************************************************/
+
+/*--------------------------------------------------------------------------*
+ *
+ * [Table of Contents]
+ * 1.  About Sofdec2 Tools
+ * 2.  Version Information
+ * 3.  Tool Package
+ * 4.  System Requirements
+ *   4.1  Sofdec2 tools
+ *   4.2  Notes on Operating Environment
+ * 5.  Installation
+ * 6.  Starting
+ * 7.  Files
+ *   7.1  Material Files
+ *   7.2  Output Files
+ * 8.  Restrictions and Known Problems
+ *   8.1  Sofdec2 Encoding Wizard
+ *   8.2  Sofdec2 Encoder/CUI
+ *   8.3  Sofdec2 Encoder/CUI H.264
+ *   8.4  Sofdec2 Encoder/CUI VP9
+ *   8.5  Sofdec2 Viewer
+ *
+ *--------------------------------------------------------------------------*/
+
+1.  About Sofdec2 Tools
+ "Sofdec2 tools" is a set of tools to create a Sofdec2 file (.usm) for the
+CRI Mana library.
+
+2.  Version Information
+(1) Tool package
+  Sofdec2 tools                  : Ver.2.22.01
+
+(2) Tools
+  (a) Sofdec2 Encoding Wizard    : Ver.2.20.01 [UPDATED]
+  (b) Sofdec2 Encoder/CUI        : Ver.2.53.02
+  (c) Sofdec2 Encoder/CUI H.264  : Ver.2.20.00
+  (d) Sofdec2 Encoder/CUI VP9    : Ver.1.06.00 [UPDATED]
+  (e) Sofdec2 Viewer             : Ver.2.09.02
+  (f) Convert To USM.VP9         : Ver.1.03.00
+
+[Note] About Sofdec2 tools Ver.2.15.00 or later
+We have changed the license authentication system.
+If you use this version or later, please use the following license file.
+- cri_sofdec2_tools.v2.lic
+- crispeee_x264.v2.lic
+
+[Note] About Sofdec2 tools Ver.2.00.00 or later
+- (a) is developed by incorporating the features of "Sofdec2 Encoding 
+Wizard H.264"  which was released for some targets (Vita/WiiU)
+- "Sofdec2 Encoding Wizard H.264" will not be updated any more.
+- To use H.264, instead of using "Sofdec2 Encoding Wizard H.264", select
+H.264 for the video codec on the Video page of (a).
+- (c) will be integrated into Sofdec2 Encoder/CUI in the future release.
+For the time being, it needs some tool chain.
+- Changes in the following tools are described in the revision history.
+  - Sofdec2 Encoding Wizard H.264 Ver.1.08.03
+  - Sofdec2 Encoder H.264 Ver.1.08.03
+
+3.  Tool Package
+This package includes the following tools and documents.
+
+(1) Tools
+  (a) "Sofdec2 Encoding Wizard" (file name: Sofdec2EncWiz.exe)
+    It's the data creation tool for CRI Sofdec2.
+    It is a wizard type application, and you can easily make movie data 
+    without special knowledge and experiences.
+
+  (b) "Sofdec2 Encoder" (file name: sofdec2enc.exe)
+    It's the Sofdec.Prime file creation tool.
+    It is a console application and convenient for batch processing on 
+    command prompt.
+
+  (c) "Sofdec2 Encoder H.264" (file name: sofdec2encH264.exe)
+    It's the Sofdec.H264 file creation tool.
+    It is a console application and convenient for batch processing on 
+    command prompt.
+
+  (d) "Sofdec2 Encoder VP9" (file name: sofdec2encVP9.exe)
+    It's the Sofdec.VP9 file creation tool.
+    (*) Currently this is an internal tool. It is not supposed to use directly.
+
+  (e) "Sofdec2 Viewer" (file name: Sofdec2Viewer.exe)
+    It's the movie previewer for CRI Sofdec2.
+    Movie data created with the Wizard can be checked on your PC.
+
+  (f) "Convert To USM.VP9" (file name: convert_to_usmvp9.bat)
+    It's a batch file to convert Sofdec.Prime/H.264 usm data to VP9 usm data.
+
+(2) Release notes/Revision history
+Tool's release notes and revision history are put in the docs folder.
+
+  (a) Release notes
+    (file name: release_sofdec2_tools_e.txt)
+    Describes tool's overview and notes. (this document)
+
+  (b) Revision history
+    (file name: history_sofdec2_tools_e.txt)
+    Records tool's change histories in the previous versions.
+
+(3) "Sofdec2 Tools User's Manual" 
+    (file name: CRI_Sofdec2_Tools_Manual_e.chm)
+This manual describes features and usage of Sofdec tools.
+
+4.  System Requirements
+4.1  Sofdec2 tools
+The tools run on the following environment:
+
+    CPU             : Intel / AMD 2-Cores or more (Intel Core i5/i7 recommended.)
+    Main memory     : 1 GB or more 
+    OS              : Windows 7 / 8.1 / 10 (64bit)
+    .NET Framework  : .NET Framework 3.5
+    DirectX         : DirectX SDK June 2010 or newer
+
+4.2  Notes on the operating environment
+Please note the following items when using Sofdec2 tools.
+
+(1) Windows Installer installation
+Windows Installer 3.1 or newer is required to intall .NET Framework as 
+described later.
+If not installed, download and install the Windows Installer 3.1 from 
+the following site.
+
+    - Windows Installer 3.1 Redistributable (v2) 
+      https://www.microsoft.com/en-US/download/details.aspx?id=25
+
+(2) .NET Framework installation
+.NET Framework 3.5 is required to use the Sofdec2 tools. 
+For Windows 7, .NET Framework 3.5 is included.
+On the other hand, for Windows 8.1, 10, you need to enable the framework.
+Please refer to the following official information .
+
+@@EInstalling the .NET Framework 3.5 on Windows 8, Windows 8.1 and Windows 10
+      https://msdn.microsoft.com/en-us/library/hh506443.aspx
+
+(3) DirectX runtimes installation
+DirectX June 2010 or newer is required to use the Sofdec2 tools. 
+Download and install the runtimes from the following site. 
+
+    - DirectX End-User Runtimes (June 2010)
+      http://www.microsoft.com/download/en/details.aspx?id=8109
+
+(4) Install the Visual C++ Redistributable Packages
+Install the Visual C++ Redistributable Packages for Visual Studio 2013
+from the following site.
+
+    - Visual C++ Redistributable Packages for Visual Studio 2013 
+      https://www.microsoft.com/ja-jp/download/details.aspx?id=40784
+
+(5) Network Execution
+You cannot run the Sofdec2 tools remotely over a network. 
+Copy the executable files to your own PC before using the tools. 
+
+5.  Installation
+(1) Installing/Uninstalling Sofdec2 tools
+  (a) Installing
+    No special setting for intallation is required.
+    Copy all the files included in the package to any folder.
+
+  (b) Unintalling
+    Delete all the files in the installation folder.
+
+6.  Starting up
+Double-click the executable file or its shortcut from the File Explorer 
+to run the tool.
+Also, dobule-clicking tool's project file (.sfd2ewproj file) can launch
+the tool.
+
+7.  Files
+7.1  Material Files
+(1) Recommended material
+File format : - Microsoft AVI
+Audio       : - Uncompressed PCM format (equivalent to WAVE format)  
+Video       : - Uncompressed RGB format (equivalent to BMP format) 
+
+(2) Video materials specifications
+File formats: - AVI format video file
+              - Sequential numbered still image file
+# of colors : 24-bit or 32-bit color  
+Image size  : [Minimum] 1x1
+              [Maximum] Sofdec.Prime, VP9 : 4088x2400
+                        H.264             : depending on the target's decoder spec.
+Frame rate  : 60/59.94/50/30/29.97(recommended)/25/24/23.976/ 20/15/10 fps 
+
+[Notes]
+(a) AVI file
+    - Supported the file by DirectShow. (Some codec is not supported.)
+    - A file larger than 2GB or more is supported.
+(b) MP4/MOV file
+    - Supported the file by Microsoft Media Foundation
+(*3) Sequential numbered still image file
+    - 24-bit / 32-bit color BMP (uncompressed)
+    - 24-bit / 32-bit color TGA (uncompressed/run-length)
+
+(3) Audio Material Specifications
+(a) Non-VR Audio Format
+  File format   : WAVE or AIFF format waveform file 
+  Format        : 16-bit linear PCM (uncompressed)  
+  # of channels : Monaural or stereo
+  Sampling freq : Supports up to 48 kHz  
+
+(a) VR Audio Format
+  File format   : WAVE format waveform file 
+  Format        : 16-bit linear PCM (uncompressed)  
+  # of channels : 4ch (only 1st Order)
+  Channel Format: B-format
+  Channel Order : FuMa (Furse-Malham)
+  Sampling freq : Supports up to 48 kHz  
+
+7.2  Output Files
+  (a) Movie file (extension: .usm)
+    A Sofdec2 format movie file. 
+
+  (b) Project file (extension: .sfd2ewproj)
+    A project file containing saved encoding settings for 
+    Sofdec2 Encoding Wizard
+
+8.  Restrictions and Known Problems
+This chapter describes tool's restrictions and known problems of this release.
+
+8.1  Sofdec2 Encoding Wizard
+8.1.1  Restrictions
+(1) Video material, not complying with the specification, cannot be encoded.
+  - Its frame rate is not in the range from 10fps to 60fps. 
+
+[Notes]
+(1) Different file types of still image file cannot be used together.
+
+(2) Bitrate up to 100Mbps can be specified.
+
+(3) On Windows 7 or newer, problems such as no progress in encoding or 
+    failure in encoding, may occur when starting the tool from the folder 
+    where access control is valid (the Program Files folder).
+    To avoid these problems, install the tools to the folder without access 
+    control, or start the tools in the administrator's mode.
+
+8.1.2  Known problems
+(1) Encoding may fail on the environment with insufficient memory.
+
+8.2  Sofdec2 Encoder/CUI
+8.2.1  Known problems
+(1) A deadlock error occurs during encoding on the environment where
+    a specific DirectShow filter is installed.
+Audio encoding processing cannot be finished and a deadlock occurs due to
+interference from a specific DirectShow filter.
+When this error occurs, the following error message appears:
+
+    [Error] Detected dead locking.
+     > Filter Nero DV Splitter is found.
+     > Filter Nero File Source (Async.) is found.
+     > Filter Nero FLV Splitter is found.
+     > Filter Nero MP4 Splitter is found.
+    These filters are not safe, aborted. (see also Release Note.)
+
+Meanwhile, this problem occurs only when encoding an .avi file with
+both video and audio tracks.  When specifying a separate audio file from 
+.avi file, this problem will not happen.
+
+As for this problem, no workaround is found at this time.
+Please handle this problem with either of the following measures:
+
+  (a) Uninstalling "Nero"
+    Please uninstall "Nero", and check whether this problem does not 
+    occur again during encoding.
+
+  (b) Separate an audio track from .avi file
+    Please demultiplex an audio track from .avi file using "VirtualDub" or
+    other video tools, and specify it as audio material file for encoding.
+
+(2) Ignoreing sound tracks in a AVI file
+If "LAV Filters" is installed, sound tracks in a AVI file may not be 
+recognized.
+In this case, uninstall the "LAV Filters."
+
+(3) When the length of the audio and movie is different
+It is specified to record in the movie header according to the longer scale.
+
+When watching the movie information with the tool Wizz
+it is difficult to notice that the scale that was recorded in the longer direction.
+Duration was displayed and the scale was different.
+At this time, if the loop playback or concatenation playback is repeated
+on the runtime side, the movie may stop as a result of cumulative error of the scale.
+It is under consideration whether improvement can not be done,
+but if you avoid it for the time being please care so that the scale will be the same.
+
+8.2.2  Restrictions
+(1) Encoding audio tracks
+The same audio material file cannot be specified for multiple audio tracks.
+Also, the same channel data in 5.1ch audio material cannot be used between 
+multiple audio tracks.
+Please separate audio material files for each track.
+
+(2) Notes on handling sequential numbered BMP files without alpha data
+In the Sofdec2 Encoding Wizard, when specifying sequential numbered BMP files 
+without alpha data, the Alpha Movie checkbox may be enabled.
+Also, in the Sofdec2 Encoder/CUI, when specifying the -alpha00 command,
+encoding may be performed.
+A movie file that was encoded in the above condition is not valid and 
+cannot be played as alpha movie.
+Please be sure not to specify the alpha movie options in encoding 
+sequential numbered BMP files without alpha data.
+
+8.3  Sofdec2 Encoder/CUI H.264
+8.3.1  Known Issues
+(1) On problems in the order of options.
+It is known that the following problems occur depending on the order of designation of options.
+(a) A crash occurs when -alpha00 is before and -video00 is after.
+(b) usm is not output to the path specified by -out when -out is before, -video00 is after,
+Usm is created in the same folder as the file specified by -video00.
+
+(2) On the problem of scale processing
+When scaling (enlargement / reduction) processing is performed with a non-16 multiple resolution,
+There is a problem that scale processing will be entered after the black border for adjustment is added to 16 multiples.
+At this time, the black frame area will also be scaled.
+In case of avoiding, adjust the resolution to 16 times beforehand on the original material side beforehand
+Please do scale processing without a black frame.
+
+(3) Behavior when the -in option is specified
+When used with the -in option, even if you specify the original material with sound,
+It will not be included behavior.
+(Sofdec 2 Encoder / CUI is behaving to include speech)
+There is a problem that Sofdec 2 Encoder / CUI side and implementation are different.
+For the time being, avoid using the -video00, -audio00 option.
+
+(4) The intermediate file will remain.
+It will not delete the following files.
+  *.264, *.264_med, *.stats, *.stats.mbtree
+
+8.4 Sofdec2 Encoder/CUI VP9
+- Nothing
+
+8.4  Sofdec2 Viewer
+8.4.1  Known Issues
+(1) Couldn't seek the specified frame
+In pausing state, press a left/right arrow key on seekbar,
+it skips a frame sometimes.
+
+(2) Crash on seeking a USM.264 file.
+Open a USM.264 file and pause it.
+Sometimes crashes on pressed a left/right arrow key on seekbar.
+
+8.4.2  Restrictions
+(1) Dependence on DirectX
+DirectX runtime is used for drawing of Sofdec 2 Viewer.
+Please install DirectX (June 2010) or later.
+If it is not installed, there is a possibility that an error such as absence of d3dx9_43.dll may occur.
+
+(2) Upper limit of display resoluton
+A window with the vertical resolution larger than the display resolution
+cannot be created.
+To play a large resolution movie, prepare the display which has the resolution 
+larger than movie resolution.
+(Or, reduce the movie size with the Zoom feature.)
+
+
+--END--
+
+/*--< end of file >---------------------------------------------------------*/

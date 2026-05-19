@@ -13,7 +13,8 @@ from PyQt6.QtGui import QFont
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_sep, ss_file_label, ss_check,
+    ss_btn, ss_sep, ss_accent_sep, ss_file_label, ss_check,
+    ss_scrollarea, ss_scrollarea_transparent,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
 from core.editor_file_state import set_file_label
@@ -122,8 +123,8 @@ class DictionaryParamEditor(QWidget):
 
         # Separator
         sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(ss_sep())
+        sep.setFixedHeight(2)
+        sep.setStyleSheet(ss_accent_sep())
         root.addWidget(sep)
 
         # Main area
@@ -188,7 +189,7 @@ class DictionaryParamEditor(QWidget):
         self._entry_scroll = QScrollArea()
         self._entry_scroll.setWidgetResizable(True)
         self._entry_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._entry_scroll.setStyleSheet("QScrollArea { background-color: transparent; border: none; }")
+        self._entry_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._entry_list_widget = QWidget()
         self._entry_list_widget.setStyleSheet("background-color: transparent;")
         self._entry_list_layout = QVBoxLayout(self._entry_list_widget)
@@ -209,9 +210,7 @@ class DictionaryParamEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._editor_scroll.setStyleSheet(
-            f"QScrollArea {{ background-color: {P['bg_dark']}; border: none; }}"
-        )
+        self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(f"background-color: {P['bg_dark']};")
         self._editor_layout = QVBoxLayout(self._editor_widget)

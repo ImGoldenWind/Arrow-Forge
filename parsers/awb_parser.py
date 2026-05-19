@@ -1,5 +1,7 @@
 import struct
 
+from parsers.cpk_parser import crypt_jojo_asbr
+
 # AFS2 / AWB audio bank parser
 # AWB files use CriWare's AFS2 container format for storing
 # multiple audio streams (typically HCA-encoded).
@@ -41,6 +43,29 @@ def _detect_offset_size(type_flags):
     return 2
 
 
+def _decrypt_asbr_slice(raw, start, size, total_size=None):
+    """Decrypt one absolute slice from an ASBR-encrypted AWB."""
+    if size <= 0:
+        return b''
+    return crypt_jojo_asbr(
+        raw[start:start + size],
+        total_size=len(raw) if total_size is None else total_size,
+        start_offset=start,
+    )
+
+
+def _detect_awb_encryption(raw):
+    """Return (header bytes, encryption marker)."""
+    if raw[:4] == AFS2_MAGIC:
+        return raw[:HEADER_SIZE], None
+
+    probe = crypt_jojo_asbr(raw[:HEADER_SIZE], total_size=len(raw))
+    if probe[:4] != AFS2_MAGIC:
+        return raw[:HEADER_SIZE], None
+
+    return probe, 'asbr_cpk'
+
+
 def parse_awb(filepath):
     """Parse an AFS2/AWB file and return structured data.
 
@@ -63,6 +88,7 @@ def parse_awb(filepath):
                 'offset_size':  int,
                 'alignment':    int,
                 'entry_count':  int,
+                'encryption':   str or None,
             }
     """
     with open(filepath, 'rb') as f:
@@ -71,16 +97,25 @@ def parse_awb(filepath):
     if len(raw) < HEADER_SIZE:
         raise ValueError("File too small to be a valid AWB")
 
-    magic = raw[0:4]
+    header, encryption = _detect_awb_encryption(raw)
+
+    magic = header[0:4]
     if magic != AFS2_MAGIC:
         raise ValueError(f"Invalid AWB magic: expected 'AFS2', got {magic!r}")
 
-    version = raw[4]
-    type_flags = raw[5]
-    id_size = raw[6] if raw[6] in (2, 4) else 2
-    entry_count = struct.unpack_from('<I', raw, 8)[0]
-    alignment = struct.unpack_from('<I', raw, 12)[0]
+    version = header[4]
+    type_flags = header[5]
+    id_size = header[6] if header[6] in (2, 4) else 2
+    entry_count = struct.unpack_from('<I', header, 8)[0]
+    alignment = struct.unpack_from('<I', header, 12)[0]
     offset_size = _detect_offset_size(type_flags)
+    table_size = HEADER_SIZE + entry_count * id_size + (entry_count + 1) * offset_size
+    if len(raw) < table_size:
+        raise ValueError("AWB header tables exceed file size")
+
+    header_raw = raw
+    if encryption == 'asbr_cpk':
+        header_raw = bytearray(crypt_jojo_asbr(raw[:table_size], total_size=len(raw)))
 
     meta = {
         'version': version,
@@ -89,6 +124,8 @@ def parse_awb(filepath):
         'offset_size': offset_size,
         'alignment': alignment,
         'entry_count': entry_count,
+        'encryption': encryption,
+        'file_size': len(raw),
     }
 
     # Parse ID table
@@ -97,7 +134,7 @@ def parse_awb(filepath):
     id_fmt = '<H' if id_size == 2 else '<I'
     for i in range(entry_count):
         pos = id_table_start + i * id_size
-        ids.append(struct.unpack_from(id_fmt, raw, pos)[0])
+        ids.append(struct.unpack_from(id_fmt, header_raw, pos)[0])
 
     # Parse offset table
     offset_table_start = id_table_start + entry_count * id_size
@@ -105,7 +142,7 @@ def parse_awb(filepath):
     offsets = []
     for i in range(entry_count + 1):
         pos = offset_table_start + i * offset_size
-        offsets.append(struct.unpack_from(off_fmt, raw, pos)[0])
+        offsets.append(struct.unpack_from(off_fmt, header_raw, pos)[0])
 
     # Build entries
     entries = []
@@ -116,19 +153,28 @@ def parse_awb(filepath):
 
         # Detect audio format from first bytes
         fmt = 'unknown'
-        if data_start + 4 <= len(raw):
-            head = raw[data_start:data_start + 4]
-            # HCA: plain "HCA\0" or masked (high bit set on first 3 bytes)
-            if head[:3] == b'HCA' or head[:3] == bytes([0xC8, 0xC3, 0xC1]):
+        if size > 0 and data_start + 4 <= len(raw):
+            if encryption == 'asbr_cpk':
+                # ASBR AWBs in this toolchain store HCA streams. Avoid
+                # decrypting every far-away entry just to read four bytes.
                 fmt = 'HCA'
-            elif head[:2] == b'\x80\x00':
-                fmt = 'ADX'
+                head = None
+            else:
+                head = raw[data_start:data_start + 4]
+            if head is not None:
+                # HCA: plain "HCA\0" or masked (high bit set on first 3 bytes)
+                if head[:3] == b'HCA' or head[:3] == bytes([0xC8, 0xC3, 0xC1]):
+                    fmt = 'HCA'
+                elif head[:2] == b'\x80\x00':
+                    fmt = 'ADX'
 
         entries.append({
             'id': ids[i],
             'offset': data_start,
             'size': size,
             'format': fmt,
+            'encryption': encryption,
+            'container_size': len(raw),
         })
 
     return raw, entries, meta
@@ -136,7 +182,11 @@ def parse_awb(filepath):
 
 def extract_entry(raw_data, entry):
     """Extract raw audio bytes for a single entry."""
-    return bytes(raw_data[entry['offset']:entry['offset'] + entry['size']])
+    offset = entry['offset']
+    size = entry['size']
+    if entry.get('encryption') == 'asbr_cpk':
+        return _decrypt_asbr_slice(raw_data, offset, size, entry.get('container_size'))
+    return bytes(raw_data[offset:offset + size])
 
 
 def replace_entry_data(raw_data, entries, meta, index, new_audio_bytes):
@@ -204,8 +254,10 @@ def rebuild_awb(entries, meta, original_raw=None):
     for entry in entries:
         if '_new_data' in entry:
             blobs.append(entry['_new_data'])
+        elif '_prepared_data' in entry:
+            blobs.append(entry['_prepared_data'])
         elif original_raw is not None:
-            blobs.append(bytes(original_raw[entry['offset']:entry['offset'] + entry['size']]))
+            blobs.append(extract_entry(original_raw, entry))
         else:
             blobs.append(b'')
 
@@ -259,16 +311,22 @@ def rebuild_awb(entries, meta, original_raw=None):
             'offset': data_start,
             'size': len(blob),
             'format': _detect_format(blob),
+            'encryption': None,
+            'container_size': len(buf),
         })
 
     meta['entry_count'] = entry_count
+    meta['file_size'] = len(buf)
     return bytes(buf), new_entries, meta
 
 
-def save_awb(filepath, raw_data):
+def save_awb(filepath, raw_data, meta=None):
     """Write raw AWB data to file."""
+    if meta and meta.get('encryption') == 'asbr_cpk':
+        raw_data = crypt_jojo_asbr(raw_data)
     with open(filepath, 'wb') as f:
         f.write(raw_data)
+    return bytes(raw_data)
 
 
 def get_entry_label(entry_id):

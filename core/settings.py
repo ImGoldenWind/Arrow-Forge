@@ -16,6 +16,12 @@ DEFAULT_SETTINGS = {
     "recent_tools": [],
     "favorite_tools": [],
     "pinned_tools": {},
+    "animation_card_perspective": True,
+    "animation_editor_fade": True,
+    "animation_right_panel_fade": True,
+    "animation_sidebar_highlight": True,
+    "animation_theme_personality": True,
+    "animation_theme_personality_motion": True,
 }
 
 

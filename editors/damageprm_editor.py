@@ -12,7 +12,7 @@ from PyQt6.QtGui import QFont
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_sep, ss_input, ss_search, ss_scrollarea,
+    ss_btn, ss_sep, ss_accent_sep, ss_input, ss_search, ss_scrollarea,
     ss_scrollarea_transparent, ss_field_label, ss_sidebar_btn,
     ss_file_label, ss_section_label,
     TOOLBAR_H, TOOLBAR_BTN_H,
@@ -90,8 +90,8 @@ class DamagePrmEditor(QWidget):
         root.addWidget(top)
 
         sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(ss_sep())
+        sep.setFixedHeight(2)
+        sep.setStyleSheet(ss_accent_sep())
         root.addWidget(sep)
 
         body_w = QWidget()
