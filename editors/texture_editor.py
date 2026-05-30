@@ -48,11 +48,26 @@ from parsers.texture_xfbin_parser import (
     delete_texture_entry, refresh_texture_entries,
 )
 from core.translations import ui_text
-from core.settings import create_backup_on_open, game_files_dialog_dir
+from core.settings import create_backup_on_open, game_files_dialog_dir, load_settings
 
 THUMB_SIZE    = 100
 THUMB_PADDING = 6
 THUMB_COLS    = 2
+
+
+def _texture_open_dir() -> str:
+    game_dir = load_settings().get("game_files_dir", "")
+    if game_dir and os.path.isdir(game_dir):
+        candidates = [
+            os.path.join(game_dir, "data", "ui"),
+            os.path.join(game_dir, "ui"),
+        ]
+        if os.path.basename(os.path.normpath(game_dir)).lower() == "ui":
+            candidates.insert(0, game_dir)
+        for candidate in candidates:
+            if os.path.isdir(candidate):
+                return candidate
+    return game_files_dialog_dir(target_patterns="*.xfbin")
 
 
 # Shared style helpers
@@ -1311,7 +1326,7 @@ class TextureEditor(QWidget):
     # Open / Save
     def _open_xfbin(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("xfa_btn_open"), game_files_dialog_dir(target_patterns="*.xfbin"), "XFBIN Files (*.xfbin);;All Files (*)"
+            self, ui_text("xfa_btn_open"), _texture_open_dir(), "XFBIN Files (*.xfbin);;All Files (*)"
         )
         if not path:
             return

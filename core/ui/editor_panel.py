@@ -11,6 +11,7 @@ from core.style_helpers import ss_dialog
 from core.themes import P
 from core.translations import ui_text
 from core.utils.ui_helpers import _make_styled_btn
+from editors.asb_acf_editor import AsbAcfEditor
 from editors.arcaderewardparam_editor import ArcadeRewardParamEditor
 from editors.assist_editor import AssistEditor
 from editors.battleresultparam_editor import BattleResultParamEditor
@@ -28,13 +29,17 @@ from editors.damageeff_editor import DamageEffEditor
 from editors.damageprm_editor import DamagePrmEditor
 from editors.dictionaryparam_editor import DictionaryParamEditor
 from editors.dlcinfoparam_editor import DlcInfoParamEditor
+from editors.duelsettingparam_editor import DuelSettingParamEditor
 from editors.effect_editor import EffectEditor
 from editors.galleryartparam_editor import GalleryArtParamEditor
 from editors.guidecharparam_editor import GuideCharParamEditor
+from editors.lipsync_editor import LipSyncEditor
 from editors.info_editor import InfoEditor
 from editors.mainmodeparam_editor import MainModeParamEditor
 from editors.messageinfo_editor import MessageInfoEditor
+from editors.netrankparam_editor import NetRankParamEditor
 from editors.netresultparam_editor import NetResultParamEditor
+from editors.onlinemissionparam_editor import OnlineMissionParamEditor
 from editors.playertitleparam_editor import PlayerTitleParamEditor
 from editors.projectile_editor import ProjectileEditor
 from editors.skill_editor import SkillEditor
@@ -45,8 +50,11 @@ from editors.speaking_editor import SpeakingEditor
 from editors.spm_editor import SpmEditor
 from editors.stageinfo_editor import StageInfoEditor
 from editors.stagemotion_editor import StageMotionEditor
+from editors.supportitemparam_editor import SupportItemParamEditor
 from editors.termlistparam_editor import TermListParamEditor
 from editors.texture_editor import TextureEditor
+from editors.trophyparam_editor import TrophyParamEditor
+from editors.tutorialparam_editor import TutorialParamEditor
 from editors.usm_video_editor import UsmVideoEditor
 from editors.xfbin_audio_editor import XfbinAudioEditor
 
@@ -267,6 +275,8 @@ class EditorPanelMixin:
             self._embed_effect_editor(body, body_layout)
         elif file_hint == "0xxx00_SPM":
             self._embed_spm_editor(body, body_layout)
+        elif tool_id == "dlg_lip_sync" or "_lip" in file_hint.lower():
+            self._embed_lipsync_editor(body, body_layout)
         elif file_hint == "0xxx00_x":
             self._embed_projectile_editor(body, body_layout)
         elif file_hint == "0xxx00_constParam":
@@ -279,18 +289,30 @@ class EditorPanelMixin:
             self._embed_damageeff_editor(body, body_layout)
         elif file_hint == "btladjprm.bin":
             self._embed_btladjprm_editor(body, body_layout)
+        elif tool_id == "dlg_duel_setting" or file_hint in ("DuelSettingParam.bin", "DuelSettingsParam.bin"):
+            self._embed_duelsettingparam_editor(body, body_layout)
         elif tool_id == "dlg_battle_result" or file_hint in (
             "BattleResultParam.bin",
             "BattleResultParam.bin / ArcadeResultParam.bin",
             "BattleResultParam.bin, ArcadeResultParam.bin",
         ):
             self._embed_battleresultparam_editor(body, body_layout)
-        elif tool_id == "dlg_arcade_reward" or file_hint == "ArcadeRewardParam.bin":
+        elif tool_id == "dlg_arcade_reward" or file_hint in (
+            "ArcadeRewardParam.bin",
+            "CumulativeRewardParam.bin",
+            "ArcadeRewardParam.bin, CumulativeRewardParam.bin",
+        ):
             self._embed_arcaderewardparam_editor(body, body_layout)
+        elif file_hint == "NetRankParam.bin":
+            self._embed_netrankparam_editor(body, body_layout)
         elif file_hint == "NetResultParam.bin":
             self._embed_netresultparam_editor(body, body_layout)
+        elif file_hint == "OnlineMissionParam.bin":
+            self._embed_onlinemissionparam_editor(body, body_layout)
         elif file_hint == "MainModeParam.bin":
             self._embed_mainmodeparam_editor(body, body_layout)
+        elif file_hint == "SupportItemParam.bin":
+            self._embed_supportitemparam_editor(body, body_layout)
         elif file_hint == "SpeakingLineParam.bin":
             self._embed_speaking_editor(body, body_layout)
         elif file_hint == "messageinfo":
@@ -315,6 +337,8 @@ class EditorPanelMixin:
             self._embed_galleryartparam_editor(body, body_layout)
         elif file_hint == "PlayerTitleParam.xfbin":
             self._embed_playertitleparam_editor(body, body_layout)
+        elif file_hint == "TrophyParam.bin":
+            self._embed_trophyparam_editor(body, body_layout)
         elif file_hint in (".xfbin texures", ".xfbin textures"):
             self._embed_texture_editor(body, body_layout)
         elif file_hint == ".xfbin sounds":
@@ -323,12 +347,16 @@ class EditorPanelMixin:
             self._embed_usm_video_editor(body, body_layout)
         elif file_hint == "sndcmnparam.xfbin":
             self._embed_sndcmnparam_editor(body, body_layout)
+        elif file_hint == "ASB.acf":
+            self._embed_asb_acf_editor(body, body_layout)
         elif file_hint == "SoundTestParam.xfbin":
             self._embed_soundtestparam_editor(body, body_layout)
         elif file_hint == "CommandListParam.bin":
             self._embed_commandlistparam_editor(body, body_layout)
         elif file_hint == "TermListParam.bin":
             self._embed_termlistparam_editor(body, body_layout)
+        elif file_hint == "TutorialParam.bin":
+            self._embed_tutorialparam_editor(body, body_layout)
         else:
             self._embed_placeholder(body, body_layout, name, file_hint)
 
@@ -372,6 +400,10 @@ class EditorPanelMixin:
         editor = SpmEditor(body, self.t, embedded=True)
         self._add_embedded_editor(editor, layout)
 
+    def _embed_lipsync_editor(self, body, layout):
+        editor = LipSyncEditor(body, self.t, embedded=True)
+        self._add_embedded_editor(editor, layout)
+
     def _embed_projectile_editor(self, body, layout):
         editor = ProjectileEditor(body, self.t, embedded=True)
         self._add_embedded_editor(editor, layout)
@@ -396,6 +428,10 @@ class EditorPanelMixin:
         editor = BtlAdjPrmEditor(body, self.t, embedded=True)
         self._add_embedded_editor(editor, layout)
 
+    def _embed_duelsettingparam_editor(self, body, layout):
+        editor = DuelSettingParamEditor(body, self.t, embedded=True)
+        self._add_embedded_editor(editor, layout)
+
     def _embed_battleresultparam_editor(self, body, layout):
         editor = BattleResultParamEditor(body, self.t, embedded=True)
         self._add_embedded_editor(editor, layout)
@@ -404,12 +440,24 @@ class EditorPanelMixin:
         editor = ArcadeRewardParamEditor(body, self.t, embedded=True)
         self._add_embedded_editor(editor, layout)
 
+    def _embed_netrankparam_editor(self, body, layout):
+        editor = NetRankParamEditor(body, self.t, embedded=True)
+        self._add_embedded_editor(editor, layout)
+
     def _embed_netresultparam_editor(self, body, layout):
         editor = NetResultParamEditor(body, self.t, embedded=True)
         self._add_embedded_editor(editor, layout)
 
+    def _embed_onlinemissionparam_editor(self, body, layout):
+        editor = OnlineMissionParamEditor(body, self.t, embedded=True)
+        self._add_embedded_editor(editor, layout)
+
     def _embed_mainmodeparam_editor(self, body, layout):
         editor = MainModeParamEditor(body, self.t, embedded=True)
+        self._add_embedded_editor(editor, layout)
+
+    def _embed_supportitemparam_editor(self, body, layout):
+        editor = SupportItemParamEditor(body, self.t, embedded=True)
         self._add_embedded_editor(editor, layout)
 
     def _embed_speaking_editor(self, body, layout):
@@ -460,6 +508,10 @@ class EditorPanelMixin:
         editor = PlayerTitleParamEditor(body, self.t, embedded=True)
         self._add_embedded_editor(editor, layout)
 
+    def _embed_trophyparam_editor(self, body, layout):
+        editor = TrophyParamEditor(body, self.t, embedded=True)
+        self._add_embedded_editor(editor, layout)
+
     def _embed_texture_editor(self, body, layout):
         editor = TextureEditor(body, self.t, embedded=True)
         self._add_embedded_editor(editor, layout)
@@ -476,6 +528,10 @@ class EditorPanelMixin:
         editor = SndCmnParamEditor(body, self.t, embedded=True)
         self._add_embedded_editor(editor, layout)
 
+    def _embed_asb_acf_editor(self, body, layout):
+        editor = AsbAcfEditor(body, self.t, embedded=True)
+        self._add_embedded_editor(editor, layout)
+
     def _embed_soundtestparam_editor(self, body, layout):
         editor = SoundTestParamEditor(body, self.t, embedded=True)
         self._add_embedded_editor(editor, layout)
@@ -486,6 +542,10 @@ class EditorPanelMixin:
 
     def _embed_termlistparam_editor(self, body, layout):
         editor = TermListParamEditor(body, self.t, embedded=True)
+        self._add_embedded_editor(editor, layout)
+
+    def _embed_tutorialparam_editor(self, body, layout):
+        editor = TutorialParamEditor(body, self.t, embedded=True)
         self._add_embedded_editor(editor, layout)
 
     def _add_embedded_editor(self, editor, layout):

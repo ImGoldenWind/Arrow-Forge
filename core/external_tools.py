@@ -80,6 +80,26 @@ def find_ffprobe() -> str:
     return find_tool(executable_name("ffprobe"), "ffprobe", subdirs=("ffmpeg",))
 
 
+def find_rhubarb_lip_sync() -> str:
+    found = find_tool(
+        executable_name("rhubarb"),
+        "rhubarb",
+        subdirs=("rhubarb", "Rhubarb-Lip-Sync", "Rhubarb Lip Sync"),
+    )
+    if found:
+        return found
+    for root in _tools_roots():
+        if not os.path.isdir(root):
+            continue
+        for name in os.listdir(root):
+            lower_name = name.lower()
+            if lower_name.startswith("rhubarb-lip-sync") or lower_name.startswith("rhubarb lip sync"):
+                found = find_tool(executable_name("rhubarb"), "rhubarb", subdirs=(name,))
+                if found:
+                    return found
+    return ""
+
+
 def find_sofdec2_encoder() -> str:
     return find_tool(executable_name("sofdec2enc"), "sofdec2enc", subdirs=("Sofdec2", "sofdec2"))
 

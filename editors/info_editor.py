@@ -13,6 +13,7 @@ from core.style_helpers import (
     ss_btn, ss_sep, ss_accent_sep, ss_input, ss_search, ss_tab_widget, ss_scrollarea,
     ss_scrollarea_transparent, ss_tab_bar, TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.utils.ui_helpers import _add_card_section_title
 from core.editor_file_state import set_file_label
 from core.skeleton import SkeletonListRow
 from parsers.info_parser import (
@@ -1025,6 +1026,7 @@ class InfoEditor(QWidget):
         self._interactive_canvas = None
         _clear_layout(self._editor_layout)
         self._fields = {}
+        self._pending_section_title = None
 
         s = self._current_set
         if not s:
@@ -1089,6 +1091,7 @@ class InfoEditor(QWidget):
         stats_panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
         sp_layout = QVBoxLayout(stats_panel)
         sp_layout.setContentsMargins(16, 12, 16, 12)
+        self._apply_pending_section_title(sp_layout)
 
         sg = QWidget()
         sg.setStyleSheet("background: transparent;")
@@ -1131,6 +1134,7 @@ class InfoEditor(QWidget):
             names_panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
             np_layout = QVBoxLayout(names_panel)
             np_layout.setContentsMargins(16, 12, 16, 12)
+            self._apply_pending_section_title(np_layout)
 
             name_counts = {}
             for c in collisions:
@@ -1179,6 +1183,7 @@ class InfoEditor(QWidget):
         map_panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
         mp_layout = QVBoxLayout(map_panel)
         mp_layout.setContentsMargins(12, 12, 12, 12)
+        self._apply_pending_section_title(mp_layout)
 
         canvas = _CollisionMapCanvas()
         canvas.set_collisions(collisions)
@@ -1190,12 +1195,14 @@ class InfoEditor(QWidget):
         """Build character select screen analysis."""
         analysis = analyze_char_select(self._sets)
         if not analysis:
+            self._pending_section_title = None
             return
 
         panel = QWidget()
         panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
         p_layout = QVBoxLayout(panel)
         p_layout.setContentsMargins(16, 12, 16, 12)
+        self._apply_pending_section_title(p_layout)
 
         inner = QWidget()
         inner.setStyleSheet("background: transparent;")
@@ -1267,6 +1274,7 @@ class InfoEditor(QWidget):
         map_panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
         mp_layout = QVBoxLayout(map_panel)
         mp_layout.setContentsMargins(12, 12, 12, 12)
+        self._apply_pending_section_title(mp_layout)
 
         self._interactive_canvas = _InteractiveCollisionCanvas()
         self._interactive_canvas.set_data(collisions, selected_coll)
@@ -1374,6 +1382,7 @@ class InfoEditor(QWidget):
         self._vis_coord_label = None
         _clear_layout(self._editor_layout)
         self._fields = {}
+        self._pending_section_title = None
         self._interactive_canvas = None
         self._computed_labels = {}
 
@@ -1408,6 +1417,7 @@ class InfoEditor(QWidget):
         id_panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
         ip_layout = QVBoxLayout(id_panel)
         ip_layout.setContentsMargins(12, 12, 12, 12)
+        self._apply_pending_section_title(ip_layout)
 
         ig = QWidget()
         ig.setStyleSheet("background: transparent;")
@@ -1460,6 +1470,7 @@ class InfoEditor(QWidget):
         pos_panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
         pp_layout = QVBoxLayout(pos_panel)
         pp_layout.setContentsMargins(12, 12, 12, 12)
+        self._apply_pending_section_title(pp_layout)
 
         pg = QWidget()
         pg.setStyleSheet("background: transparent;")
@@ -1503,6 +1514,7 @@ class InfoEditor(QWidget):
         margin_panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
         mgp_layout = QVBoxLayout(margin_panel)
         mgp_layout.setContentsMargins(12, 12, 12, 12)
+        self._apply_pending_section_title(mgp_layout)
 
         mg = QWidget()
         mg.setStyleSheet("background: transparent;")
@@ -1546,6 +1558,7 @@ class InfoEditor(QWidget):
         comp_panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
         cp_layout = QVBoxLayout(comp_panel)
         cp_layout.setContentsMargins(16, 12, 16, 12)
+        self._apply_pending_section_title(cp_layout)
 
         cg = QWidget()
         cg.setStyleSheet("background: transparent;")
@@ -1698,8 +1711,11 @@ class InfoEditor(QWidget):
     # Helpers
 
     def _add_section(self, title):
-        lbl = QLabel(title)
-        lbl.setFont(_make_font("Segoe UI", 15, bold=True))
-        lbl.setStyleSheet(f"color: {P['secondary']}; background: transparent;")
-        lbl.setContentsMargins(20, 10, 0, 2)
-        self._editor_layout.addWidget(lbl)
+        self._pending_section_title = title
+
+    def _apply_pending_section_title(self, layout):
+        section_title = getattr(self, "_pending_section_title", None)
+        self._pending_section_title = None
+        if section_title:
+            layout.setSpacing(max(layout.spacing(), 8))
+            _add_card_section_title(layout, section_title)

@@ -178,11 +178,20 @@ def icon_balance():
 def icon_battle_result():
     return _themed_icon("fa6s.ranking-star")
 
+def icon_duel_setting():
+    return _themed_icon("fa6s.crosshairs")
+
 def icon_arcade_reward():
     return _themed_icon("fa6s.coins")
 
 def icon_net_result():
     return _themed_icon("fa6s.globe")
+
+def icon_net_rank():
+    return _themed_icon("fa6s.medal")
+
+def icon_online_mission():
+    return _themed_icon("fa6s.tower-broadcast")
 
 def icon_cpu_ai():
     return _themed_icon("fa6s.brain")
@@ -211,11 +220,17 @@ def icon_dialogue():
 def icon_assist():
     return _themed_icon("fa6s.people-group")
 
+def icon_support_item():
+    return _themed_icon("fa6s.hand-holding-heart")
+
 def icon_game_text():
     return _themed_icon("fa6s.font")
 
 def icon_term_list():
     return _themed_icon("fa6s.list-check")
+
+def icon_tutorial_param():
+    return _themed_icon("fa6s.chalkboard-user")
 
 def icon_stage():
     return _themed_icon("fa6s.mountain")
@@ -256,6 +271,9 @@ def icon_gallery():
 def icon_player_title():
     return _themed_icon("fa6s.trophy")
 
+def icon_trophy_param():
+    return _themed_icon("fa6s.award")
+
 def icon_sound_param():
     return _themed_icon("fa6s.music")
 
@@ -264,6 +282,12 @@ def icon_sound_test():
 
 def icon_usm_video():
     return _themed_icon("fa6s.film")
+
+def icon_lip_sync():
+    return _themed_icon("fa6s.face-grin-wide")
+
+def icon_asb_acf():
+    return _themed_icon("fa6s.wave-square")
 
 
 # Social / credit icons

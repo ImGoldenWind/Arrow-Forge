@@ -99,6 +99,54 @@ def ss_toggle_btn() -> str:
     )
 
 
+def ss_icon_tool_btn() -> str:
+    """Compact icon-only tool button with neutral checked state."""
+    radius = P.get("button_radius", "6px")
+    border = P.get("button_border", f"1px solid {P['border']}")
+    button_fg = P.get("button_text", P["text_main"])
+    hover_bg = P.get("button_hover", P["accent_dim"])
+    checked_bg = P.get("bg_card_hov", P["mid"])
+    focus = P.get("input_focus_border", P["accent"])
+    checked_border = P.get("selection_bg", focus)
+    return (
+        f"QPushButton {{ background-color: {P['mid']}; color: {button_fg}; border: {border}; "
+        f"border-radius: {radius}; padding: 3px; }}"
+        f"QPushButton:checked {{ background-color: {checked_bg}; color: {button_fg}; "
+        f"border: 2px solid {checked_border}; }}"
+        f"QPushButton:focus {{ border: 1px solid {focus}; }}"
+        f"QPushButton:hover {{ background-color: {hover_bg}; color: {button_fg}; }}"
+        f"QPushButton:disabled {{ background-color: {P['mid']}; color: {P['text_dim']}; }}"
+    )
+
+
+def ss_menu() -> str:
+    """Compact popup menu used by tool panels."""
+    bg = P.get("panel_card_bg", P["bg_panel"])
+    border = P.get("panel_card_border", P["border"])
+    selection_bg = P.get("selection_bg", P["accent"])
+    selection_text = P.get("selection_text", P["bg_dark"])
+    return (
+        f"QMenu {{ background-color: {bg}; color: {P['text_main']}; "
+        f"border: 1px solid {border}; padding: 4px; }}"
+        f"QMenu::item {{ padding: 5px 22px 5px 22px; border-radius: 4px; }}"
+        f"QMenu::item:selected {{ background-color: {selection_bg}; color: {selection_text}; }}"
+        f"QMenu::indicator {{ width: 14px; height: 14px; }}"
+    )
+
+
+def ss_panel_menu_button() -> str:
+    """Flat panel menu button that disappears into the panel until hover."""
+    hover = P.get("bg_card_hov", P["mid"])
+    radius = P.get("button_radius", "6px")
+    return (
+        f"QPushButton {{ background: transparent; color: {P.get('button_text', P['text_main'])}; "
+        f"border: none; border-radius: {radius}; padding: 0px; }}"
+        f"QPushButton:hover {{ background-color: {hover}; }}"
+        f"QPushButton:pressed {{ background-color: {P.get('mid', hover)}; }}"
+        "QPushButton::menu-indicator { image: none; width: 0px; }"
+    )
+
+
 # Inputs
 
 def ss_input() -> str:
@@ -239,6 +287,32 @@ def ss_panel() -> str:
     return (
         f"QFrame {{ background-color: {bg}; "
         f"border-radius: {radius}; border: 1px solid {border}; }}"
+    )
+
+
+def ss_glass_panel() -> str:
+    """Translucent editor panel for overlays that must reveal content behind them."""
+    bg = _rgba(P.get("panel_card_bg", P["bg_panel"]), 184)
+    border = _rgba(P.get("panel_card_border", P["border"]), 150)
+    radius = P.get("panel_card_radius", "10px")
+    return (
+        f"QFrame {{ background-color: {bg}; "
+        f"border-radius: {radius}; border: 1px solid {border}; }}"
+    )
+
+
+def ss_panel_title() -> str:
+    """Small uppercase panel title used inside dense editor panels."""
+    return f"color: {P.get('text_sec', P['text_main'])}; background: transparent; font-weight: bold;"
+
+
+def ss_editor_card(selected: bool = False) -> str:
+    """DuelPlayerParam-like editor card: rounded panel, no visible border."""
+    bg = P["bg_panel"]
+    radius = "10px"
+    return (
+        f"QFrame#EditorCard {{ background-color: {bg}; "
+        f"border-radius: {radius}; border: none; }}"
     )
 
 
@@ -489,6 +563,19 @@ def ss_sidebar_btn(selected: bool = False) -> str:
     )
 
 
+def ss_sidebar_edge_toggle() -> str:
+    """Narrow sidebar edge toggle that visually belongs to the sidebar rail."""
+    bg = P.get("toolbar_bg", P.get("panel_bg", P["bg_panel"]))
+    hover = P.get("bg_card_hov", P["mid"])
+    radius = P.get("button_radius", "6px")
+    return (
+        f"QPushButton {{ background-color: {bg}; color: {P.get('button_text', P['text_main'])}; "
+        f"border: none; border-radius: {radius}; padding: 0px; }}"
+        f"QPushButton:hover {{ background-color: {hover}; }}"
+        f"QPushButton:pressed {{ background-color: {P.get('mid', hover)}; }}"
+    )
+
+
 def ss_tool_favorite_btn(checked: bool = False) -> str:
     """Small favorite toggle button overlaid on a home-screen tool card."""
     color = P['accent'] if checked else P['text_dim']
@@ -566,11 +653,13 @@ def ss_error_label() -> str:
 def ss_slider() -> str:
     """Horizontal QSlider with themed groove, handle, and filled sub-page."""
     return (
+        "QSlider { background: transparent; border: none; }"
         f"QSlider::groove:horizontal {{ background: {P['mid']}; height: 6px; border-radius: 3px; }}"
         f"QSlider::handle:horizontal {{ background: {P['accent']}; width: 16px; margin: -5px 0; "
         f"border-radius: 8px; }}"
         f"QSlider::handle:horizontal:hover {{ background: {P['accent_dim']}; }}"
         f"QSlider::sub-page:horizontal {{ background: {P['accent_dim']}; border-radius: 3px; }}"
+        "QSlider::add-page:horizontal { background: transparent; border-radius: 3px; }"
     )
 
 
@@ -620,6 +709,11 @@ def ss_settings_card() -> str:
     )
 
 
+def ss_settings_top_card() -> str:
+    """First settings card joined directly under the tab strip."""
+    return ss_settings_card() + "QFrame { border-top: none; }"
+
+
 def ss_settings_check() -> str:
     """Large settings-page checkbox."""
     radius = P.get("checkbox_radius", "4px")
@@ -629,6 +723,33 @@ def ss_settings_check() -> str:
         f"border: 2px solid {P['secondary']}; background: transparent; }}"
         f"QCheckBox::indicator:hover {{ border: 2px solid {P.get('input_focus_border', P['accent'])}; background: {P.get('input_hover_bg', P['mid'])}; }}"
         f"QCheckBox::indicator:checked {{ background: {P['accent']}; border: 2px solid {P['accent']}; }}"
+    )
+
+
+def ss_settings_tab_widget() -> str:
+    """Settings tabs as raised tabs joined directly to the first settings card."""
+    pane_bg = P.get("settings_tab_pane_bg", P["bg_dark"])
+    tab_bg = P.get("settings_tab_bg", P.get("bg_panel", P["bg_dark"]))
+    tab_hover_bg = P.get("settings_tab_hover_bg", P.get("bg_card_hov", P["mid"]))
+    tab_selected_bg = P.get("settings_tab_selected_bg", pane_bg)
+    tab_text = P.get("settings_tab_text", P.get("tab_text", P["text_dim"]))
+    tab_selected_text = P.get("settings_tab_selected_text", P.get("tab_selected_text", P["accent"]))
+    tab_border = P.get("settings_tab_line", P.get("border", P["mid"]))
+    tab_radius = P.get("settings_tab_radius", "8px")
+    return (
+        f"QTabWidget {{ background: transparent; border: none; }}"
+        f"QTabWidget::pane {{ border: none; background: transparent; top: 0px; }}"
+        f"QTabWidget::tab-bar {{ left: 40px; }}"
+        f"QTabBar {{ background: transparent; border: none; padding: 0px; min-height: 44px; }}"
+        f"QTabBar::tab {{ background: {tab_bg}; color: {tab_text}; "
+        f"border: 1px solid {tab_border}; border-bottom: 1px solid {tab_border}; "
+        f"height: 34px; padding: 0px 28px; margin: 8px 5px 0px 5px; min-width: 160px; "
+        f"border-top-left-radius: {tab_radius}; border-top-right-radius: {tab_radius}; "
+        f"border-bottom-left-radius: 0px; border-bottom-right-radius: 0px; "
+        f"font-family: 'Segoe UI'; font-size: 13px; font-weight: 500; }}"
+        f"QTabBar::tab:selected {{ background: {tab_selected_bg}; color: {tab_selected_text}; "
+        f"border: 1px solid {tab_border}; border-bottom: none; }}"
+        f"QTabBar::tab:hover:!selected {{ background: {tab_hover_bg}; color: {P['text_main']}; }}"
     )
 
 

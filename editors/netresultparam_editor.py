@@ -42,6 +42,7 @@ from core.style_helpers import (
     ss_sidebar_frame,
     ss_transparent,
 )
+from core.utils.ui_helpers import _add_card_section_title
 from core.translations import ui_text
 from parsers.netresultparam_parser import (
     make_default_entry,
@@ -474,7 +475,15 @@ class NetResultParamEditor(QWidget):
         file_grid.setHorizontalSpacing(16)
         file_grid.setVerticalSpacing(8)
         file_layout = QVBoxLayout(file_card)
-        file_layout.setContentsMargins(0, 0, 0, 0)
+        section_title = getattr(self, "_pending_section_title", None)
+        self._pending_section_title = None
+        if section_title:
+            file_layout.setContentsMargins(12, 12, 12, 12)
+            file_layout.setSpacing(8)
+            file_grid.setContentsMargins(0, 4, 0, 0)
+            _add_card_section_title(file_layout, section_title)
+        else:
+            file_layout.setContentsMargins(0, 0, 0, 0)
         file_layout.addWidget(file_inner)
         self._entry_count_label = QLabel(ui_text("ui_netresultparam_entry_count_value", count=len(self._entries)))
         self._entry_count_label.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
@@ -500,11 +509,7 @@ class NetResultParamEditor(QWidget):
         self._loading_detail = False
 
     def _add_section(self, title: str):
-        label = QLabel(title)
-        label.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
-        label.setStyleSheet(ss_section_label())
-        label.setContentsMargins(20, 10, 0, 2)
-        self._editor_layout.addWidget(label)
+        self._pending_section_title = title
 
     def _make_card(self) -> QFrame:
         card = QFrame()

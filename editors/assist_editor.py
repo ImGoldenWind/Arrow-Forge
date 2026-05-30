@@ -16,6 +16,7 @@ from core.style_helpers import (
     ss_field_label, ss_section_label, ss_sidebar_btn, ss_file_label,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.utils.ui_helpers import _add_card_section_title
 from core.editor_file_state import set_file_label
 from parsers.assist_parser import (
     parse_assist_xfbin, save_assist_xfbin, make_default_entry,
@@ -293,11 +294,7 @@ class AssistEditor(QWidget):
         self._editor_layout.addStretch()
 
     def _add_section(self, title):
-        lbl = QLabel(title)
-        lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
-        lbl.setStyleSheet(ss_section_label())
-        lbl.setContentsMargins(20, 10, 0, 2)
-        self._editor_layout.addWidget(lbl)
+        self._pending_section_title = title
 
     def _build_field_card(self, field_indices, entry, cols=3):
         card = QFrame()
@@ -309,7 +306,15 @@ class AssistEditor(QWidget):
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(8)
         card_main = QVBoxLayout(card)
-        card_main.setContentsMargins(0, 0, 0, 0)
+        section_title = getattr(self, "_pending_section_title", None)
+        self._pending_section_title = None
+        if section_title:
+            card_main.setContentsMargins(12, 12, 12, 12)
+            card_main.setSpacing(8)
+            grid.setContentsMargins(0, 4, 0, 0)
+            _add_card_section_title(card_main, section_title)
+        else:
+            card_main.setContentsMargins(0, 0, 0, 0)
         card_main.addWidget(card_inner)
 
         for i, fi in enumerate(field_indices):

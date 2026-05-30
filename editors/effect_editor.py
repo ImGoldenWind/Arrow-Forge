@@ -17,6 +17,7 @@ from core.style_helpers import (
     ss_section_label, ss_field_label,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.utils.ui_helpers import _add_card_section_title
 from core.editor_file_state import set_file_label
 from parsers.effectprm_parser import parse_effectprm_xfbin, save_effectprm_xfbin
 from core.translations import ui_text
@@ -267,11 +268,7 @@ class EffectEditor(QWidget):
         _clear_layout(self._editor_layout)
 
     def _add_section(self, title):
-        lbl = QLabel(title)
-        lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
-        lbl.setStyleSheet(ss_section_label())
-        lbl.setContentsMargins(20, 10, 0, 2)
-        self._editor_layout.addWidget(lbl)
+        self._pending_section_title = title
 
     def _make_field(self, label_text, value, font=None, color=None, height=30):
         frame = QWidget()
@@ -352,7 +349,15 @@ class EffectEditor(QWidget):
         path_grid.setHorizontalSpacing(16)
         path_grid.setVerticalSpacing(8)
         path_main = QVBoxLayout(path_card)
-        path_main.setContentsMargins(0, 0, 0, 0)
+        section_title = getattr(self, "_pending_section_title", None)
+        self._pending_section_title = None
+        if section_title:
+            path_main.setContentsMargins(12, 12, 12, 12)
+            path_main.setSpacing(8)
+            path_grid.setContentsMargins(0, 4, 0, 0)
+            _add_card_section_title(path_main, section_title)
+        else:
+            path_main.setContentsMargins(0, 0, 0, 0)
         path_main.addWidget(path_inner)
 
         path_frame, e_path = self._make_field(ui_text("ui_effect_xfbin_path"), entry['xfbin_path'])

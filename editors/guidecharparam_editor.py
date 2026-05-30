@@ -17,6 +17,7 @@ from core.style_helpers import (
     ss_scrollarea, ss_scrollarea_transparent, ss_section_label, ss_field_label,
     ss_placeholder, TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.utils.ui_helpers import _add_card_section_title
 from core.editor_file_state import set_file_label
 from parsers.guidecharparam_parser import (
     parse_guidecharparam_xfbin,
@@ -321,11 +322,7 @@ class GuideCharParamEditor(QWidget):
     # Editor building
 
     def _add_section(self, title: str):
-        lbl = QLabel(title)
-        lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
-        lbl.setStyleSheet(ss_section_label())
-        lbl.setContentsMargins(20, 10, 0, 2)
-        self._editor_layout.addWidget(lbl)
+        self._pending_section_title = title
 
     def _add_card(self) -> tuple[QFrame, QGridLayout]:
         card = QFrame()
@@ -337,7 +334,15 @@ class GuideCharParamEditor(QWidget):
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(8)
         outer = QVBoxLayout(card)
-        outer.setContentsMargins(0, 0, 0, 0)
+        section_title = getattr(self, "_pending_section_title", None)
+        self._pending_section_title = None
+        if section_title:
+            outer.setContentsMargins(12, 12, 12, 12)
+            outer.setSpacing(8)
+            grid.setContentsMargins(0, 4, 0, 0)
+            _add_card_section_title(outer, section_title)
+        else:
+            outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(inner)
         return card, grid
 

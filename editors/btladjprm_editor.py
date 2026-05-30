@@ -16,6 +16,7 @@ from core.style_helpers import (
     ss_panel, ss_scrollarea, ss_placeholder, ss_dim_label, ss_input,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.utils.ui_helpers import _add_card_section_title
 from core.editor_file_state import set_file_label
 from parsers.btladjprm_parser import parse_btladjprm_xfbin, save_btladjprm_xfbin
 from core.translations import ui_text
@@ -246,11 +247,7 @@ class BtlAdjPrmEditor(QWidget):
         self._cards_layout.addStretch()
 
     def _add_section(self, title):
-        lbl = QLabel(title)
-        lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
-        lbl.setStyleSheet(ss_section_label())
-        lbl.setContentsMargins(20, 10, 0, 2)
-        self._cards_layout.addWidget(lbl)
+        self._pending_section_title = title
 
     # Data
 
@@ -282,12 +279,22 @@ class BtlAdjPrmEditor(QWidget):
             card = QFrame()
             card.setStyleSheet(ss_panel())
             card_vl = QVBoxLayout(card)
-            card_vl.setContentsMargins(0, 0, 0, 0)
+            section_title = getattr(self, "_pending_section_title", None)
+            self._pending_section_title = None
+            if section_title:
+                card_vl.setContentsMargins(12, 12, 12, 12)
+                card_vl.setSpacing(8)
+                _add_card_section_title(card_vl, section_title)
+            else:
+                card_vl.setContentsMargins(0, 0, 0, 0)
 
             inner = QWidget()
             inner.setStyleSheet("background: transparent;")
             grid = QGridLayout(inner)
-            grid.setContentsMargins(12, 12, 12, 12)
+            if section_title:
+                grid.setContentsMargins(0, 4, 0, 0)
+            else:
+                grid.setContentsMargins(12, 12, 12, 12)
             grid.setHorizontalSpacing(16)
             grid.setVerticalSpacing(8)
             card_vl.addWidget(inner)

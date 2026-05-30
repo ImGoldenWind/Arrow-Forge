@@ -16,6 +16,7 @@ from core.style_helpers import (
     ss_scrollarea_transparent, ss_tab_widget, ss_tab_bar,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.utils.ui_helpers import _add_card_section_title
 from core.editor_file_state import set_file_label, set_file_label_empty
 from parsers.skill_parser import (
     parse_prm_xfbin, save_prm_xfbin,
@@ -963,9 +964,9 @@ class _MotTab(QWidget):
         # Subentry cards
         subs = entry.get('subentries', [])
         if subs:
-            self._editor_layout.addWidget(_section_label(ui_text("ui_skill_subentries")))
             for r, s in enumerate(subs):
-                self._editor_layout.addWidget(self._make_sub_card(entry, r, s))
+                title = ui_text("ui_skill_subentries") if r == 0 else None
+                self._editor_layout.addWidget(self._make_sub_card(entry, r, s, title))
 
         self._editor_layout.addStretch()
 
@@ -1049,11 +1050,13 @@ class _MotTab(QWidget):
         self._show_entry(entry)
         self.changed.emit()
 
-    def _make_sub_card(self, entry, r, s):
+    def _make_sub_card(self, entry, r, s, section_title=None):
         card = _card_frame()
         cl = QVBoxLayout(card)
         cl.setContentsMargins(12, 12, 12, 12)
         cl.setSpacing(8)
+        if section_title:
+            _add_card_section_title(cl, section_title)
 
         hdr_lbl = QLabel(ui_text("ui_skill_value_value_value", p0=r, p1=s.get('bone', ''), p2=s.get('func_name', '')))
         hdr_lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))

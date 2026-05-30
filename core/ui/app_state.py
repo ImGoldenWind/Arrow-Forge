@@ -70,14 +70,18 @@ class AppStateMixin:
         pinned_rank = {
             tool_id: idx for idx, tool_id in enumerate(self._pinned_tools.get(cat_key, []))
         }
-        recent_rank = {tool_id: idx for idx, tool_id in enumerate(self._recent_tools)}
+        sort_recent = self._settings.get("recent_tools_on_top", True)
+        recent_rank = (
+            {tool_id: idx for idx, tool_id in enumerate(self._recent_tools)}
+            if sort_recent else {}
+        )
         return [
             row for _idx, row in sorted(
                 enumerate(rows),
                 key=lambda item: (
                     0 if item[1][4] in pinned_rank else 1,
                     pinned_rank.get(item[1][4], len(pinned_rank)),
-                    recent_rank.get(item[1][4], len(recent_rank)),
+                    recent_rank.get(item[1][4], len(recent_rank)) if sort_recent else 0,
                     item[0],
                 ),
             )

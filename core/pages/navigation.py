@@ -1,3 +1,5 @@
+import fnmatch
+import os
 import re
 
 from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, Qt
@@ -167,11 +169,32 @@ class NavigationMixin:
         return self._normalize_search_text(" ".join(str(part) for part in parts if part))
 
     def _tool_matches_search(self, row, query):
+        if self._file_hint_matches_query(row[1], query):
+            return True
         terms = [term for term in self._normalize_search_text(query).split(" ") if term]
         if not terms:
             return True
         blob = self._tool_search_blob(row)
         return all(term in blob for term in terms)
+
+    def _file_hint_matches_query(self, file_hint, query):
+        name = os.path.basename(str(query or "").strip().strip("\"'")).casefold()
+        if not name or "." not in name:
+            return False
+
+        for hint in re.split(r"[,;|]", str(file_hint or "")):
+            hint = hint.strip().casefold()
+            if not hint:
+                continue
+            patterns = {hint}
+            if hint.endswith(".bin"):
+                patterns.add(f"{hint}.xfbin")
+            if "*" not in hint and "?" not in hint:
+                patterns.add(f"*{hint}*")
+            for pattern in patterns:
+                if fnmatch.fnmatchcase(name, pattern):
+                    return True
+        return False
 
     def _filtered_tool_rows(self):
         return [row for row in self._all_tool_rows() if self._tool_matches_search(row, self._tool_search_query)]

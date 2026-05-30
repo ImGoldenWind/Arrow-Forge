@@ -1,8 +1,9 @@
 from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtGui import QCursor, QPainter, QPixmap
-from PyQt6.QtWidgets import QPushButton
+from PyQt6.QtGui import QCursor, QFont, QPainter, QPixmap
+from PyQt6.QtWidgets import QLabel, QPushButton
 
 from core.themes import P
+from core.style_helpers import ss_panel_title
 
 import math
 
@@ -83,4 +84,12 @@ def _transparent_icon_pixmap(icon, size):
 def _make_label_background_transparent(label):
     label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
     label.setAutoFillBackground(False)
+    return label
+
+
+def _add_card_section_title(layout, title):
+    label = QLabel(str(title).upper())
+    label.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+    label.setStyleSheet(ss_panel_title())
+    layout.addWidget(label)
     return label

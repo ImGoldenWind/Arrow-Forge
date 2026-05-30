@@ -30,6 +30,7 @@ from parsers.awb_parser import (
     parse_awb, extract_entry, rebuild_awb, save_awb,
     add_entry, delete_entry, get_entry_label, _detect_format,
 )
+from parsers.acb_parser import load_companion_acb_labels, parse_acb_awb_labels
 from parsers.hca_decoder import parse_hca_info, decode_hca_to_wav, set_hca_volume
 from core.translations import ui_text
 
@@ -393,6 +394,7 @@ class SoundEditor(QWidget):
         self._meta = None
         self._current_entry = None
         self._entry_buttons = []
+        self._entry_labels = {}
         self._filepath = None
         self._fields = {}
         self._dirty = False
@@ -678,6 +680,9 @@ class SoundEditor(QWidget):
 
     # File loading
 
+    def _entry_label(self, entry) -> str:
+        return self._entry_labels.get(entry.get('id')) or get_entry_label(entry['id'])
+
     def _load_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, self.t("file_open_sound"),
@@ -697,6 +702,15 @@ class SoundEditor(QWidget):
             except Exception as e:
                 self._sig_load_error.emit(str(e))
                 return
+            try:
+                labels, acb_path = load_companion_acb_labels(path)
+                if labels:
+                    meta['_entry_labels'] = labels
+                    meta['_acb_path'] = acb_path
+                elif not acb_path:
+                    meta['_acb_missing'] = True
+            except Exception as e:
+                meta['_acb_error'] = str(e)
             self._sig_load_done.emit(path, raw, entries, meta)
 
         threading.Thread(target=worker, daemon=True).start()
@@ -751,6 +765,7 @@ class SoundEditor(QWidget):
         self._editor_layout.addWidget(self._placeholder)
         self._editor_layout.addStretch()
         self._filepath = None
+        self._entry_labels = {}
         self._dirty = False
         set_file_label_empty(self._file_label, self.t("no_file_loaded"))
         QMessageBox.critical(self, self.t("dlg_title_error"),
@@ -760,6 +775,7 @@ class SoundEditor(QWidget):
         self._raw_data = raw
         self._entries = entries
         self._meta = meta
+        self._entry_labels = dict(meta.get('_entry_labels') or {})
         self._filepath = path
         self._dirty = False
         set_file_label(self._file_label, path)
@@ -770,6 +786,59 @@ class SoundEditor(QWidget):
         self._del_btn.setEnabled(bool(entries))
 
         self._populate_list()
+        if meta.get('_acb_missing'):
+            self._prompt_for_acb_file(path)
+
+    def _prompt_for_acb_file(self, awb_path: str):
+        expected = os.path.splitext(os.path.basename(awb_path))[0] + ".acb"
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(self.t("sound_acb_missing_title"))
+        box.setText(self.t("sound_acb_missing_title"))
+        box.setInformativeText(self.t("sound_acb_missing_detail", acb=expected))
+        load_btn = box.addButton(self.t("sound_btn_load_acb"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() == load_btn:
+            self._load_manual_acb_file()
+
+    def _load_manual_acb_file(self):
+        if not self._filepath:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            self.t("sound_open_acb_title"),
+            game_files_dialog_dir(target_patterns=("*.acb",)),
+            "ACB files (*.acb);;All files (*.*)",
+        )
+        if not path:
+            return
+        try:
+            labels = parse_acb_awb_labels(path)
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                self.t("dlg_title_error"),
+                self.t("sound_acb_load_failed", error=str(e)),
+            )
+            return
+        if not labels:
+            QMessageBox.warning(
+                self,
+                self.t("dlg_title_warning"),
+                self.t("sound_acb_no_labels"),
+            )
+            return
+
+        self._entry_labels = dict(labels)
+        if self._meta is not None:
+            self._meta['_entry_labels'] = dict(labels)
+            self._meta['_acb_path'] = path
+            self._meta['_acb_missing'] = False
+        current = self._current_entry
+        self._populate_list()
+        if current is not None and 0 <= current < len(self._entries):
+            self._select_entry(current)
 
     # Save
 
@@ -807,7 +876,7 @@ class SoundEditor(QWidget):
         self._entry_buttons = []
 
         for i, entry in enumerate(self._entries):
-            label_text = get_entry_label(entry['id'])
+            label_text = self._entry_label(entry)
 
             btn = QPushButton()
             btn.setFixedHeight(44)
@@ -875,7 +944,7 @@ class SoundEditor(QWidget):
     def _filter_list(self):
         query = self._search_entry.text().lower()
         for btn, entry, idx in self._entry_buttons:
-            label = get_entry_label(entry['id']).lower()
+            label = self._entry_label(entry).lower()
             match = (query in label or query in str(entry['id'])
                      or query in entry['format'].lower()
                      or (query in ui_text("sound_badge_slow_encrypted").lower()
@@ -929,7 +998,7 @@ class SoundEditor(QWidget):
         hdr.setStyleSheet(ss_panel())
         hdr_layout = QVBoxLayout(hdr)
         hdr_layout.setContentsMargins(16, 12, 16, 12)
-        title = get_entry_label(entry['id'])
+        title = self._entry_label(entry)
         title_lbl = QLabel(ui_text("ui_sound_value_value", p0=entry['id'], p1=title))
         title_lbl.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
         title_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
@@ -1241,7 +1310,7 @@ class SoundEditor(QWidget):
         if hasattr(self, '_play_btn'):
             self._play_btn.setEnabled(False)
         if idx not in self._wav_cache:
-            entry_label = get_entry_label(entry['id'])
+            entry_label = self._entry_label(entry)
             self._show_decode_busy(entry_label)
 
         def worker():
@@ -1812,7 +1881,7 @@ class SoundEditor(QWidget):
                                 self.t("sound_cannot_delete_last"))
             return
         entry = self._entries[self._current_entry]
-        label = get_entry_label(entry['id'])
+        label = self._entry_label(entry)
         reply = QMessageBox.question(
             self, self.t("dlg_title_confirm_delete"),
             self.t("sound_confirm_delete", id=entry['id'], name=label),

@@ -18,6 +18,7 @@ from core.style_helpers import (
     ss_section_label, ss_field_label,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.utils.ui_helpers import _add_card_section_title
 from core.editor_file_state import set_file_label
 from parsers.stagemotion_parser import (
     parse_stagemotion_xfbin, save_stagemotion_xfbin,
@@ -450,17 +451,17 @@ class StageMotionEditor(QWidget):
         _clear_layout(self._editor_layout)
 
         # Stage Header card
-        self._editor_layout.addWidget(_section_lbl(ui_text("ui_stagemotion_stage_header")))
-
         hdr_card = _card_frame()
         hdr_inner = QWidget(hdr_card)
         hdr_inner.setStyleSheet("background: transparent;")
         hdr_grid = QGridLayout(hdr_inner)
-        hdr_grid.setContentsMargins(12, 12, 12, 12)
+        hdr_grid.setContentsMargins(0, 4, 0, 0)
         hdr_grid.setHorizontalSpacing(16)
         hdr_grid.setVerticalSpacing(8)
         hdr_main = QVBoxLayout(hdr_card)
-        hdr_main.setContentsMargins(0, 0, 0, 0)
+        hdr_main.setContentsMargins(12, 12, 12, 12)
+        hdr_main.setSpacing(8)
+        _add_card_section_title(hdr_main, ui_text("ui_stagemotion_stage_header"))
         hdr_main.addWidget(hdr_inner)
 
         fw0, f_sid = _make_field(ui_text("ui_stagemotion_stage_id_max_31_chars"), stage.get('stage_id', ''))
@@ -492,13 +493,15 @@ class StageMotionEditor(QWidget):
         # Entries section
         entries = stage.setdefault('entries', [])
 
-        self._entry_section_lbl = _section_lbl(f"Entries  ({len(entries)})")
-        self._editor_layout.addWidget(self._entry_section_lbl)
-
         ent_bar = _card_frame()
-        ent_bar_lay = QHBoxLayout(ent_bar)
-        ent_bar_lay.setContentsMargins(12, 8, 12, 8)
-        ent_bar_lay.setSpacing(4)
+        ent_bar_lay = QVBoxLayout(ent_bar)
+        ent_bar_lay.setContentsMargins(12, 12, 12, 12)
+        ent_bar_lay.setSpacing(8)
+        self._entry_section_lbl = _add_card_section_title(ent_bar_lay, f"Entries  ({len(entries)})")
+
+        ent_buttons = QHBoxLayout()
+        ent_buttons.setContentsMargins(0, 0, 0, 0)
+        ent_buttons.setSpacing(4)
 
         bf = QFont("Segoe UI", 10)
 
@@ -506,9 +509,10 @@ class StageMotionEditor(QWidget):
         btn_add_e.setFixedHeight(28); btn_add_e.setFont(bf)
         btn_add_e.setStyleSheet(ss_btn())
         btn_add_e.clicked.connect(lambda: self._add_entry(stage))
-        ent_bar_lay.addWidget(btn_add_e)
+        ent_buttons.addWidget(btn_add_e)
 
-        ent_bar_lay.addStretch()
+        ent_buttons.addStretch()
+        ent_bar_lay.addLayout(ent_buttons)
         self._editor_layout.addWidget(ent_bar)
 
         # Entry cards container
@@ -619,7 +623,7 @@ class StageMotionEditor(QWidget):
         for i, e in enumerate(entries):
             self._entries_layout.addWidget(self._make_entry_card(i, e, stage))
         if self._entry_section_lbl is not None:
-            self._entry_section_lbl.setText(ui_text("ui_stagemotion_entries_value", p0=len(entries)))
+            self._entry_section_lbl.setText(ui_text("ui_stagemotion_entries_value", p0=len(entries)).upper())
         self._update_sidebar_btn(self._current_stage_idx)
 
     # Entry operations

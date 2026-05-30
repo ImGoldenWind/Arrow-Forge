@@ -20,6 +20,7 @@ from core.style_helpers import (
     ss_section_label, ss_field_label, ss_tab_widget,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.utils.ui_helpers import _add_card_section_title
 from core.editor_file_state import set_file_label
 from parsers.stageinfo_parser import (
     parse_stageinfo_xfbin, save_stageinfo_xfbin,
@@ -196,14 +197,15 @@ class _GeneralTab(QWidget):
         root.setSpacing(8)
 
         # Stage Code card
-        root.addWidget(_section_lbl(ui_text("ui_stageinfo_stage_code_max_23_chars")))
         code_card = _card_frame()
         code_inner = QWidget(code_card)
         code_inner.setStyleSheet("background: transparent;")
         code_lay = QHBoxLayout(code_inner)
-        code_lay.setContentsMargins(12, 12, 12, 12)
+        code_lay.setContentsMargins(0, 4, 0, 0)
         code_main = QVBoxLayout(code_card)
-        code_main.setContentsMargins(0, 0, 0, 0)
+        code_main.setContentsMargins(12, 12, 12, 12)
+        code_main.setSpacing(8)
+        _add_card_section_title(code_main, ui_text("ui_stageinfo_stage_code_max_23_chars"))
         code_main.addWidget(code_inner)
 
         self._code_edit = QLineEdit()
@@ -216,11 +218,11 @@ class _GeneralTab(QWidget):
         root.addWidget(code_card)
 
         # XfbinPaths card
-        root.addWidget(_section_lbl(ui_text("ui_stageinfo_xfbin_paths_asset_files_this_stage_loads")))
         self._paths_card = _card_frame()
         paths_lay = QVBoxLayout(self._paths_card)
         paths_lay.setContentsMargins(12, 12, 12, 12)
         paths_lay.setSpacing(6)
+        _add_card_section_title(paths_lay, ui_text("ui_stageinfo_xfbin_paths_asset_files_this_stage_loads"))
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
@@ -354,16 +356,17 @@ class _ParamsTab(QWidget):
         root.setSpacing(8)
 
         # Colours card
-        root.addWidget(_section_lbl(ui_text("ui_stageinfo_colours_4_bytes_each_b0_b1_b2_b3_raw_hex")))
         col_card = _card_frame()
         col_inner = QWidget(col_card)
         col_inner.setStyleSheet("background: transparent;")
         col_grid = QGridLayout(col_inner)
-        col_grid.setContentsMargins(12, 12, 12, 12)
+        col_grid.setContentsMargins(0, 4, 0, 0)
         col_grid.setHorizontalSpacing(20)
         col_grid.setVerticalSpacing(8)
         col_main = QVBoxLayout(col_card)
-        col_main.setContentsMargins(0, 0, 0, 0)
+        col_main.setContentsMargins(12, 12, 12, 12)
+        col_main.setSpacing(8)
+        _add_card_section_title(col_main, ui_text("ui_stageinfo_colours_4_bytes_each_b0_b1_b2_b3_raw_hex"))
         col_main.addWidget(col_inner)
 
         for idx, (off, lbl_text) in enumerate(zip(self._COLOR_OFFSETS, self._COLOR_LABELS)):
@@ -379,16 +382,17 @@ class _ParamsTab(QWidget):
         root.addWidget(col_card)
 
         # Scalar params card
-        root.addWidget(_section_lbl(ui_text("ui_stageinfo_scalar_parameters")))
         scl_card = _card_frame()
         scl_inner = QWidget(scl_card)
         scl_inner.setStyleSheet("background: transparent;")
         scl_grid = QGridLayout(scl_inner)
-        scl_grid.setContentsMargins(12, 12, 12, 12)
+        scl_grid.setContentsMargins(0, 4, 0, 0)
         scl_grid.setHorizontalSpacing(16)
         scl_grid.setVerticalSpacing(8)
         scl_main = QVBoxLayout(scl_card)
-        scl_main.setContentsMargins(0, 0, 0, 0)
+        scl_main.setContentsMargins(12, 12, 12, 12)
+        scl_main.setSpacing(8)
+        _add_card_section_title(scl_main, ui_text("ui_stageinfo_scalar_parameters"))
         scl_main.addWidget(scl_inner)
 
         for fi, (off, lbl_text, is_float) in enumerate(self._SCALAR_FIELDS):
@@ -400,16 +404,17 @@ class _ParamsTab(QWidget):
         root.addWidget(scl_card)
 
         # Reserved bytes card
-        root.addWidget(_section_lbl(ui_text("ui_stageinfo_reserved_unknown_bytes_hex")))
         res_card = _card_frame()
         res_inner = QWidget(res_card)
         res_inner.setStyleSheet("background: transparent;")
         res_grid = QGridLayout(res_inner)
-        res_grid.setContentsMargins(12, 12, 12, 12)
+        res_grid.setContentsMargins(0, 4, 0, 0)
         res_grid.setHorizontalSpacing(16)
         res_grid.setVerticalSpacing(8)
         res_main = QVBoxLayout(res_card)
-        res_main.setContentsMargins(0, 0, 0, 0)
+        res_main.setContentsMargins(12, 12, 12, 12)
+        res_main.setSpacing(8)
+        _add_card_section_title(res_main, ui_text("ui_stageinfo_reserved_unknown_bytes_hex"))
         res_main.addWidget(res_inner)
 
         for ci, (off, sz, lbl_text) in enumerate([

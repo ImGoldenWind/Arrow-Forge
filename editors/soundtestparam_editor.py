@@ -49,6 +49,7 @@ from core.style_helpers import (
     ss_main_label,
     ss_transparent,
 )
+from core.utils.ui_helpers import _add_card_section_title
 from parsers.soundtestparam_parser import (
     make_default_entry,
     parse_soundtestparam_xfbin,
@@ -519,11 +520,7 @@ class SoundTestParamEditor(QWidget):
         self._block_detail = False
 
     def _add_section(self, title: str):
-        lbl = QLabel(title)
-        lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
-        lbl.setStyleSheet(ss_section_label())
-        lbl.setContentsMargins(20, 10, 0, 2)
-        self._editor_layout.addWidget(lbl)
+        self._pending_section_title = title
 
     def _make_card(self) -> QFrame:
         card = QFrame()
@@ -539,7 +536,15 @@ class SoundTestParamEditor(QWidget):
         grid.setVerticalSpacing(8)
 
         main = QVBoxLayout(card)
-        main.setContentsMargins(0, 0, 0, 0)
+        section_title = getattr(self, "_pending_section_title", None)
+        self._pending_section_title = None
+        if section_title:
+            main.setContentsMargins(12, 12, 12, 12)
+            main.setSpacing(8)
+            grid.setContentsMargins(0, 4, 0, 0)
+            _add_card_section_title(main, section_title)
+        else:
+            main.setContentsMargins(0, 0, 0, 0)
         main.addWidget(inner)
         return grid
 

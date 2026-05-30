@@ -4,7 +4,7 @@ from PyQt6.QtCore import QSize, Qt, QUrl
 from PyQt6.QtGui import QCursor, QDesktopServices, QFont
 from PyQt6.QtWidgets import (
     QButtonGroup, QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QRadioButton, QScrollArea, QVBoxLayout, QWidget,
+    QPushButton, QRadioButton, QScrollArea, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from core import updater
@@ -15,7 +15,7 @@ from core.icons import (
 from core.settings import save_settings
 from core.style_helpers import (
     ss_locked_theme_name, ss_page_scrollarea, ss_settings_card, ss_settings_check,
-    ss_theme_lock_button,
+    ss_settings_tab_widget, ss_settings_top_card, ss_theme_lock_button,
 )
 from core.themes import P, THEMES, apply_theme, is_theme_available, visible_theme_keys
 from core.translations import TRANSLATIONS, available_languages, ui_text
@@ -62,15 +62,39 @@ class SettingsDialogMixin:
 
         panel_layout.addWidget(bar)
 
-        # Scrollable content
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet(ss_page_scrollarea())
-        scroll_content = QWidget()
-        scroll_content.setStyleSheet("background: transparent;")
-        scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setContentsMargins(40, 20, 40, 20)
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        tabs.setElideMode(Qt.TextElideMode.ElideRight)
+        tabs.tabBar().setFixedHeight(44)
+        tabs.setStyleSheet(ss_settings_tab_widget())
+
+        def _make_settings_tab(title_key):
+            tab = QWidget()
+            tab.setStyleSheet("background: transparent;")
+            tab_layout = QVBoxLayout(tab)
+            tab_layout.setContentsMargins(0, 0, 0, 0)
+            tab_layout.setSpacing(0)
+
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setStyleSheet(ss_page_scrollarea())
+
+            scroll_content = QWidget()
+            scroll_content.setStyleSheet("background: transparent;")
+            scroll_layout = QVBoxLayout(scroll_content)
+            scroll_layout.setContentsMargins(40, 0, 40, 20)
+            scroll_layout.setSpacing(0)
+
+            scroll.setWidget(scroll_content)
+            tab_layout.addWidget(scroll, 1)
+            tabs.addTab(tab, self.t(title_key))
+            return scroll_layout
+
+        general_layout = _make_settings_tab("settings_tab_general")
+        appearance_layout = _make_settings_tab("settings_tab_appearance")
+        files_layout = _make_settings_tab("settings_tab_files")
+        updates_tab_layout = _make_settings_tab("settings_tab_updates")
 
         def _settings_checkbox(text_key, setting_key, callback, indent=0):
             checkbox = QCheckBox(self.t(text_key))
@@ -87,7 +111,7 @@ class SettingsDialogMixin:
 
         # Language section
         lang_card = QFrame()
-        lang_card.setStyleSheet(ss_settings_card())
+        lang_card.setStyleSheet(ss_settings_top_card())
         lang_card_layout = QVBoxLayout(lang_card)
         lang_card_layout.setContentsMargins(20, 18, 20, 18)
 
@@ -123,12 +147,39 @@ class SettingsDialogMixin:
         lang_share.setWordWrap(True)
         lang_card_layout.addWidget(lang_share)
 
-        scroll_layout.addWidget(lang_card)
-        scroll_layout.addSpacing(16)
+        general_layout.addWidget(lang_card)
+        general_layout.addSpacing(16)
+
+        # Tool list section
+        tool_list_card = QFrame()
+        tool_list_card.setStyleSheet(ss_settings_card())
+        tool_list_layout = QVBoxLayout(tool_list_card)
+        tool_list_layout.setContentsMargins(20, 18, 20, 18)
+
+        tool_list_title = QLabel(self.t("tool_list_title"))
+        tool_list_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        tool_list_title.setStyleSheet(f"color: {P['accent']}; border: none;")
+        tool_list_layout.addWidget(tool_list_title)
+
+        tool_list_hint = QLabel(self.t("tool_list_hint"))
+        tool_list_hint.setFont(QFont("Segoe UI", 12))
+        tool_list_hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
+        tool_list_hint.setWordWrap(True)
+        tool_list_layout.addWidget(tool_list_hint)
+        tool_list_layout.addSpacing(8)
+
+        tool_list_layout.addWidget(_settings_checkbox(
+            "recent_tools_on_top",
+            "recent_tools_on_top",
+            self._set_recent_tools_on_top,
+        ))
+
+        general_layout.addWidget(tool_list_card)
+        general_layout.addSpacing(16)
 
         # Theme section
         theme_card = QFrame()
-        theme_card.setStyleSheet(ss_settings_card())
+        theme_card.setStyleSheet(ss_settings_top_card())
         theme_card_layout = QVBoxLayout(theme_card)
         theme_card_layout.setContentsMargins(20, 18, 20, 18)
 
@@ -201,8 +252,8 @@ class SettingsDialogMixin:
             for tk in special_themes:
                 add_theme_row(tk)
 
-        scroll_layout.addWidget(theme_card)
-        scroll_layout.addSpacing(16)
+        appearance_layout.addWidget(theme_card)
+        appearance_layout.addSpacing(16)
 
         # Animations section
         animations_card = QFrame()
@@ -258,12 +309,12 @@ class SettingsDialogMixin:
         self._theme_personality_motion_checkbox.setVisible(self._theme_personality_enabled())
         animations_layout.addWidget(self._theme_personality_motion_checkbox)
 
-        scroll_layout.addWidget(animations_card)
-        scroll_layout.addSpacing(16)
+        appearance_layout.addWidget(animations_card)
+        appearance_layout.addStretch()
 
         # Game files folder section
         game_dir_card = QFrame()
-        game_dir_card.setStyleSheet(ss_settings_card())
+        game_dir_card.setStyleSheet(ss_settings_top_card())
         game_dir_layout = QVBoxLayout(game_dir_card)
         game_dir_layout.setContentsMargins(20, 18, 20, 18)
 
@@ -309,8 +360,8 @@ class SettingsDialogMixin:
 
         game_dir_layout.addWidget(game_dir_row)
 
-        scroll_layout.addWidget(game_dir_card)
-        scroll_layout.addSpacing(16)
+        files_layout.addWidget(game_dir_card)
+        files_layout.addSpacing(16)
 
         # Backup section
         backup_card = QFrame()
@@ -336,12 +387,12 @@ class SettingsDialogMixin:
         backup_hint.setWordWrap(True)
         backup_layout.addWidget(backup_hint)
 
-        scroll_layout.addWidget(backup_card)
-        scroll_layout.addSpacing(16)
+        files_layout.addWidget(backup_card)
+        files_layout.addStretch()
 
         # Updates section
         updates_card = QFrame()
-        updates_card.setStyleSheet(ss_settings_card())
+        updates_card.setStyleSheet(ss_settings_top_card())
         updates_layout = QVBoxLayout(updates_card)
         updates_layout.setContentsMargins(20, 18, 20, 18)
 
@@ -384,8 +435,8 @@ class SettingsDialogMixin:
 
         updates_layout.addWidget(updates_row)
 
-        scroll_layout.addWidget(updates_card)
-        scroll_layout.addSpacing(16)
+        updates_tab_layout.addWidget(updates_card)
+        updates_tab_layout.addStretch()
 
         # Guide Character section
         guide_card = QFrame()
@@ -420,11 +471,10 @@ class SettingsDialogMixin:
             guide_group.addButton(rb)
             guide_card_layout.addWidget(rb)
 
-        scroll_layout.addWidget(guide_card)
-        scroll_layout.addStretch()
+        general_layout.addWidget(guide_card)
+        general_layout.addStretch()
 
-        scroll.setWidget(scroll_content)
-        panel_layout.addWidget(scroll, 1)
+        panel_layout.addWidget(tabs, 1)
 
         self._show_frame(panel)
 
@@ -526,6 +576,20 @@ class SettingsDialogMixin:
     def _set_check_updates_on_startup(self, value: bool):
         self._settings["check_updates_on_startup"] = value
         save_settings(self._settings)
+
+    def _set_recent_tools_on_top(self, value: bool):
+        self._settings["recent_tools_on_top"] = value
+        save_settings(self._settings)
+        for cat_key in list(getattr(self, "_cat_frames", {}).keys()):
+            if cat_key != self._SECRET_CAT:
+                self._rebuild_cat_frame_cache(cat_key)
+        if getattr(self, "_settings_win", None) is not None:
+            return
+        if self._tool_search_query:
+            self._show_tool_search_results()
+            return
+        if self._current_cat in self._cat_frames:
+            self._show_category(self._current_cat)
 
     def _open_credits(self):
         if self._settings_win:

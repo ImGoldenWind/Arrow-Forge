@@ -44,8 +44,11 @@ from core.style_helpers import (
     ss_sidebar_frame,
     ss_transparent,
 )
+from core.utils.ui_helpers import _add_card_section_title
 from core.translations import ui_text
 from parsers.arcaderewardparam_parser import (
+    TYPE_ARCADE,
+    TYPE_CUMULATIVE,
     make_default_entry,
     parse_arcaderewardparam_xfbin,
     save_arcaderewardparam_xfbin,
@@ -76,7 +79,7 @@ def _clear_layout(layout):
 
 
 class ArcadeRewardParamEditor(QWidget):
-    """Embedded editor for ArcadeRewardParam.bin.xfbin."""
+    """Embedded editor for ArcadeRewardParam.bin.xfbin and CumulativeRewardParam.bin.xfbin."""
 
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
@@ -86,6 +89,7 @@ class ArcadeRewardParamEditor(QWidget):
         self._filepath: str | None = None
         self._raw_data: bytearray | None = None
         self._result: dict | None = None
+        self._param_type = TYPE_ARCADE
         self._entries: list[dict] = []
         self._entry_buttons: list[tuple[QPushButton, int]] = []
         self._current_idx: int | None = None
@@ -248,7 +252,12 @@ class ArcadeRewardParamEditor(QWidget):
         path, _ = QFileDialog.getOpenFileName(
             self,
             ui_text("ui_arcaderewardparam_open_title"),
-            game_files_dialog_dir(target_patterns=("ArcadeRewardParam.bin.xfbin", "ArcadeRewardParam.xfbin")),
+            game_files_dialog_dir(target_patterns=(
+                "ArcadeRewardParam.bin.xfbin",
+                "ArcadeRewardParam.xfbin",
+                "CumulativeRewardParam.bin.xfbin",
+                "CumulativeRewardParam.xfbin",
+            )),
             ui_text("ui_arcaderewardparam_file_filter"),
         )
         if path:
@@ -262,6 +271,7 @@ class ArcadeRewardParamEditor(QWidget):
             self._filepath = None
             self._raw_data = None
             self._result = None
+            self._param_type = TYPE_ARCADE
             self._entries = []
             self._current_idx = None
             self._clear_entry_list()
@@ -273,6 +283,7 @@ class ArcadeRewardParamEditor(QWidget):
         self._filepath = path
         self._raw_data = raw
         self._result = result
+        self._param_type = result.get("param_type", TYPE_ARCADE)
         self._entries = result["entries"]
         self._current_idx = None
         self._dirty = False
@@ -352,12 +363,16 @@ class ArcadeRewardParamEditor(QWidget):
             haystack = " ".join([
                 str(idx),
                 entry.get("reward_id", ""),
-                self._known_difficulty(entry),
+                self._known_difficulty(entry) if self._param_type == TYPE_ARCADE else "",
                 str(entry.get("difficulty_index", "")),
                 str(entry.get("battle_step", "")),
                 str(entry.get("reward_value", "")),
                 str(entry.get("reserved_1", "")),
                 str(entry.get("reserved_2", "")),
+                str(entry.get("reward_index", "")),
+                str(entry.get("reward_group", "")),
+                str(entry.get("threshold", "")),
+                str(entry.get("reward_type", "")),
             ]).lower()
             btn.setVisible(not query or query in haystack)
 
@@ -413,29 +428,42 @@ class ArcadeRewardParamEditor(QWidget):
         title.setStyleSheet(ss_accent_label())
         header_layout.addWidget(title, 0, 0, 1, 2)
 
-        self._add_combo_field(
+        self._add_text_field(
             header_layout,
             1,
             0,
             "reward_id",
             ui_text("ui_arcaderewardparam_reward_id"),
             entry.get("reward_id", ""),
-            self._reward_id_options(entry.get("reward_id", "")),
             ui_text("ui_arcaderewardparam_reward_id_hint"),
             big=True,
         )
-        self._add_uint_field(
-            header_layout,
-            1,
-            1,
-            "reward_value",
-            ui_text("ui_arcaderewardparam_reward_value"),
-            entry.get("reward_value", 0),
-            0,
-            _UINT64_MAX,
-            ui_text("ui_arcaderewardparam_reward_value_hint"),
-            big=True,
-        )
+        if self._param_type == TYPE_CUMULATIVE:
+            self._add_uint_field(
+                header_layout,
+                1,
+                1,
+                "threshold",
+                ui_text("ui_arcaderewardparam_cumulative_threshold"),
+                entry.get("threshold", 0),
+                0,
+                _UINT32_MAX,
+                ui_text("ui_arcaderewardparam_cumulative_threshold_hint"),
+                big=True,
+            )
+        else:
+            self._add_uint_field(
+                header_layout,
+                1,
+                1,
+                "reward_value",
+                ui_text("ui_arcaderewardparam_reward_value"),
+                entry.get("reward_value", 0),
+                0,
+                _UINT64_MAX,
+                ui_text("ui_arcaderewardparam_reward_value_hint"),
+                big=True,
+            )
         header_layout.setColumnStretch(0, 2)
         header_layout.setColumnStretch(1, 1)
         self._editor_layout.addWidget(header)
@@ -443,6 +471,22 @@ class ArcadeRewardParamEditor(QWidget):
         self._add_section(ui_text("ui_arcaderewardparam_reward_parameters"))
         values_card = self._make_card()
         values_grid = self._card_grid(values_card)
+        if self._param_type == TYPE_CUMULATIVE:
+            self._build_cumulative_fields(values_grid, entry)
+        else:
+            self._build_arcade_fields(values_grid, entry)
+        for col in range(3):
+            values_grid.setColumnStretch(col, 1)
+        self._editor_layout.addWidget(values_card)
+
+        spacer = QWidget()
+        spacer.setFixedHeight(20)
+        spacer.setStyleSheet(ss_transparent())
+        self._editor_layout.addWidget(spacer)
+        self._editor_layout.addStretch()
+        self._loading_detail = False
+
+    def _build_arcade_fields(self, values_grid, entry: dict):
         self._add_combo_field(
             values_grid,
             0,
@@ -485,23 +529,44 @@ class ArcadeRewardParamEditor(QWidget):
             _UINT64_MAX,
             ui_text("ui_arcaderewardparam_reserved_hint"),
         )
-        for col in range(3):
-            values_grid.setColumnStretch(col, 1)
-        self._editor_layout.addWidget(values_card)
 
-        spacer = QWidget()
-        spacer.setFixedHeight(20)
-        spacer.setStyleSheet(ss_transparent())
-        self._editor_layout.addWidget(spacer)
-        self._editor_layout.addStretch()
-        self._loading_detail = False
+    def _build_cumulative_fields(self, values_grid, entry: dict):
+        self._add_uint_field(
+            values_grid,
+            0,
+            0,
+            "reward_index",
+            ui_text("ui_arcaderewardparam_cumulative_index"),
+            entry.get("reward_index", 0),
+            0,
+            _UINT32_MAX,
+            ui_text("ui_arcaderewardparam_cumulative_index_hint"),
+        )
+        self._add_uint_field(
+            values_grid,
+            0,
+            1,
+            "reward_group",
+            ui_text("ui_arcaderewardparam_cumulative_group"),
+            entry.get("reward_group", 0),
+            0,
+            _UINT32_MAX,
+            ui_text("ui_arcaderewardparam_cumulative_group_hint"),
+        )
+        self._add_uint_field(
+            values_grid,
+            0,
+            2,
+            "reward_type",
+            ui_text("ui_arcaderewardparam_cumulative_type"),
+            entry.get("reward_type", 0),
+            0,
+            _UINT32_MAX,
+            ui_text("ui_arcaderewardparam_cumulative_type_hint"),
+        )
 
     def _add_section(self, title: str):
-        label = QLabel(title)
-        label.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
-        label.setStyleSheet(ss_section_label())
-        label.setContentsMargins(20, 10, 0, 2)
-        self._editor_layout.addWidget(label)
+        self._pending_section_title = title
 
     def _make_card(self) -> QFrame:
         card = QFrame()
@@ -516,7 +581,15 @@ class ArcadeRewardParamEditor(QWidget):
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(8)
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(0, 0, 0, 0)
+        section_title = getattr(self, "_pending_section_title", None)
+        self._pending_section_title = None
+        if section_title:
+            layout.setContentsMargins(12, 12, 12, 12)
+            layout.setSpacing(8)
+            grid.setContentsMargins(0, 4, 0, 0)
+            _add_card_section_title(layout, section_title)
+        else:
+            layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(inner)
         return grid
 
@@ -672,17 +745,27 @@ class ArcadeRewardParamEditor(QWidget):
                 self._entries[self._current_idx]["reward_id"] = widget.currentData()
             else:
                 self._entries[self._current_idx]["reward_id"] = widget.text().strip()
-        for key, min_value, max_value in (
+        for key, min_value, max_value in self._entry_uint_fields():
+            if not self._apply_uint_field(key, min_value, max_value, show_errors=show_errors):
+                return False
+        self._refresh_entry_button(self._current_idx)
+        return True
+
+    def _entry_uint_fields(self) -> tuple[tuple[str, int, int], ...]:
+        if self._param_type == TYPE_CUMULATIVE:
+            return (
+                ("reward_index", 0, _UINT32_MAX),
+                ("reward_group", 0, _UINT32_MAX),
+                ("threshold", 0, _UINT32_MAX),
+                ("reward_type", 0, _UINT32_MAX),
+            )
+        return (
             ("difficulty_index", 0, _UINT32_MAX),
             ("battle_step", 0, _UINT32_MAX),
             ("reserved_1", 0, _UINT64_MAX),
             ("reserved_2", 0, _UINT64_MAX),
             ("reward_value", 0, _UINT64_MAX),
-        ):
-            if not self._apply_uint_field(key, min_value, max_value, show_errors=show_errors):
-                return False
-        self._refresh_entry_button(self._current_idx)
-        return True
+        )
 
     def _notes_hex(self) -> str:
         if not self._result:
@@ -752,7 +835,7 @@ class ArcadeRewardParamEditor(QWidget):
             return
         if not self._apply_current_entry(show_errors=True):
             return
-        self._entries.append(make_default_entry())
+        self._entries.append(make_default_entry(param_type=self._param_type))
         self._current_idx = None
         self._mark_dirty()
         self._populate_list()

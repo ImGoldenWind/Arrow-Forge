@@ -14,6 +14,7 @@ DEFAULT_SETTINGS = {
     "check_updates_on_startup": True,
     "last_update_check": "",
     "recent_tools": [],
+    "recent_tools_on_top": True,
     "favorite_tools": [],
     "pinned_tools": {},
     "animation_card_perspective": True,

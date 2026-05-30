@@ -4,6 +4,7 @@ import copy
 import os
 import xml.etree.ElementTree as ET
 
+import qtawesome as qta
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QScrollArea,
     QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QMessageBox,
@@ -17,7 +18,8 @@ from core.themes import P
 from core.style_helpers import (
     ss_btn, ss_accent_sep, ss_input, ss_search, ss_sidebar_btn,
     ss_section_label, ss_field_label, ss_file_label, ss_scrollarea, ss_sep,
-    ss_panel, ss_scrollarea_transparent,
+    ss_panel, ss_scrollarea_transparent, ss_editor_card, ss_panel_title,
+    ss_main_label, ss_dim_label, ss_tab_widget, ss_transparent,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
 from core.editor_file_state import set_file_label
@@ -123,8 +125,58 @@ def _make_field(label_text, value_text):
 
 def _card_frame():
     f = QFrame()
-    f.setStyleSheet(ss_panel())
+    f.setObjectName("EditorCard")
+    f.setStyleSheet(ss_editor_card())
     return f
+
+
+def _card_layout(card, margins=(24, 20, 24, 20), spacing=14):
+    layout = QVBoxLayout(card)
+    layout.setContentsMargins(*margins)
+    layout.setSpacing(spacing)
+    return layout
+
+
+def _title_row(title, subtitle="", icon_name=None):
+    row = QWidget()
+    row.setStyleSheet(ss_transparent())
+    rl = QHBoxLayout(row)
+    rl.setContentsMargins(0, 0, 0, 0)
+    rl.setSpacing(12)
+
+    if icon_name:
+        icon = QLabel()
+        icon.setFixedSize(22, 22)
+        icon.setPixmap(qta.icon(icon_name, color=P["accent"]).pixmap(22, 22))
+        icon.setStyleSheet(ss_transparent())
+        rl.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
+
+    texts = QWidget()
+    texts.setStyleSheet(ss_transparent())
+    tl = QVBoxLayout(texts)
+    tl.setContentsMargins(0, 0, 0, 0)
+    tl.setSpacing(2)
+    title_lbl = QLabel(title)
+    title_lbl.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+    title_lbl.setStyleSheet(ss_panel_title())
+    tl.addWidget(title_lbl)
+    if subtitle:
+        sub_lbl = QLabel(subtitle)
+        sub_lbl.setFont(QFont("Segoe UI", 11))
+        sub_lbl.setStyleSheet(ss_dim_label())
+        tl.addWidget(sub_lbl)
+    rl.addWidget(texts, 1)
+    return row
+
+
+def _bool_combo(value):
+    combo = QComboBox()
+    combo.addItems(["false", "true"])
+    combo.setCurrentText(str(value).lower() if str(value).lower() in {"true", "false"} else "false")
+    combo.setFixedHeight(30)
+    combo.setFont(QFont("Segoe UI", 11))
+    combo.setStyleSheet(ss_input())
+    return combo
 
 
 def _sidebar_scroll():
@@ -268,6 +320,183 @@ class _AttrForm(QScrollArea):
     def _set(self, attr, val):
         if self._elem is not None:
             self._elem.set(attr, val)
+            self.changed.emit()
+
+
+# _MoveInfoTab
+
+class _MoveInfoTab(QScrollArea):
+    changed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._move = None
+        self._elem = None
+        self._inner = QWidget()
+        self._inner.setStyleSheet(f"background-color: {P['bg_dark']};")
+        self._layout = QVBoxLayout(self._inner)
+        self._layout.setContentsMargins(16, 16, 16, 16)
+        self._layout.setSpacing(14)
+        self.setWidget(self._inner)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setStyleSheet(ss_scrollarea())
+
+    def load(self, move_dict):
+        _clear_layout(self._layout)
+        self._move = move_dict
+        self._elem = move_dict.get('spm_elem') if move_dict else None
+        if self._elem is None:
+            self._layout.addStretch()
+            self._layout.addWidget(_placeholder_label(ui_text("ui_spm_open_a_spm_xfbin_file_to_begin_editing")))
+            self._layout.addStretch()
+            return
+
+        self._layout.addWidget(self._hero_card())
+
+        top = QGridLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setHorizontalSpacing(14)
+        top.setVerticalSpacing(14)
+        top.addWidget(self._basic_card(), 0, 0)
+        top.addWidget(self._binding_card(), 0, 1)
+        top.setColumnStretch(0, 1)
+        top.setColumnStretch(1, 1)
+        self._layout.addLayout(top)
+
+        self._layout.addWidget(self._animation_card())
+        self._layout.addStretch()
+
+    def _hero_card(self):
+        card = _card_frame()
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(28, 22, 28, 22)
+        layout.setSpacing(24)
+
+        badge = QLabel()
+        badge.setFixedSize(72, 72)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        badge.setPixmap(qta.icon("fa6s.explosion", color=P["accent"]).pixmap(52, 52))
+        badge.setStyleSheet(
+            f"background-color: {P.get('mid', P['bg_panel'])}; "
+            f"border: 1px solid {P['border']}; border-radius: 12px;"
+        )
+        layout.addWidget(badge)
+
+        title = QWidget()
+        title.setStyleSheet(ss_transparent())
+        tl = QVBoxLayout(title)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(4)
+        name_lbl = QLabel(self._elem.get('name', ''))
+        name_lbl.setFont(QFont("Segoe UI", 22, QFont.Weight.Bold))
+        name_lbl.setStyleSheet(ss_main_label())
+        tl.addWidget(name_lbl)
+        sub = QLabel(f"{self._elem.get('type', '')}  •  {self._elem.get('path', '')}")
+        sub.setFont(QFont("Segoe UI", 12))
+        sub.setStyleSheet(ss_dim_label())
+        tl.addWidget(sub)
+        layout.addWidget(title, 2)
+
+        for label, value in [
+            ("View", self._elem.get('view', '')),
+            ("Type", self._elem.get('type', '')),
+            ("Path", self._elem.get('path', '')),
+        ]:
+            layout.addWidget(self._summary_value(label, value), 1)
+        return card
+
+    def _summary_value(self, label, value):
+        frame = QWidget()
+        frame.setStyleSheet(ss_transparent())
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        lbl = QLabel(label)
+        lbl.setFont(QFont("Segoe UI", 11))
+        lbl.setStyleSheet(ss_field_label())
+        layout.addWidget(lbl)
+        val = QLabel(str(value))
+        val.setFont(QFont("Consolas", 14))
+        val.setStyleSheet(ss_main_label())
+        layout.addWidget(val)
+        return frame
+
+    def _basic_card(self):
+        card = _card_frame()
+        layout = _card_layout(card)
+        layout.addWidget(_title_row("1. Basic Info", "Core information about this move.", "fa6s.file-lines"))
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(10)
+        for row, attr in enumerate(['name', 'view', 'type', 'path']):
+            grid.addWidget(self._field_label(attr), row, 0)
+            editor = self._line_editor(attr)
+            grid.addWidget(editor, row, 1)
+        grid.setColumnStretch(1, 1)
+        layout.addLayout(grid)
+        return card
+
+    def _binding_card(self):
+        card = _card_frame()
+        layout = _card_layout(card)
+        layout.addWidget(_title_row("2. Command Binding", "How this move is bound to commands and actions.", "fa6s.crosshairs"))
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(10)
+        for row, attr in enumerate([ATTR_COMMAND_LIST_NUM, ATTR_ACT_ID, ATTR_ACT_KIND, ATTR_ACT_PRIORITY]):
+            grid.addWidget(self._field_label(attr), row, 0)
+            grid.addWidget(self._line_editor(attr), row, 1)
+        grid.setColumnStretch(1, 1)
+        layout.addLayout(grid)
+        return card
+
+    def _animation_card(self):
+        card = _card_frame()
+        layout = _card_layout(card)
+        layout.addWidget(_title_row("3. Animation & Start Behavior", "Animation to play when the move starts and related behavior settings.", "fa6s.person-running"))
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(20)
+        grid.setVerticalSpacing(8)
+        grid.addWidget(self._field_label(ATTR_START_ANM_ID), 0, 0)
+        grid.addWidget(self._line_editor(ATTR_START_ANM_ID), 0, 1)
+        bools = [
+            ATTR_IGNORE_END_POS_TYPE, ATTR_START_SET_DIRC,
+            ATTR_USE_CANCEL_EFFECT, ATTR_WAIT_END_LAND,
+            ATTR_DISABLE_MISS_HIT_CANCEL,
+        ]
+        for idx, attr in enumerate(bools, start=1):
+            row = 1 + (idx - 1) // 2
+            base_col = 0 if idx % 2 == 1 else 2
+            grid.addWidget(self._field_label(attr), row, base_col)
+            combo = _bool_combo(self._elem.get(attr, 'false'))
+            combo.currentTextChanged.connect(lambda value, a=attr: self._set_attr(a, value))
+            grid.addWidget(combo, row, base_col + 1)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)
+        layout.addLayout(grid)
+        return card
+
+    def _field_label(self, text):
+        lbl = QLabel(text)
+        lbl.setFont(QFont("Segoe UI", 11))
+        lbl.setStyleSheet(ss_field_label())
+        return lbl
+
+    def _line_editor(self, attr):
+        editor = QLineEdit(self._elem.get(attr, ''))
+        editor.setFixedHeight(34)
+        editor.setFont(QFont("Consolas", 13))
+        editor.setStyleSheet(ss_input())
+        editor.editingFinished.connect(lambda a=attr, e=editor: self._set_attr(a, e.text()))
+        return editor
+
+    def _set_attr(self, attr, value):
+        if self._elem is not None:
+            self._elem.set(attr, value)
             self.changed.emit()
 
 
@@ -431,47 +660,57 @@ class _CommandsTab(QWidget):
         self._cur_cmd_elem = cmd_elem
         _clear_layout(self._right_layout)
 
-        # Fields card
         card = _card_frame()
-        inner = QWidget(card)
-        inner.setStyleSheet("background: transparent;")
-        grid = QGridLayout(inner)
-        grid.setContentsMargins(16, 12, 16, 12)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(8)
-        card_main = QVBoxLayout(card)
-        card_main.setContentsMargins(0, 0, 0, 0)
-        card_main.addWidget(inner)
+        card_main = _card_layout(card)
+        card_main.addWidget(_title_row("Command Settings", "", "fa6s.gear"))
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(10)
 
         fields_def = [
             ('trigger',       ui_text("ui_spm_trigger")),
             (ATTR_ENABLE_TIME,    ui_text("ui_spm_enable_time")),
             ('condition',     ui_text("ui_mainmodeparam_condition")),
-            (ATTR_AS_DERIVED,     ui_text("ui_spm_as_derived")),
-            (ATTR_DISABLE_AIR_INV, ui_text("ui_spm_disable_air_inv")),
         ]
         for ci, (key, label) in enumerate(fields_def):
-            row, col = divmod(ci, 3)
             fw, fe = _make_field(label, cmd_elem.get(key, ''))
-            grid.addWidget(fw, row, col)
-            grid.setColumnStretch(col, 1)
+            grid.addWidget(fw, 0, ci)
+            grid.setColumnStretch(ci, 1)
             fe.editingFinished.connect(
                 lambda k=key, f=fe: cmd_elem.set(k, f.text()))
 
+        for ci, (key, label) in enumerate([
+            (ATTR_AS_DERIVED, ui_text("ui_spm_as_derived")),
+            (ATTR_DISABLE_AIR_INV, ui_text("ui_spm_disable_air_inv")),
+        ]):
+            frame = QWidget()
+            frame.setStyleSheet(ss_transparent())
+            fl = QVBoxLayout(frame)
+            fl.setContentsMargins(0, 0, 0, 0)
+            fl.setSpacing(4)
+            lbl = QLabel(label)
+            lbl.setFont(QFont("Segoe UI", 12))
+            lbl.setStyleSheet(ss_field_label())
+            fl.addWidget(lbl)
+            combo = _bool_combo(cmd_elem.get(key, 'false'))
+            combo.currentTextChanged.connect(lambda value, k=key: cmd_elem.set(k, value))
+            fl.addWidget(combo)
+            grid.addWidget(frame, 1, ci)
+
+        card_main.addLayout(grid)
         self._right_layout.addWidget(card)
         self._build_comel_card(cmd_elem)
         self._right_layout.addStretch()
 
     def _build_comel_card(self, cmd_elem):
         card = _card_frame()
-        cl = QVBoxLayout(card)
-        cl.setContentsMargins(16, 12, 16, 12)
-        cl.setSpacing(8)
-
-        sec_lbl = QLabel(ui_text("ui_spm_input_sequence"))
-        sec_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        sec_lbl.setStyleSheet(ss_section_label())
-        cl.addWidget(sec_lbl)
+        cl = _card_layout(card)
+        cl.addWidget(_title_row(
+            ui_text("ui_spm_input_sequence"),
+            "Define the sequence of directional inputs and timing.",
+            "fa6s.sliders",
+        ))
 
         els = list(cmd_elem.findall(XML_COM_ELEMENT))
         if els:
@@ -484,36 +723,85 @@ class _CommandsTab(QWidget):
             cl.addWidget(hint)
 
         # Direction picker label
+        bottom = QWidget()
+        bottom.setStyleSheet(ss_transparent())
+        bottom_l = QHBoxLayout(bottom)
+        bottom_l.setContentsMargins(0, 4, 0, 0)
+        bottom_l.setSpacing(28)
+
+        picker_shell = QWidget()
+        picker_shell.setStyleSheet(ss_transparent())
+        picker_l = QVBoxLayout(picker_shell)
+        picker_l.setContentsMargins(0, 0, 0, 0)
+        picker_l.setSpacing(8)
         pick_lbl = QLabel(ui_text("ui_spm_add_direction"))
-        pick_lbl.setFont(QFont("Segoe UI", 11))
-        pick_lbl.setStyleSheet(ss_field_label())
-        cl.addWidget(pick_lbl)
+        pick_lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        pick_lbl.setStyleSheet(ss_panel_title())
+        picker_l.addWidget(pick_lbl)
 
         # 3×3 numpad picker
         picker = QWidget()
-        picker.setStyleSheet("background: transparent;")
+        picker.setStyleSheet(ss_transparent())
         pg = QGridLayout(picker)
         pg.setContentsMargins(0, 0, 0, 0)
-        pg.setSpacing(3)
+        pg.setSpacing(6)
         for r, row_keys in enumerate(NUMPAD_LAYOUT):
             for c, key in enumerate(row_keys):
                 btn = QPushButton(KEY_HINTS[key])
-                btn.setFixedSize(40, 40)
+                btn.setFixedSize(48, 42)
                 btn.setFont(QFont("Segoe UI", 16))
                 btn.setStyleSheet(ss_btn())
                 btn.clicked.connect(
                     lambda checked=False, k=key, ce=cmd_elem: self._add_direction(k, ce))
                 pg.addWidget(btn, r, c)
-        cl.addWidget(picker)
+        picker_l.addWidget(picker)
+        bottom_l.addWidget(picker_shell, 0, Qt.AlignmentFlag.AlignTop)
+
+        preview = QWidget()
+        preview.setStyleSheet(ss_transparent())
+        preview_l = QVBoxLayout(preview)
+        preview_l.setContentsMargins(0, 0, 0, 0)
+        preview_l.setSpacing(10)
+        preview_lbl = QLabel("Sequence Preview")
+        preview_lbl.setFont(QFont("Segoe UI", 13))
+        preview_lbl.setStyleSheet(ss_main_label())
+        preview_l.addWidget(preview_lbl)
+        preview_row = QWidget()
+        preview_row.setStyleSheet(ss_transparent())
+        pr = QHBoxLayout(preview_row)
+        pr.setContentsMargins(0, 0, 0, 0)
+        pr.setSpacing(6)
+        for idx, el in enumerate(els):
+            if idx:
+                sep = QLabel(">")
+                sep.setFont(QFont("Segoe UI", 16))
+                sep.setStyleSheet(ss_dim_label())
+                pr.addWidget(sep)
+            tile = QLabel(KEY_HINTS.get(el.get('key', '?'), el.get('key', '?')))
+            tile.setFixedSize(62, 38)
+            tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            tile.setFont(QFont("Segoe UI", 18))
+            tile.setStyleSheet(
+                f"color: {P['accent']}; background-color: {P.get('mid', P['bg_panel'])}; "
+                f"border: 1px solid {P['border']}; border-radius: 6px;"
+            )
+            pr.addWidget(tile)
+        pr.addStretch()
+        preview_l.addWidget(preview_row)
+        bottom_l.addWidget(preview, 1, Qt.AlignmentFlag.AlignVCenter)
+        cl.addWidget(bottom)
 
         self._right_layout.addWidget(card)
 
     def _make_comel_row(self, el, cmd_elem):
         row_w = QWidget()
-        row_w.setStyleSheet("background: transparent;")
+        row_w.setStyleSheet(
+            f"background-color: {P.get('bg_panel', P['bg_dark'])}; "
+            f"border: 1px solid {P['border']}; border-radius: 6px;"
+        )
         rl = QHBoxLayout(row_w)
-        rl.setContentsMargins(0, 0, 0, 0)
-        rl.setSpacing(8)
+        rl.setContentsMargins(12, 8, 12, 8)
+        rl.setSpacing(12)
 
         arrow = KEY_HINTS.get(el.get('key', '?'), el.get('key', '?'))
         dir_lbl = QLabel(arrow)
@@ -544,6 +832,7 @@ class _CommandsTab(QWidget):
         del_btn = QPushButton(ui_text("btn_delete"))
         del_btn.setFixedHeight(30)
         del_btn.setFont(QFont("Segoe UI", 10))
+        del_btn.setIcon(qta.icon("fa6s.trash-can", color=P["accent"]))
         del_btn.setStyleSheet(ss_btn(danger=True))
         del_btn.clicked.connect(
             lambda _, e=el, ce=cmd_elem: self._del_direction(e, ce))
@@ -700,10 +989,9 @@ class _DecoratorsTab(QWidget):
         div.setStyleSheet(ss_sep())
         root.addWidget(div)
 
-        # Right: attribute form (no header label)
-        self._attr_form = _AttrForm()
-        self._attr_form.changed.connect(self.changed.emit)
-        root.addWidget(self._attr_form, 1)
+        self._right_scroll, self._right_layout = _right_scroll()
+        self._show_empty_detail()
+        root.addWidget(self._right_scroll, 1)
 
     # public
 
@@ -713,7 +1001,7 @@ class _DecoratorsTab(QWidget):
         self._actID     = actID
         self._actKind   = actKind
         self._refresh_tree()
-        self._attr_form.set_element(None)
+        self._show_empty_detail()
 
     # internal
 
@@ -736,9 +1024,134 @@ class _DecoratorsTab(QWidget):
     def _on_tree_sel(self):
         items = self._tree.selectedItems()
         if not items:
-            self._attr_form.set_element(None)
+            self._show_empty_detail()
             return
-        self._attr_form.set_element(items[0].data(0, Qt.ItemDataRole.UserRole))
+        self._show_detail(items[0].data(0, Qt.ItemDataRole.UserRole))
+
+    def _show_empty_detail(self):
+        _clear_layout(self._right_layout)
+        self._right_layout.addStretch()
+        self._right_layout.addWidget(_placeholder_label(ui_text("ui_spm_nothing_selected")))
+        self._right_layout.addStretch()
+
+    def _show_detail(self, elem):
+        _clear_layout(self._right_layout)
+        if elem is None:
+            self._show_empty_detail()
+            return
+
+        self._right_layout.addWidget(self._decorator_summary(elem))
+        self._right_layout.addWidget(self._decorator_details(elem))
+        if elem.tag == XML_DECORATOR:
+            self._right_layout.addWidget(self._decorator_children(elem))
+        self._right_layout.addStretch()
+
+    def _decorator_summary(self, elem):
+        card = _card_frame()
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(28, 22, 28, 22)
+        layout.setSpacing(24)
+
+        badge = QLabel()
+        badge.setFixedSize(72, 72)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        badge.setPixmap(qta.icon("fa6s.sitemap", color=P["accent"]).pixmap(50, 50))
+        badge.setStyleSheet(
+            f"background-color: {P.get('mid', P['bg_panel'])}; "
+            f"border: 1px solid {P['border']}; border-radius: 12px;"
+        )
+        layout.addWidget(badge)
+
+        title = QWidget()
+        title.setStyleSheet(ss_transparent())
+        tl = QVBoxLayout(title)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(4)
+        name = elem.get('type', elem.tag)
+        name_lbl = QLabel(name)
+        name_lbl.setFont(QFont("Segoe UI", 22, QFont.Weight.Bold))
+        name_lbl.setStyleSheet(ss_main_label())
+        tl.addWidget(name_lbl)
+        sub = QLabel(elem.get('path', elem.tag))
+        sub.setFont(QFont("Segoe UI", 12))
+        sub.setStyleSheet(ss_dim_label())
+        tl.addWidget(sub)
+        layout.addWidget(title, 2)
+
+        for label, value in [
+            ("Type", elem.get('type', elem.tag)),
+            ("Path", elem.get('path', '')),
+            ("Children", len(list(elem))),
+            ("End Cut-In Count", elem.get('endCutInCnt', '')),
+        ]:
+            layout.addWidget(self._summary_value(label, value), 1)
+        return card
+
+    def _summary_value(self, label, value):
+        frame = QWidget()
+        frame.setStyleSheet(ss_transparent())
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        lbl = QLabel(label)
+        lbl.setFont(QFont("Segoe UI", 11))
+        lbl.setStyleSheet(ss_field_label())
+        layout.addWidget(lbl)
+        val = QLabel(str(value))
+        val.setFont(QFont("Consolas", 14))
+        val.setStyleSheet(ss_main_label())
+        layout.addWidget(val)
+        return frame
+
+    def _decorator_details(self, elem):
+        card = _card_frame()
+        layout = _card_layout(card)
+        layout.addWidget(_title_row("Details", "Edit the properties of the selected decorator.", "fa6s.file-lines"))
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(10)
+        for row, (attr, val) in enumerate(elem.attrib.items()):
+            lbl = QLabel(attr)
+            lbl.setFont(QFont("Segoe UI", 11))
+            lbl.setStyleSheet(ss_field_label())
+            grid.addWidget(lbl, row, 0)
+            if attr in BOOL_ATTRS:
+                editor = _bool_combo(val)
+                editor.currentTextChanged.connect(lambda value, e=elem, a=attr: self._set_attr(e, a, value))
+            else:
+                editor = QLineEdit(val)
+                editor.setFixedHeight(34)
+                editor.setFont(QFont("Consolas", 13))
+                editor.setStyleSheet(ss_input())
+                editor.editingFinished.connect(lambda e=elem, a=attr, w=editor: self._set_attr(e, a, w.text()))
+            grid.addWidget(editor, row, 1)
+        grid.setColumnStretch(1, 1)
+        layout.addLayout(grid)
+        return card
+
+    def _decorator_children(self, elem):
+        card = _card_frame()
+        layout = _card_layout(card)
+        layout.addWidget(_title_row("Hierarchy / Children", "View the child decorators of this node.", "fa6s.sitemap"))
+        children = list(elem)
+        if not children:
+            empty = QLabel("No child decorators\nThis decorator has no children.")
+            empty.setFont(QFont("Segoe UI", 13))
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty.setStyleSheet(ss_dim_label())
+            layout.addWidget(empty)
+            return card
+        for child in children:
+            row = QLabel(child.tag + ": " + ", ".join(f"{k}={v}" for k, v in list(child.attrib.items())[:4]))
+            row.setFont(QFont("Consolas", 11))
+            row.setStyleSheet(ss_main_label())
+            layout.addWidget(row)
+        return card
+
+    def _set_attr(self, elem, attr, value):
+        elem.set(attr, value)
+        self.changed.emit()
 
     def _sel_top_dec(self):
         items = self._tree.selectedItems()
@@ -796,7 +1209,7 @@ class _DecoratorsTab(QWidget):
         except ValueError:
             pass
         self._refresh_tree()
-        self._attr_form.set_element(None)
+        self._show_empty_detail()
         self.changed.emit()
 
     def _add_child_item(self):
@@ -826,7 +1239,7 @@ class _DecoratorsTab(QWidget):
             except ValueError:
                 pass
         self._refresh_tree()
-        self._attr_form.set_element(None)
+        self._show_empty_detail()
         self.changed.emit()
 
 
@@ -930,26 +1343,23 @@ class SpmEditor(QWidget):
 
         self._tabs = QTabWidget()
         self._tabs.setFont(QFont("Segoe UI", 12))
-        self._tabs.setStyleSheet(
-            f"QTabWidget::pane {{ border: none; background-color: {P['bg_dark']}; }}"
-            f"QTabBar::tab {{ background-color: {P['bg_panel']}; color: {P['text_sec']}; "
-            f"padding: 8px 20px; border: none; border-bottom: 2px solid transparent; }}"
-            f"QTabBar::tab:selected {{ color: {P['accent']}; "
-            f"border-bottom: 2px solid {P['accent']}; }}"
-            f"QTabBar::tab:hover {{ color: {P['text_main']}; }}"
-        )
+        self._tabs.setDocumentMode(True)
+        self._tabs.setStyleSheet(ss_tab_widget())
 
-        self._info_form = _AttrForm()
+        self._info_form = _MoveInfoTab()
         self._info_form.changed.connect(self._mark_dirty)
         self._tabs.addTab(self._info_form, ui_text("ui_spm_move_info"))
+        self._tabs.setTabIcon(0, qta.icon("fa6s.circle-info", color=P["accent"]))
 
         self._cmd_tab = _CommandsTab()
         self._cmd_tab.entry_created.connect(self._on_entry_created)
         self._tabs.addTab(self._cmd_tab, ui_text("ui_spm_commands"))
+        self._tabs.setTabIcon(1, qta.icon("fa6s.terminal", color=P["accent"]))
 
         self._dec_tab = _DecoratorsTab()
         self._dec_tab.changed.connect(self._mark_dirty)
         self._tabs.addTab(self._dec_tab, ui_text("ui_spm_decorators"))
+        self._tabs.setTabIcon(2, qta.icon("fa6s.wand-magic-sparkles", color=P["accent"]))
 
         self._right_stack = QStackedWidget()
         self._right_stack.addWidget(ph)
@@ -1015,7 +1425,7 @@ class SpmEditor(QWidget):
             self._select_move(self._moves[target])
         else:
             self._cur_idx = -1
-            self._info_form.set_element(None)
+            self._info_form.load(None)
             self._cmd_tab.load(None, None, '', '')
             self._dec_tab.load([], None, '', '')
 
@@ -1053,7 +1463,7 @@ class SpmEditor(QWidget):
         self._cur_idx = self._moves.index(move_dict) if move_dict in self._moves else -1
         for btn, m in self._move_btns:
             btn.setStyleSheet(ss_sidebar_btn(selected=(m is move_dict)))
-        self._info_form.set_element(move_dict['spm_elem'])
+        self._info_form.load(move_dict)
         self._cmd_tab.load(
             move_dict['entry_elem'], self._result['root'],
             move_dict[ATTR_ACT_ID], move_dict[ATTR_ACT_KIND])

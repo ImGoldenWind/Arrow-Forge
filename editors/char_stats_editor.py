@@ -7,14 +7,15 @@ import qtawesome as qta
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QScrollArea,
     QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QMessageBox,
-    QSizePolicy,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_toolbar, ss_accent_sep, ss_sep, ss_input, ss_file_label,
-    ss_scrollarea, ss_scrollarea_transparent,
+    ss_btn, ss_accent_sep, ss_input, ss_file_label,
+    ss_scrollarea, ss_scrollarea_transparent, ss_editor_card, ss_field_label,
+    ss_main_label, ss_dim_label, ss_section_label, ss_panel_title,
+    ss_transparent,
 )
 from core.editor_file_state import set_file_label, set_file_label_empty
 from core.skeleton import SkeletonListRow, SkeletonBar
@@ -469,275 +470,188 @@ class CharacterStatsEditor(QWidget):
 
     # Editor
 
+    def _make_editor_card(self, margins=(16, 14, 16, 14), spacing=10):
+        card = QFrame()
+        card.setObjectName("EditorCard")
+        card.setStyleSheet(ss_editor_card())
+        inner = QWidget(card)
+        inner.setStyleSheet(ss_transparent())
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(*margins)
+        layout.setSpacing(spacing)
+        outer = QVBoxLayout(card)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(inner)
+        return card, layout
+
+    def _add_card_title(self, layout, title, icon_name=None):
+        row = QWidget()
+        row.setStyleSheet(ss_transparent())
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+
+        if icon_name:
+            icon = QLabel()
+            icon.setFixedSize(18, 18)
+            icon.setStyleSheet(ss_transparent())
+            icon.setPixmap(qta.icon(icon_name, color=P["accent"]).pixmap(18, 18))
+            row_layout.addWidget(icon)
+
+        lbl = QLabel(title.upper())
+        lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        lbl.setStyleSheet(ss_panel_title())
+        row_layout.addWidget(lbl)
+        row_layout.addStretch()
+        layout.addWidget(row)
+
+    def _make_editor_field(self, label, value, field_key, *, value_font=None, height=30):
+        frame = QWidget()
+        frame.setStyleSheet(ss_transparent())
+        field_layout = QVBoxLayout(frame)
+        field_layout.setContentsMargins(0, 0, 0, 0)
+        field_layout.setSpacing(4)
+
+        lbl = QLabel(label)
+        lbl.setFont(QFont("Segoe UI", 12))
+        lbl.setStyleSheet(ss_field_label())
+        field_layout.addWidget(lbl)
+
+        entry = QLineEdit()
+        entry.setFixedHeight(height)
+        entry.setFont(value_font or QFont("Consolas", 13))
+        entry.setStyleSheet(ss_input())
+        entry.setText(str(value))
+        field_layout.addWidget(entry)
+        self._fields[field_key] = entry
+        return frame, entry
+
     def _build_editor(self, char):
         self._clear_editor()
         self._fields = {}
+        self._editor_layout.setContentsMargins(10, 8, 10, 0)
+        self._editor_layout.setSpacing(12)
 
-        # Character header - editable identity fields
-        hdr = QFrame()
-        hdr.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
-        hdr_inner = QWidget(hdr)
-        hdr_inner.setStyleSheet("background: transparent;")
-        hdr_grid = QGridLayout(hdr_inner)
-        hdr_grid.setContentsMargins(16, 12, 16, 12)
-        hdr_grid.setHorizontalSpacing(16)
+        overview_lbl = QLabel("OVERVIEW")
+        overview_lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        overview_lbl.setStyleSheet(ss_section_label())
+        self._editor_layout.addWidget(overview_lbl)
 
-        hdr_main_layout = QVBoxLayout(hdr)
-        hdr_main_layout.setContentsMargins(0, 0, 0, 0)
-        hdr_main_layout.addWidget(hdr_inner)
+        overview_grid = QGridLayout()
+        overview_grid.setContentsMargins(0, 0, 0, 0)
+        overview_grid.setHorizontalSpacing(12)
+        overview_grid.setVerticalSpacing(0)
+        overview_font = QFont("Consolas", 16)
+        name_font = QFont("Segoe UI", 18, QFont.Weight.Bold)
+        for col, (key, label, value, font) in enumerate([
+            ("_display_name", self.t("label_display_name_cosmetic"), char['name'], name_font),
+            ("char_id", self.t("label_char_id_saved"), char['char_id'], overview_font),
+            ("param_id", self.t("label_param_id"), char['param_id'], overview_font),
+        ]):
+            card, card_layout = self._make_editor_card(margins=(16, 14, 16, 14), spacing=6)
+            field, _ = self._make_editor_field(label, value, key, value_font=font, height=38)
+            card_layout.addWidget(field)
+            overview_grid.addWidget(card, 0, col)
+            overview_grid.setColumnStretch(col, 1)
+        self._editor_layout.addLayout(overview_grid)
 
-        # Display Name
-        name_frame = QWidget()
-        name_frame.setStyleSheet("background: transparent;")
-        name_layout = QVBoxLayout(name_frame)
-        name_layout.setContentsMargins(0, 0, 0, 0)
-        name_layout.setSpacing(2)
-        lbl = QLabel(self.t("label_display_name_cosmetic"))
-        lbl.setFont(QFont("Segoe UI", 12))
-        lbl.setStyleSheet(f"color: {P['text_dim']};")
-        name_layout.addWidget(lbl)
-        e_name = QLineEdit()
-        e_name.setFixedHeight(36)
-        e_name.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
-        e_name.setStyleSheet(
-            f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-            f"color: {P['accent']}; padding: 2px 6px; border-radius: 4px; }}"
-        )
-        e_name.setText(char['name'])
-        name_layout.addWidget(e_name)
-        self._fields['_display_name'] = e_name
-        hdr_grid.addWidget(name_frame, 0, 0)
-        hdr_grid.setColumnStretch(0, 1)
+        cards_grid = QGridLayout()
+        cards_grid.setContentsMargins(0, 0, 0, 0)
+        cards_grid.setHorizontalSpacing(12)
+        cards_grid.setVerticalSpacing(12)
 
-        # Char ID
-        id_frame = QWidget()
-        id_frame.setStyleSheet("background: transparent;")
-        id_layout = QVBoxLayout(id_frame)
-        id_layout.setContentsMargins(0, 0, 0, 0)
-        id_layout.setSpacing(2)
-        lbl = QLabel(self.t("label_char_id_saved"))
-        lbl.setFont(QFont("Segoe UI", 12))
-        lbl.setStyleSheet(f"color: {P['text_dim']};")
-        id_layout.addWidget(lbl)
-        e_id = QLineEdit()
-        e_id.setFixedHeight(36)
-        e_id.setFont(QFont("Consolas", 16))
-        e_id.setStyleSheet(
-            f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-            f"color: {P['text_main']}; padding: 2px 6px; border-radius: 4px; }}"
-        )
-        e_id.setText(char['char_id'])
-        id_layout.addWidget(e_id)
-        self._fields['char_id'] = e_id
-        hdr_grid.addWidget(id_frame, 0, 1)
-        hdr_grid.setColumnStretch(1, 1)
+        stats_frame, stats_layout = self._make_editor_card()
+        self._add_card_title(stats_layout, self.t("section_combat_stats"), "fa6s.khanda")
+        stats_grid = QGridLayout()
+        stats_grid.setContentsMargins(0, 4, 0, 0)
+        stats_grid.setHorizontalSpacing(16)
+        stats_grid.setVerticalSpacing(10)
+        for i, (key, label, val, span) in enumerate([
+            ("hp", self.t("field_hp"), char['hp'], 1),
+            ("gha_damage", self.t("field_gha_damage"), char['gha_damage'], 1),
+            ("max_gauge", self.t("field_max_gauge"), char['max_gauge'], 1),
+            ("guard_gauge", self.t("field_guard_gauge"), char['guard_gauge'], 1),
+            ("guard_break_recovery", self.t("field_guard_break_recovery"), char['guard_break_recovery'], 2),
+        ]):
+            row, col = divmod(i, 2)
+            field, _ = self._make_editor_field(label, val, key)
+            stats_grid.addWidget(field, row, col, 1, span)
+            stats_grid.setColumnStretch(col, 1)
+        stats_layout.addLayout(stats_grid)
+        cards_grid.addWidget(stats_frame, 0, 0)
 
-        # Param ID
-        pid_frame = QWidget()
-        pid_frame.setStyleSheet("background: transparent;")
-        pid_layout = QVBoxLayout(pid_frame)
-        pid_layout.setContentsMargins(0, 0, 0, 0)
-        pid_layout.setSpacing(2)
-        lbl = QLabel(self.t("label_param_id"))
-        lbl.setFont(QFont("Segoe UI", 12))
-        lbl.setStyleSheet(f"color: {P['text_dim']};")
-        pid_layout.addWidget(lbl)
-        e_pid = QLineEdit()
-        e_pid.setFixedHeight(36)
-        e_pid.setFont(QFont("Consolas", 16))
-        e_pid.setStyleSheet(
-            f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-            f"color: {P['text_main']}; padding: 2px 6px; border-radius: 4px; }}"
-        )
-        e_pid.setText(str(char['param_id']))
-        pid_layout.addWidget(e_pid)
-        self._fields['param_id'] = e_pid
-        hdr_grid.addWidget(pid_frame, 0, 2)
-
-        self._editor_layout.addWidget(hdr)
-
-        # Combat Stats
-        self._add_section(self.t("section_combat_stats"))
-        stats_frame = QFrame()
-        stats_frame.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
-        stats_inner = QWidget(stats_frame)
-        stats_inner.setStyleSheet("background: transparent;")
-        grid = QGridLayout(stats_inner)
-        grid.setContentsMargins(12, 12, 12, 12)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(8)
-
-        stats_main = QVBoxLayout(stats_frame)
-        stats_main.setContentsMargins(0, 0, 0, 0)
-        stats_main.addWidget(stats_inner)
-
-        stat_fields = [
-            ("hp", self.t("field_hp"), char['hp']),
-            ("gha_damage", self.t("field_gha_damage"), char['gha_damage']),
-            ("max_gauge", self.t("field_max_gauge"), char['max_gauge']),
-            ("guard_gauge", self.t("field_guard_gauge"), char['guard_gauge']),
-            ("guard_break_recovery", self.t("field_guard_break_recovery"), char['guard_break_recovery']),
+        elem_frame, elem_layout = self._make_editor_card()
+        self._add_card_title(elem_layout, self.t("section_elemental_modifiers"), "fa6s.fire")
+        for key, label, val in [
             ("dmg_scaling_1", self.t("field_dmg_scale_1"), f"{char['dmg_scaling_1']:.2f}"),
             ("dmg_scaling_2", self.t("field_dmg_scale_2"), f"{char['dmg_scaling_2']:.2f}"),
             ("dmg_scaling_3", self.t("field_dmg_scale_3"), f"{char['dmg_scaling_3']:.2f}"),
-        ]
-        for i, (key, label, val) in enumerate(stat_fields):
-            row, col = divmod(i, 3)
-            f = QWidget()
-            f.setStyleSheet("background: transparent;")
-            f_layout = QVBoxLayout(f)
-            f_layout.setContentsMargins(0, 0, 0, 0)
-            f_layout.setSpacing(2)
-            lbl = QLabel(label)
-            lbl.setFont(QFont("Segoe UI", 12))
-            lbl.setStyleSheet(f"color: {P['text_sec']};")
-            f_layout.addWidget(lbl)
-            e = QLineEdit()
-            e.setFixedHeight(30)
-            e.setFont(QFont("Consolas", 13))
-            e.setStyleSheet(
-                f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-                f"color: {P['text_main']}; padding: 2px 6px; border-radius: 4px; }}"
-            )
-            e.setText(str(val))
-            f_layout.addWidget(e)
-            grid.addWidget(f, row, col)
-            grid.setColumnStretch(col, 1)
-            self._fields[key] = e
+        ]:
+            field, _ = self._make_editor_field(label, val, key)
+            elem_layout.addWidget(field)
+        cards_grid.addWidget(elem_frame, 0, 1)
 
-        self._editor_layout.addWidget(stats_frame)
+        col_frame, col_layout = self._make_editor_card()
+        self._add_card_title(col_layout, self.t("section_collision"), "fa6s.shield-halved")
+        for key, label, val in [
+            ("collision_threshold", self.t("field_collision_threshold"), char['collision_threshold']),
+            ("camera_height", self.t("field_camera_height"), char['camera_height']),
+            ("collision_size", self.t("field_collision_size"), char['collision_size']),
+        ]:
+            field, _ = self._make_editor_field(label, val, key)
+            col_layout.addWidget(field)
+        cards_grid.addWidget(col_frame, 0, 2)
 
-        # Unknown Floats
-        self._add_section(self.t("section_unk_floats"))
-        uf_frame = QFrame()
-        uf_frame.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
-        uf_inner = QWidget(uf_frame)
-        uf_inner.setStyleSheet("background: transparent;")
-        uf_grid = QGridLayout(uf_inner)
-        uf_grid.setContentsMargins(12, 12, 12, 12)
+        uf_frame, uf_layout = self._make_editor_card()
+        self._add_card_title(uf_layout, self.t("section_unk_floats"), "fa6s.circle-question")
+        uf_grid = QGridLayout()
+        uf_grid.setContentsMargins(0, 4, 0, 0)
         uf_grid.setHorizontalSpacing(16)
-        uf_grid.setVerticalSpacing(8)
-        uf_main = QVBoxLayout(uf_frame)
-        uf_main.setContentsMargins(0, 0, 0, 0)
-        uf_main.addWidget(uf_inner)
-
+        uf_grid.setVerticalSpacing(10)
         for i, val in enumerate(char['unk_floats']):
             row, col = divmod(i, 4)
-            f = QWidget()
-            f.setStyleSheet("background: transparent;")
-            f_layout = QVBoxLayout(f)
-            f_layout.setContentsMargins(0, 0, 0, 0)
-            f_layout.setSpacing(2)
-            lbl = QLabel(self.t("field_unk_float_n", n=i + 1))
-            lbl.setFont(QFont("Segoe UI", 12))
-            lbl.setStyleSheet(f"color: {P['text_sec']};")
-            f_layout.addWidget(lbl)
-            e = QLineEdit()
-            e.setFixedHeight(30)
-            e.setFont(QFont("Consolas", 13))
-            e.setStyleSheet(
-                f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-                f"color: {P['text_main']}; padding: 2px 6px; border-radius: 4px; }}"
+            field, _ = self._make_editor_field(
+                self.t("field_unk_float_n", n=i + 1),
+                ui_text("ui_char_stats_value", p0=val),
+                f"uf.{i}",
             )
-            e.setText(ui_text("ui_char_stats_value", p0=val))
-            f_layout.addWidget(e)
-            uf_grid.addWidget(f, row, col)
+            uf_grid.addWidget(field, row, col)
             uf_grid.setColumnStretch(col, 1)
-            self._fields[f"uf.{i}"] = e
+        uf_layout.addLayout(uf_grid)
+        cards_grid.addWidget(uf_frame, 1, 0)
 
-        self._editor_layout.addWidget(uf_frame)
-
-        # Collision
-        self._add_section(self.t("section_collision"))
-        col_frame = QFrame()
-        col_frame.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
-        col_inner = QWidget(col_frame)
-        col_inner.setStyleSheet("background: transparent;")
-        col_grid = QGridLayout(col_inner)
-        col_grid.setContentsMargins(12, 12, 12, 12)
-        col_grid.setHorizontalSpacing(16)
-        col_grid.setVerticalSpacing(8)
-        col_main = QVBoxLayout(col_frame)
-        col_main.setContentsMargins(0, 0, 0, 0)
-        col_main.addWidget(col_inner)
-
-        for ci, (key, label, val) in enumerate([
-            ("collision_threshold", self.t("field_collision_threshold"), char['collision_threshold']),
-            ("camera_height",       self.t("field_camera_height"),       char['camera_height']),
-            ("collision_size",      self.t("field_collision_size"),      char['collision_size']),
-        ]):
-            f = QWidget()
-            f.setStyleSheet("background: transparent;")
-            f_layout = QVBoxLayout(f)
-            f_layout.setContentsMargins(0, 0, 0, 0)
-            f_layout.setSpacing(2)
-            lbl = QLabel(label)
-            lbl.setFont(QFont("Segoe UI", 12))
-            lbl.setStyleSheet(f"color: {P['text_sec']};")
-            f_layout.addWidget(lbl)
-            e = QLineEdit()
-            e.setFixedHeight(30)
-            e.setFont(QFont("Consolas", 13))
-            e.setStyleSheet(
-                f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-                f"color: {P['text_main']}; padding: 2px 6px; border-radius: 4px; }}"
-            )
-            e.setText(str(val))
-            f_layout.addWidget(e)
-            col_grid.addWidget(f, 0, ci)
-            col_grid.setColumnStretch(ci, 1)
-            self._fields[key] = e
-
-        self._editor_layout.addWidget(col_frame)
-
-        # Hitbox Bones
-        self._add_section(self.t("section_hitbox_bones"))
-        bones_frame = QFrame()
-        bones_frame.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
-        bones_inner = QWidget(bones_frame)
-        bones_inner.setStyleSheet("background: transparent;")
-        bg = QGridLayout(bones_inner)
-        bg.setContentsMargins(12, 12, 12, 12)
-        bg.setHorizontalSpacing(12)
-        bg.setVerticalSpacing(4)
-
-        bones_main = QVBoxLayout(bones_frame)
-        bones_main.setContentsMargins(0, 0, 0, 0)
-        bones_main.addWidget(bones_inner)
-
-        for col, hdr_text in enumerate([self.t("bone_col_bone"), self.t("bone_col_name"),
-                                        self.t("bone_col_size1"), self.t("bone_col_size2")]):
+        bones_frame, bones_layout = self._make_editor_card()
+        self._add_card_title(bones_layout, self.t("section_hitbox_bones"), "fa6s.crosshairs")
+        bones_grid = QGridLayout()
+        bones_grid.setContentsMargins(0, 4, 0, 0)
+        bones_grid.setHorizontalSpacing(12)
+        bones_grid.setVerticalSpacing(8)
+        for col, hdr_text in enumerate([self.t("bone_col_bone"), self.t("bone_col_name")]):
             lbl = QLabel(hdr_text)
             lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-            lbl.setStyleSheet(f"color: {P['text_dim']};")
-            bg.addWidget(lbl, 0, col)
-            bg.setColumnStretch(col, 1 if col == 1 else 0)
+            lbl.setStyleSheet(ss_dim_label())
+            bones_grid.addWidget(lbl, 0, col)
+        bones_grid.setColumnStretch(0, 0)
+        bones_grid.setColumnStretch(1, 1)
 
         for bi, bone in enumerate(char['bones']):
             lbl = QLabel(bone['label'])
             lbl.setFont(QFont("Segoe UI", 12))
-            lbl.setStyleSheet(f"color: {P['text_sec']};")
-            bg.addWidget(lbl, bi + 1, 0)
+            lbl.setStyleSheet(ss_main_label())
+            bones_grid.addWidget(lbl, bi + 1, 0)
+            entry = QLineEdit()
+            entry.setFixedHeight(28)
+            entry.setFont(QFont("Consolas", 12))
+            entry.setStyleSheet(ss_input())
+            entry.setText(str(bone['name']))
+            bones_grid.addWidget(entry, bi + 1, 1)
+            self._fields[f"bone.{bi}.name"] = entry
+        bones_layout.addLayout(bones_grid)
+        cards_grid.addWidget(bones_frame, 1, 1, 1, 2)
 
-            for ci, (field, val) in enumerate([('name', bone['name']),
-                                                ('size_1', bone['size_1']),
-                                                ('size_2', bone['size_2'])]):
-                e = QLineEdit()
-                e.setFixedHeight(28)
-                e.setFont(QFont("Consolas", 12))
-                e.setStyleSheet(
-                    f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-                    f"color: {P['text_main']}; padding: 2px 4px; border-radius: 4px; }}"
-                )
-                if ci > 0:
-                    e.setFixedWidth(100)
-                else:
-                    e.setMinimumWidth(140)
-                e.setText(str(val))
-                bg.addWidget(e, bi + 1, ci + 1)
-                self._fields[f"bone.{bi}.{field}"] = e
-
-        self._editor_layout.addWidget(bones_frame)
+        for col in range(3):
+            cards_grid.setColumnStretch(col, 1)
+        self._editor_layout.addLayout(cards_grid)
 
         # Movement Blocks
         block_labels = {
@@ -751,65 +665,49 @@ class CharacterStatsEditor(QWidget):
             'dash_jump_height': self.t("field_dash_jump_height"),
             'dash_jump_dist':   self.t("field_dash_jump_dist"),
         }
+        movement_grid = QGridLayout()
+        movement_grid.setContentsMargins(0, 0, 0, 0)
+        movement_grid.setHorizontalSpacing(12)
+        movement_grid.setVerticalSpacing(12)
         for bi, block in enumerate(char['movement_blocks']):
-            self._add_section(self.t("section_movement_label", label=block['label']))
-            mf = QFrame()
-            mf.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
-            mf_inner = QWidget(mf)
-            mf_inner.setStyleSheet("background: transparent;")
-            mg = QGridLayout(mf_inner)
-            mg.setContentsMargins(12, 12, 12, 12)
+            mf, mf_layout = self._make_editor_card()
+            self._add_card_title(
+                mf_layout,
+                self.t("section_movement_label", label=block['label']),
+                "fa6s.person-running",
+            )
+            mg = QGridLayout()
+            mg.setContentsMargins(0, 4, 0, 0)
             mg.setHorizontalSpacing(16)
-            mg.setVerticalSpacing(8)
-
-            mf_main = QVBoxLayout(mf)
-            mf_main.setContentsMargins(0, 0, 0, 0)
-            mf_main.addWidget(mf_inner)
+            mg.setVerticalSpacing(10)
 
             fields_list = ['fwd_walk', 'bwd_walk', 'fwd_run', 'bwd_run', 'gravity_strength',
                            'jump_upward_vel', 'jump_forward_vel', 'dash_jump_height', 'dash_jump_dist']
             for fi, field in enumerate(fields_list):
                 row, col = divmod(fi, 3)
-                ff = QWidget()
-                ff.setStyleSheet("background: transparent;")
-                ff_layout = QVBoxLayout(ff)
-                ff_layout.setContentsMargins(0, 0, 0, 0)
-                ff_layout.setSpacing(2)
                 val = block[field]
                 display = f"{val:.2f}" if isinstance(val, float) else str(val)
-                lbl = QLabel(block_labels[field])
-                lbl.setFont(QFont("Segoe UI", 12))
-                lbl.setStyleSheet(f"color: {P['text_sec']};")
-                ff_layout.addWidget(lbl)
-                e = QLineEdit()
-                e.setFixedHeight(30)
-                e.setFont(QFont("Consolas", 13))
-                e.setStyleSheet(
-                    f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-                    f"color: {P['text_main']}; padding: 2px 6px; border-radius: 4px; }}"
+                ff, _ = self._make_editor_field(
+                    block_labels[field],
+                    display,
+                    f"mb.{bi}.{field}",
                 )
-                e.setText(display)
-                ff_layout.addWidget(e)
                 mg.addWidget(ff, row, col)
                 mg.setColumnStretch(col, 1)
-                self._fields[f"mb.{bi}.{field}"] = e
 
-            self._editor_layout.addWidget(mf)
+            mf_layout.addLayout(mg)
+            movement_grid.addWidget(mf, 0, bi)
+            movement_grid.setColumnStretch(bi, 1)
+
+        self._editor_layout.addLayout(movement_grid)
 
         # Special
-        self._add_section(self.t("section_special_props"))
-        sf = QFrame()
-        sf.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
-        sf_inner = QWidget(sf)
-        sf_inner.setStyleSheet("background: transparent;")
-        sg = QGridLayout(sf_inner)
-        sg.setContentsMargins(12, 12, 12, 12)
+        sf, sf_layout = self._make_editor_card()
+        self._add_card_title(sf_layout, self.t("section_special_props"), "fa6s.sliders")
+        sg = QGridLayout()
+        sg.setContentsMargins(0, 4, 0, 0)
         sg.setHorizontalSpacing(16)
-        sg.setVerticalSpacing(8)
-
-        sf_main = QVBoxLayout(sf)
-        sf_main.setContentsMargins(0, 0, 0, 0)
-        sf_main.addWidget(sf_inner)
+        sg.setVerticalSpacing(10)
 
         sp_row0_fields = [
             ("dlc_code",    self.t("field_dlc_code"),    char['dlc_code']),
@@ -817,55 +715,20 @@ class CharacterStatsEditor(QWidget):
             ("corpse_parts", self.t("field_corpse_parts"), char['corpse_parts']),
         ]
         for ci, (key, label, val) in enumerate(sp_row0_fields):
-            f = QWidget()
-            f.setStyleSheet("background: transparent;")
-            f_layout = QVBoxLayout(f)
-            f_layout.setContentsMargins(0, 0, 0, 0)
-            f_layout.setSpacing(2)
-            lbl = QLabel(label)
-            lbl.setFont(QFont("Segoe UI", 12))
-            lbl.setStyleSheet(f"color: {P['text_sec']};")
-            f_layout.addWidget(lbl)
-            e = QLineEdit()
-            e.setFixedHeight(30)
-            e.setFont(QFont("Consolas", 13))
-            e.setStyleSheet(
-                f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-                f"color: {P['text_main']}; padding: 2px 6px; border-radius: 4px; }}"
-            )
-            e.setText(str(val))
-            f_layout.addWidget(e)
+            f, _ = self._make_editor_field(label, val, key)
             sg.addWidget(f, 0, ci)
             sg.setColumnStretch(ci, 1)
-            self._fields[key] = e
 
         sp_row1_fields = [
             ("style",           self.t("field_style"),           char['style']),
             ("roster_position", self.t("field_roster_position"), char['roster_position']),
         ]
         for ci, (key, label, val) in enumerate(sp_row1_fields):
-            f = QWidget()
-            f.setStyleSheet("background: transparent;")
-            f_layout = QVBoxLayout(f)
-            f_layout.setContentsMargins(0, 0, 0, 0)
-            f_layout.setSpacing(2)
-            lbl = QLabel(label)
-            lbl.setFont(QFont("Segoe UI", 12))
-            lbl.setStyleSheet(f"color: {P['text_sec']};")
-            f_layout.addWidget(lbl)
-            e = QLineEdit()
-            e.setFixedHeight(30)
-            e.setFont(QFont("Consolas", 13))
-            e.setStyleSheet(
-                f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-                f"color: {P['text_main']}; padding: 2px 6px; border-radius: 4px; }}"
-            )
-            e.setText(str(val))
-            f_layout.addWidget(e)
+            f, _ = self._make_editor_field(label, val, key)
             sg.addWidget(f, 1, ci)
             sg.setColumnStretch(ci, 1)
-            self._fields[key] = e
 
+        sf_layout.addLayout(sg)
         self._editor_layout.addWidget(sf)
 
         # Bottom padding

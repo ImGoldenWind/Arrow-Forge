@@ -17,6 +17,7 @@ from core.style_helpers import (
     ss_scrollarea, ss_scrollarea_transparent,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.utils.ui_helpers import _add_card_section_title
 from core.editor_file_state import set_file_label
 from parsers.dictionaryparam_parser import (
     parse_dictionaryparam_xfbin, save_dictionaryparam_xfbin, make_default_entry,
@@ -239,11 +240,17 @@ class DictionaryParamEditor(QWidget):
         _clear_layout(self._editor_layout)
 
     def _add_section(self, title):
-        lbl = QLabel(title)
-        lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
-        lbl.setStyleSheet(f"color: {P['secondary']}; background: transparent;")
-        lbl.setContentsMargins(20, 10, 0, 2)
-        self._editor_layout.addWidget(lbl)
+        self._pending_section_title = title
+
+    def _apply_pending_section_title(self, card_layout, content_layout):
+        section_title = getattr(self, "_pending_section_title", None)
+        self._pending_section_title = None
+        if not section_title:
+            return
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(8)
+        content_layout.setContentsMargins(0, 4, 0, 0)
+        _add_card_section_title(card_layout, section_title)
 
     # File I/O
 
@@ -470,6 +477,7 @@ class DictionaryParamEditor(QWidget):
         str_grid.setVerticalSpacing(8)
         str_main = QVBoxLayout(str_frame)
         str_main.setContentsMargins(0, 0, 0, 0)
+        self._apply_pending_section_title(str_main, str_grid)
         str_main.addWidget(str_inner)
 
         str_fields = [
@@ -516,6 +524,7 @@ class DictionaryParamEditor(QWidget):
         ids_grid.setVerticalSpacing(8)
         ids_main = QVBoxLayout(ids_frame)
         ids_main.setContentsMargins(0, 0, 0, 0)
+        self._apply_pending_section_title(ids_main, ids_grid)
         ids_main.addWidget(ids_inner)
 
         dlc_hint = _DLC_NAMES.get(entry['dlc_id'], f"ID {entry['dlc_id']}")
@@ -560,6 +569,7 @@ class DictionaryParamEditor(QWidget):
         flags_grid.setVerticalSpacing(8)
         flags_main = QVBoxLayout(flags_frame)
         flags_main.setContentsMargins(0, 0, 0, 0)
+        self._apply_pending_section_title(flags_main, flags_grid)
         flags_main.addWidget(flags_inner)
 
         for fi, (key, name) in enumerate(_FLAG_NAMES.items()):
@@ -584,6 +594,7 @@ class DictionaryParamEditor(QWidget):
         panel_vl.setSpacing(8)
         panel_main = QVBoxLayout(panel_frame)
         panel_main.setContentsMargins(0, 0, 0, 0)
+        self._apply_pending_section_title(panel_main, panel_vl)
         panel_main.addWidget(panel_inner)
 
         no_panel_cb = QCheckBox(ui_text("ui_dictionaryparam_no_panel_entry_is_not_unlockable_via_a_panel"))
@@ -607,6 +618,7 @@ class DictionaryParamEditor(QWidget):
         adv_grid.setVerticalSpacing(8)
         adv_main = QVBoxLayout(adv_frame)
         adv_main.setContentsMargins(0, 0, 0, 0)
+        self._apply_pending_section_title(adv_main, adv_grid)
         adv_main.addWidget(adv_inner)
 
         adv_fields = [
