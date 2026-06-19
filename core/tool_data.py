@@ -5,11 +5,11 @@ from core.icons import (
     icon_hit, icon_damage, icon_balance, icon_battle_result, icon_duel_setting, icon_arcade_reward, icon_net_rank, icon_net_result, icon_online_mission, icon_projectile, icon_effect,
     icon_movelist, icon_command_list_param, icon_constraint, icon_story, icon_dialogue,
     icon_assist, icon_support_item, icon_game_text, icon_term_list, icon_tutorial_param, icon_stage, icon_ui, icon_gimmick,
-    icon_texture, icon_xfbin, icon_usm_video,
+    icon_texture, icon_model_viewer, icon_xfbin, icon_usm_video,
     icon_char_viewer, icon_guide_char, icon_dictionary, icon_custom_card,
     icon_custom_default, icon_dlc_info, icon_gallery, icon_player_title,
     icon_trophy_param,
-    icon_sound_param, icon_sound_test, icon_lip_sync, icon_asb_acf,
+    icon_sound_param, icon_sound_test, icon_lip_sync, icon_anmofs, icon_asb_acf,
 )
 
 # Tool & category data
@@ -27,6 +27,7 @@ TOOLS = {
         ("0xxx00prm.bin, prm_gha.bin",         icon_skill,      "tool_char_skill", "dlg_char_skill"),
         ("0xxx00_SPM",            icon_movelist,   "tool_movelist",   "dlg_movelist"),
         ("*_lip.xfbin",           icon_lip_sync,   "tool_lip_sync",   "dlg_lip_sync"),
+        ("*_anmofs.xfbin",        icon_anmofs,     "tool_anmofs",     "dlg_anmofs"),
         ("CommandListParam.bin",   icon_command_list_param, "tool_command_list_param", "dlg_command_list_param"),
         ("0xxx00_x",              icon_projectile, "tool_projectile", "dlg_projectile"),
         ("SupportCharaParam.bin", icon_assist,     "tool_assist",     "dlg_assist"),
@@ -85,6 +86,7 @@ TOOLS = {
     "ASSETS": [
         (".awb",        icon_sound,       "tool_sound",       "dlg_sound"),
         (".xfbin textures",     icon_texture,     "tool_texture",     "dlg_texture"),
+        ("bod*.xfbin models",   icon_model_viewer, "tool_model_viewer", "dlg_model_viewer"),
         (".xfbin sounds",       icon_xfbin,       "tool_xfbin_audio", "dlg_xfbin_audio"),
         (".usm",                icon_usm_video,   "tool_usm_video",   "dlg_usm_video"),
         ("effectprm.bin",       icon_effect,      "tool_effect",      "dlg_effect"),

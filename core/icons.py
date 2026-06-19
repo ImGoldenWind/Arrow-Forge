@@ -244,6 +244,9 @@ def icon_gimmick():
 def icon_texture():
     return _themed_icon("fa6s.images")
 
+def icon_model_viewer():
+    return _themed_icon("fa6s.cube")
+
 def icon_xfbin():
     return _themed_icon("fa6s.file-audio")
 
@@ -285,6 +288,9 @@ def icon_usm_video():
 
 def icon_lip_sync():
     return _themed_icon("fa6s.face-grin-wide")
+
+def icon_anmofs():
+    return _themed_icon("fa6s.ruler-combined")
 
 def icon_asb_acf():
     return _themed_icon("fa6s.wave-square")

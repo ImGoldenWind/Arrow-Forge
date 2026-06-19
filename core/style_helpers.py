@@ -279,6 +279,35 @@ def ss_video_matte() -> str:
     return "background-color: #000000;"
 
 
+def ss_viewport_panel() -> str:
+    """3D viewport surface frame."""
+    bg = P.get("viewport_bg", P.get("bg_dark", "#000000"))
+    border = P.get("input_border", P["border"])
+    return (
+        f"QFrame, QOpenGLWidget {{ background-color: {bg}; "
+        f"border: 1px solid {border}; border-radius: {P.get('input_radius', '6px')}; }}"
+    )
+
+
+def ss_inspector_group() -> str:
+    """Compact model-viewer inspector group."""
+    bg = P.get("panel_card_bg", P["bg_panel"])
+    border = P.get("panel_card_border", P["border"])
+    return (
+        f"QFrame {{ background-color: {bg}; border: 1px solid {border}; "
+        f"border-radius: {P.get('panel_card_radius', '10px')}; }}"
+    )
+
+
+def ss_badge_missing() -> str:
+    """Small warning badge used for unresolved model texture references."""
+    warning = P.get("warning", P["accent_dim"])
+    return (
+        f"QLabel {{ color: {P.get('button_accent_text', P['bg_dark'])}; "
+        f"background-color: {warning}; border-radius: 4px; padding: 1px 5px; }}"
+    )
+
+
 def ss_panel() -> str:
     """Standard editor section panel (rounded card on bg_panel)."""
     bg = P.get("panel_card_bg", P["bg_panel"])

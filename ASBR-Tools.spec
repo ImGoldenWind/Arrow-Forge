@@ -6,6 +6,8 @@ binaries = []
 hiddenimports = []
 tmp_ret = collect_all('qtawesome')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('OpenGL')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(

@@ -11,6 +11,7 @@ from core.style_helpers import ss_dialog
 from core.themes import P
 from core.translations import ui_text
 from core.utils.ui_helpers import _make_styled_btn
+from editors.anmofs_editor import AnmofsEditor
 from editors.asb_acf_editor import AsbAcfEditor
 from editors.arcaderewardparam_editor import ArcadeRewardParamEditor
 from editors.assist_editor import AssistEditor
@@ -37,6 +38,7 @@ from editors.lipsync_editor import LipSyncEditor
 from editors.info_editor import InfoEditor
 from editors.mainmodeparam_editor import MainModeParamEditor
 from editors.messageinfo_editor import MessageInfoEditor
+from editors.model_viewer_editor import ModelViewerEditor
 from editors.netrankparam_editor import NetRankParamEditor
 from editors.netresultparam_editor import NetResultParamEditor
 from editors.onlinemissionparam_editor import OnlineMissionParamEditor
@@ -277,6 +279,8 @@ class EditorPanelMixin:
             self._embed_spm_editor(body, body_layout)
         elif tool_id == "dlg_lip_sync" or "_lip" in file_hint.lower():
             self._embed_lipsync_editor(body, body_layout)
+        elif tool_id == "dlg_anmofs" or "anmofs" in file_hint.lower():
+            self._embed_anmofs_editor(body, body_layout)
         elif file_hint == "0xxx00_x":
             self._embed_projectile_editor(body, body_layout)
         elif file_hint == "0xxx00_constParam":
@@ -341,6 +345,8 @@ class EditorPanelMixin:
             self._embed_trophyparam_editor(body, body_layout)
         elif file_hint in (".xfbin texures", ".xfbin textures"):
             self._embed_texture_editor(body, body_layout)
+        elif tool_id == "dlg_model_viewer" or file_hint == "bod*.xfbin models":
+            self._embed_model_viewer_editor(body, body_layout)
         elif file_hint == ".xfbin sounds":
             self._embed_xfbin_audio_editor(body, body_layout)
         elif file_hint == ".usm":
@@ -402,6 +408,10 @@ class EditorPanelMixin:
 
     def _embed_lipsync_editor(self, body, layout):
         editor = LipSyncEditor(body, self.t, embedded=True)
+        self._add_embedded_editor(editor, layout)
+
+    def _embed_anmofs_editor(self, body, layout):
+        editor = AnmofsEditor(body, self.t, embedded=True)
         self._add_embedded_editor(editor, layout)
 
     def _embed_projectile_editor(self, body, layout):
@@ -514,6 +524,10 @@ class EditorPanelMixin:
 
     def _embed_texture_editor(self, body, layout):
         editor = TextureEditor(body, self.t, embedded=True)
+        self._add_embedded_editor(editor, layout)
+
+    def _embed_model_viewer_editor(self, body, layout):
+        editor = ModelViewerEditor(body, self.t, embedded=True)
         self._add_embedded_editor(editor, layout)
 
     def _embed_xfbin_audio_editor(self, body, layout):
