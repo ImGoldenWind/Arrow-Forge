@@ -1,3 +1,5 @@
+import os
+
 from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QMainWindow, QVBoxLayout, QWidget
@@ -12,6 +14,7 @@ from core.pages.navigation import NavigationMixin
 from core.quiet_unlocks import install as install_quiet_marks
 from core.runtime_paths import app_path
 from core.settings import load_settings, save_settings
+from core.shortcuts import ShortcutManager
 from core.themes import apply_theme, normalize_theme_key
 from core.translations import ui_text
 from core.ui.app_state import AppStateMixin
@@ -91,6 +94,8 @@ class App(
         self._update_progress_dialog = None
         self._update_status_label = None
         self._embedded_editor = None
+        self._workspace_restore_attempted = False
+        self._workspace_restore_in_progress = False
         self._secret_unlocked = False
         self._moveset_avatar_clicks = 0
         self._johhny_overlay = None
@@ -126,6 +131,8 @@ class App(
 
         self._init_white_album_effect()
         self._rebuild_ui()
+        self._shortcut_manager = ShortcutManager(self)
+        QTimer.singleShot(900, self._restore_workspace_on_startup)
         self._init_death13_chaos()
         self._sync_white_album_effect()
         install_quiet_marks(self)
@@ -171,6 +178,41 @@ class App(
         self._unlock_toasts.append(toast)
         toast.destroyed.connect(lambda _=None, t=toast: self._forget_unlock_toast(t))
         toast.show_animated(index=index, bottom_offset=self._unlock_toast_bottom_offset())
+
+    def _restore_workspace_on_startup(self):
+        if getattr(self, "_workspace_restore_attempted", False):
+            return
+        if not self._settings.get("restore_workspace_on_startup", True):
+            self._workspace_restore_attempted = True
+            return
+        if getattr(self, "_embedded_editor", None) is not None or getattr(self, "_loading", False):
+            QTimer.singleShot(300, self._restore_workspace_on_startup)
+            return
+        workspace = self._settings.get("workspace", {})
+        tool_id = workspace.get("active_tool_id", "")
+        if not tool_id:
+            self._workspace_restore_attempted = True
+            return
+        file_path = workspace.get("active_file_path", "")
+        if file_path and not os.path.isfile(file_path):
+            self._settings["workspace"] = {}
+            save_settings(self._settings)
+            self._workspace_restore_attempted = True
+            return
+        lookup = self._tool_lookup()
+        row = lookup.get(tool_id)
+        if not row:
+            self._workspace_restore_attempted = True
+            return
+        _cat_key, file_hint, _icon_fn, tool_label_key, _desc_key = row
+        self._workspace_restore_attempted = True
+        self._workspace_restore_in_progress = True
+        try:
+            self._open_tool_inline(self.t(tool_label_key), file_hint, tool_id)
+            if file_path and self._embedded_editor is not None:
+                self._load_embedded_editor_path(file_path, confirm=False, warn=False)
+        finally:
+            self._workspace_restore_in_progress = False
 
     def _unlock_toast_bottom_offset(self) -> int:
         if not self._settings.get("show_guide", True):

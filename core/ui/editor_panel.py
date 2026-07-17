@@ -1,12 +1,20 @@
 import inspect
+import os
+from unittest.mock import patch
 
 from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMessageBox, QVBoxLayout, QWidget,
+    QApplication, QDialog, QFileDialog, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLineEdit,
+    QMenu, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
+from core.command_palette import Command, CommandPalette
+from core.dialogs.qol_dialogs import ChangeSummaryDialog, CompareCopyDialog
+from core.editor_diff import ChangeItem
 from core.file_drop import install_file_drop
+from core.qol_state import with_recent_file, with_workspace
+from core.settings import save_settings
 from core.style_helpers import ss_dialog
 from core.themes import P
 from core.translations import ui_text
@@ -32,7 +40,9 @@ from editors.dictionaryparam_editor import DictionaryParamEditor
 from editors.dlcinfoparam_editor import DlcInfoParamEditor
 from editors.duelsettingparam_editor import DuelSettingParamEditor
 from editors.effect_editor import EffectEditor
+from editors.font_editor import FontEditor
 from editors.galleryartparam_editor import GalleryArtParamEditor
+from editors.gimmickdmgparam_editor import GimmickDmgParamEditor
 from editors.guidecharparam_editor import GuideCharParamEditor
 from editors.lipsync_editor import LipSyncEditor
 from editors.info_editor import InfoEditor
@@ -62,21 +72,11 @@ from editors.xfbin_audio_editor import XfbinAudioEditor
 
 
 class EditorPanelMixin:
-    def _embedded_editor_is_dirty(self):
-        editor = self._embedded_editor
-        if editor is None:
-            return False
-        for attr in ("_dirty", "_unsaved", "_structural_dirty"):
-            if bool(getattr(editor, attr, False)):
-                return True
-        return False
-
-    def _embedded_editor_save_method(self):
-        editor = self._embedded_editor
-        if editor is None:
+    def _method_without_required_args(self, target, names):
+        if target is None:
             return None
-        for name in ("_save_file", "_on_save", "_do_save", "_save_xfbin", "save_file"):
-            method = getattr(editor, name, None)
+        for name in names:
+            method = getattr(target, name, None)
             if not callable(method):
                 continue
             try:
@@ -95,6 +95,412 @@ class EditorPanelMixin:
             if not required:
                 return method
         return None
+
+    def _embedded_editor_is_dirty(self):
+        editor = self._embedded_editor
+        if editor is None:
+            return False
+        for attr in ("_dirty", "_unsaved", "_structural_dirty"):
+            if bool(getattr(editor, attr, False)):
+                return True
+        return False
+
+    def _embedded_editor_save_method(self):
+        return self._method_without_required_args(
+            self._embedded_editor,
+            ("_save_file", "_on_save", "_do_save", "_save_xfbin", "save_file"),
+        )
+
+    def _save_embedded_editor(self) -> bool:
+        editor = self._embedded_editor
+        method = self._embedded_editor_save_method()
+        if editor is None or method is None:
+            return False
+        if not self._confirm_editor_change_summary(editor):
+            return False
+        previous_skip = getattr(editor, "_host_change_summary_confirmed", False)
+        setattr(editor, "_host_change_summary_confirmed", True)
+        try:
+            method()
+        finally:
+            setattr(editor, "_host_change_summary_confirmed", previous_skip)
+        return True
+
+    def _install_embedded_editor_save_summary(self, editor):
+        for attr in ("_save_btn", "_btn_save", "_save_button", "save_button"):
+            button = getattr(editor, attr, None)
+            if not isinstance(button, QPushButton):
+                continue
+            try:
+                button.clicked.disconnect()
+            except TypeError:
+                pass
+            button.clicked.connect(self._save_embedded_editor)
+
+    def _embedded_editor_open_method(self):
+        return self._method_without_required_args(
+            self._embedded_editor,
+            ("_load_file", "_open_file", "_on_open", "_do_open", "_open_xfbin", "open_file", "load_file"),
+        )
+
+    def _embedded_editor_load_path_method(self):
+        target = self._embedded_editor
+        if target is None:
+            return None
+        for name in ("_load_file", "load_file", "open_file", "_load", "_do_load", "_start_load", "_load_cpk"):
+            method = getattr(target, name, None)
+            if not callable(method):
+                continue
+            try:
+                signature = inspect.signature(method)
+            except (TypeError, ValueError):
+                return method
+            params = list(signature.parameters.values())
+            if any(param.kind == inspect.Parameter.VAR_POSITIONAL for param in params):
+                return method
+            accepts_path = any(
+                param.kind in (
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
+                for param in params
+            )
+            if accepts_path:
+                return method
+        return None
+
+    def _handle_shortcut_action(self, action_id: str) -> bool:
+        if action_id == "app.back":
+            return self._shortcut_back()
+        if action_id == "app.settings":
+            self._open_settings()
+            return True
+        if action_id == "app.tool_search":
+            return self._focus_tool_search()
+        if action_id == "app.command_palette":
+            self._open_command_palette()
+            return True
+        if action_id == "editor.focus_search":
+            return self._focus_editor_search()
+        if action_id == "editor.open":
+            method = self._embedded_editor_open_method()
+            if method is not None:
+                method()
+                return True
+            return False
+        if action_id == "editor.save":
+            return self._save_embedded_editor()
+
+        editor = self._embedded_editor
+        shortcut_action = getattr(editor, "shortcut_action", None)
+        if callable(shortcut_action):
+            return bool(shortcut_action(action_id))
+        return False
+
+    def _build_command_palette_commands(self) -> list[Command]:
+        commands: list[Command] = []
+
+        def add(action_id, label_key, run, keywords=(), enabled=True, shortcut=""):
+            commands.append(Command(
+                id=action_id,
+                label=self.t(label_key),
+                keywords=tuple(keywords),
+                enabled=bool(enabled),
+                run=run,
+                shortcut=shortcut,
+            ))
+
+        add("app.settings", "shortcut_action_app_settings", self._open_settings, ("settings",))
+        add("app.tool_search", "shortcut_action_app_tool_search", self._focus_tool_search, ("search", "tools"))
+        add("app.back", "shortcut_action_app_back", self._shortcut_back, ("close", "back"))
+        add("editor.open", "shortcut_action_editor_open", lambda: self._handle_shortcut_action("editor.open"), ("file",), self._embedded_editor is not None)
+        add("editor.save", "shortcut_action_editor_save", lambda: self._handle_shortcut_action("editor.save"), ("file",), self._embedded_editor is not None)
+        add("editor.compare", "qol_compare_from_file", self._open_editor_compare, ("diff", "copy"), self._editor_supports_compare())
+        for action_id, label_key in (
+            ("editor.undo", "shortcut_action_editor_undo"),
+            ("editor.redo", "shortcut_action_editor_redo"),
+            ("editor.new", "shortcut_action_editor_new"),
+            ("editor.duplicate", "shortcut_action_editor_duplicate"),
+            ("editor.delete", "shortcut_action_editor_delete"),
+        ):
+            add(action_id, label_key, lambda aid=action_id: self._handle_shortcut_action(aid), ("editor",), self._embedded_editor is not None)
+
+        lookup = self._tool_lookup()
+        for tool_id, (cat_key, file_hint, _icon_fn, tool_label_key, desc_key) in lookup.items():
+            commands.append(Command(
+                id=f"tool.{tool_id}",
+                label=self.t(tool_label_key),
+                keywords=(self.t(desc_key), file_hint, self.t(self._category_i18n_key(cat_key))),
+                enabled=True,
+                run=lambda name=self.t(tool_label_key), hint=file_hint, tid=tool_id: self._open_tool_inline(name, hint, tid),
+            ))
+
+        current_tool_id = getattr(self, "_current_tool_id", None)
+        for entry in self._settings.get("recent_files_by_tool", {}).get(current_tool_id, []):
+            path = entry.get("path", "")
+            commands.append(Command(
+                id=f"recent.{path}",
+                label=self.t("qol_recent_file_command", name=entry.get("name", path)),
+                keywords=(path, "recent"),
+                enabled=bool(path),
+                run=lambda p=path: self._open_recent_editor_file(p),
+            ))
+
+        return commands
+
+    def _open_command_palette(self):
+        dialog = CommandPalette(
+            self,
+            self.t("command_palette_title"),
+            self.t("command_palette_placeholder"),
+            self._build_command_palette_commands(),
+        )
+        dialog.exec()
+
+    def _shortcut_back(self) -> bool:
+        if getattr(self, "_settings_win", None) is not None:
+            self._close_settings_inline()
+            return True
+        if getattr(self, "_tool_frame", None) is not None:
+            self._close_tool_inline()
+            return True
+        entry = getattr(self, "_tool_search_entry", None)
+        if getattr(self, "_tool_search_query", "") and entry is not None:
+            entry.clear()
+            return True
+        return False
+
+    def _focus_tool_search(self) -> bool:
+        entry = getattr(self, "_tool_search_entry", None)
+        if entry is None:
+            return False
+        try:
+            entry.setFocus(Qt.FocusReason.ShortcutFocusReason)
+            entry.selectAll()
+            return True
+        except RuntimeError:
+            return False
+
+    def _focus_editor_search(self) -> bool:
+        editor = self._embedded_editor
+        if editor is not None:
+            for name in ("_search_entry", "_search", "_search_box", "_filter_edit"):
+                widget = getattr(editor, name, None)
+                if isinstance(widget, QLineEdit):
+                    widget.setFocus(Qt.FocusReason.ShortcutFocusReason)
+                    widget.selectAll()
+                    return True
+            focus_widget = QApplication.focusWidget()
+            if focus_widget is not None and editor.isAncestorOf(focus_widget):
+                for widget in editor.findChildren(QLineEdit):
+                    placeholder = widget.placeholderText().lower()
+                    if "search" in placeholder or "поиск" in placeholder:
+                        widget.setFocus(Qt.FocusReason.ShortcutFocusReason)
+                        widget.selectAll()
+                return True
+        return self._focus_tool_search()
+
+    def _on_embedded_editor_file_loaded(self, editor, path: str):
+        if editor is not self._embedded_editor:
+            return
+        tool_id = getattr(self, "_current_tool_id", None)
+        changed = False
+        changed = with_recent_file(self._settings, tool_id, path) or changed
+        changed = with_workspace(self._settings, tool_id, path) or changed
+        if changed:
+            save_settings(self._settings)
+        self._refresh_editor_toolbar_actions()
+
+    def _open_recent_editor_file(self, path: str):
+        if not os.path.isfile(path):
+            QMessageBox.warning(self, self.t("qol_recent_missing_title"), self.t("qol_recent_missing_message", path=path))
+            return
+        self._load_embedded_editor_path(path, confirm=True, warn=True)
+
+    def _load_embedded_editor_path(self, path: str, *, confirm: bool = True, warn: bool = True) -> bool:
+        if not path or self._embedded_editor is None:
+            return False
+        if confirm and not self._confirm_close_embedded_editor():
+            return False
+        if not os.path.isfile(path):
+            if warn:
+                QMessageBox.warning(self, self.t("qol_recent_missing_title"), self.t("qol_recent_missing_message", path=path))
+            return False
+        method = self._embedded_editor_load_path_method()
+        if method is not None:
+            method(path)
+        else:
+            method = self._embedded_editor_open_method()
+            if method is None:
+                if warn:
+                    QMessageBox.warning(self, self.t("qol_recent_unavailable_title"), self.t("qol_recent_unavailable_message"))
+                return False
+
+            def _selected_file(*_args, **_kwargs):
+                return path, ""
+
+            def _selected_files(*_args, **_kwargs):
+                return [path], ""
+
+            with (
+                patch.object(QFileDialog, "getOpenFileName", _selected_file),
+                patch.object(QFileDialog, "getOpenFileNames", _selected_files),
+            ):
+                method()
+
+        editor = self._embedded_editor
+        if editor is not None:
+            self._on_embedded_editor_file_loaded(editor, path)
+        self._refresh_editor_toolbar_actions()
+        return True
+
+    def _restore_workspace_file(self):
+        workspace = self._settings.get("workspace", {})
+        path = workspace.get("active_file_path", "")
+        if not path:
+            return
+        if not os.path.isfile(path):
+            QMessageBox.warning(self, self.t("qol_restore_missing_title"), self.t("qol_restore_missing_message", path=path))
+            self._settings["workspace"] = {}
+            save_settings(self._settings)
+            self._refresh_editor_toolbar_actions()
+            return
+        self._load_embedded_editor_path(path, confirm=True, warn=True)
+
+    def _forget_workspace_file(self):
+        self._settings["workspace"] = {}
+        save_settings(self._settings)
+        self._refresh_editor_toolbar_actions()
+
+    def _editor_supports_compare(self) -> bool:
+        if not self._settings.get("experimental_generic_compare_copy", False):
+            return False
+        return self._editor_supports_detailed_compare() or self._editor_supports_generic_compare()
+
+    def _editor_supports_detailed_compare(self) -> bool:
+        editor = self._embedded_editor
+        return all(callable(getattr(editor, name, None)) for name in (
+            "load_comparison_state",
+            "get_current_state",
+            "describe_state_diff",
+            "copy_from_state",
+        ))
+
+    def _editor_supports_generic_compare(self) -> bool:
+        return self._embedded_editor_load_path_method() is not None or self._embedded_editor_open_method() is not None
+
+    def _embedded_editor_current_path(self) -> str:
+        editor = self._embedded_editor
+        if editor is None:
+            return ""
+        for attr in ("_filepath", "_xfbin_path", "_path"):
+            path = getattr(editor, attr, None)
+            if path:
+                return str(path)
+        doc = getattr(editor, "_doc", None)
+        path = getattr(doc, "path", None)
+        return str(path) if path else ""
+
+    def _describe_generic_file_diff(self, current_path: str, external_path: str):
+        before_label = self.t("qol_compare_no_loaded_file")
+        if current_path and os.path.isfile(current_path):
+            before_label = os.path.basename(current_path)
+            with open(current_path, "rb") as current_file, open(external_path, "rb") as external_file:
+                if current_file.read() == external_file.read() and not self._embedded_editor_is_dirty():
+                    return []
+        return [ChangeItem(
+            "__whole_file__",
+            "changed",
+            self.t("qol_compare_whole_file"),
+            before_label,
+            os.path.basename(external_path),
+            True,
+        )]
+
+    def _load_editor_compare_file(self, path: str):
+        if not self._load_embedded_editor_path(path, confirm=False, warn=False):
+            raise RuntimeError(self.t("qol_recent_unavailable_message"))
+
+    def _open_editor_compare(self):
+        editor = self._embedded_editor
+        if editor is None or not self._editor_supports_compare():
+            return
+        detailed_compare = self._editor_supports_detailed_compare()
+        current_path = self._embedded_editor_current_path()
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            self.t("qol_compare_open_title"),
+            current_path,
+            self.t("qol_compare_file_filter"),
+        )
+        if not path:
+            return
+        try:
+            if detailed_compare:
+                current = editor.get_current_state()
+                external = editor.load_comparison_state(path)
+                changes = editor.describe_state_diff(current, external)
+            else:
+                external = path
+                changes = self._describe_generic_file_diff(current_path, path)
+        except Exception as exc:
+            QMessageBox.critical(self, self.t("dlg_title_error"), self.t("qol_compare_error", error=exc))
+            return
+        if not changes:
+            QMessageBox.information(self, self.t("qol_compare_title"), self.t("qol_compare_no_changes"))
+            return
+        dialog = CompareCopyDialog(self, self.t, changes)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            if detailed_compare:
+                editor.copy_from_state(external, dialog.selected_item_ids)
+            elif "__whole_file__" in dialog.selected_item_ids:
+                if not self._confirm_close_embedded_editor():
+                    return
+                self._load_editor_compare_file(path)
+        except Exception as exc:
+            QMessageBox.critical(self, self.t("dlg_title_error"), self.t("qol_compare_copy_error", error=exc))
+            return
+
+    def _confirm_editor_change_summary(self, editor) -> bool:
+        if getattr(editor, "_host_change_summary_confirmed", False):
+            return True
+        tool_id = getattr(self, "_current_tool_id", "")
+        disabled = self._settings.get("change_summary_disabled_by_tool", {})
+        if tool_id and disabled.get(tool_id):
+            return True
+        get_summary = getattr(editor, "get_change_summary", None)
+        if callable(get_summary):
+            changes = get_summary()
+        else:
+            changes = self._generic_editor_change_summary(editor)
+        if not changes:
+            return True
+        dialog = ChangeSummaryDialog(self, self.t, changes)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        if dialog.skip_future and tool_id:
+            disabled = dict(disabled)
+            disabled[tool_id] = True
+            self._settings["change_summary_disabled_by_tool"] = disabled
+            save_settings(self._settings)
+        return True
+
+    def _generic_editor_change_summary(self, editor):
+        if editor is not self._embedded_editor or not self._embedded_editor_is_dirty():
+            return []
+        current_path = self._embedded_editor_current_path()
+        before_label = os.path.basename(current_path) if current_path else self.t("qol_compare_no_loaded_file")
+        return [ChangeItem(
+            "__whole_file__",
+            "changed",
+            self.t("qol_compare_whole_file"),
+            before_label,
+            self.t("qol_diff_modified"),
+            False,
+        )]
 
     def _confirm_close_embedded_editor(self):
         if not self._embedded_editor_is_dirty():
@@ -118,8 +524,7 @@ class EditorPanelMixin:
         if clicked == discard_btn:
             return True
         if clicked == save_btn:
-            save_method = self._embedded_editor_save_method()
-            if save_method is None:
+            if self._embedded_editor_save_method() is None:
                 QMessageBox.warning(
                     self,
                     self.t("unsaved_changes_title"),
@@ -127,7 +532,7 @@ class EditorPanelMixin:
                 )
                 return False
             try:
-                save_method()
+                self._save_embedded_editor()
             except Exception as exc:
                 QMessageBox.critical(
                     self,
@@ -151,8 +556,11 @@ class EditorPanelMixin:
             self._tool_frame.deleteLater()
             self._tool_frame = None
         self._tool_bar = None
+        self._tool_bar_layout = None
+        self._tool_toolbar_action_widgets = []
         self._tool_body = None
         self._embedded_editor = None
+        self._current_tool_id = None
 
     def _stop_tool_open_animation(self):
         anim = getattr(self, "_tool_open_anim", None)
@@ -220,6 +628,7 @@ class EditorPanelMixin:
         if not self._confirm_close_embedded_editor():
             return
         self._delete_tool_frame()
+        self._current_tool_id = tool_id
 
         self._hide_char_panel()
 
@@ -236,6 +645,8 @@ class EditorPanelMixin:
         self._tool_bar = bar
         bar_layout = QHBoxLayout(bar)
         bar_layout.setContentsMargins(12, 7, 12, 7)
+        self._tool_bar_layout = bar_layout
+        self._tool_toolbar_action_widgets = []
 
         back_btn = _make_styled_btn(
             "\u2190 " + self.t("back"), P["mid"], P["bg_card_hov"], P["secondary"],
@@ -327,6 +738,8 @@ class EditorPanelMixin:
             self._embed_stageinfo_editor(body, body_layout)
         elif file_hint == "Xcmnsfprm.bin":
             self._embed_stagemotion_editor(body, body_layout)
+        elif file_hint == "gimmickDmgParam.bin.xfbin":
+            self._embed_gimmickdmgparam_editor(body, body_layout)
         elif file_hint == "CustomCardParam.xfbin":
             self._embed_customcardparam_editor(body, body_layout)
         elif file_hint == "CharViewerParam.xfbin":
@@ -345,6 +758,8 @@ class EditorPanelMixin:
             self._embed_trophyparam_editor(body, body_layout)
         elif file_hint in (".xfbin texures", ".xfbin textures"):
             self._embed_texture_editor(body, body_layout)
+        elif tool_id == "dlg_font" or file_hint == "font/*.xfbin":
+            self._embed_font_editor(body, body_layout)
         elif tool_id == "dlg_model_viewer" or file_hint == "bod*.xfbin models":
             self._embed_model_viewer_editor(body, body_layout)
         elif file_hint == ".xfbin sounds":
@@ -367,8 +782,75 @@ class EditorPanelMixin:
             self._embed_placeholder(body, body_layout, name, file_hint)
 
         self._show_frame(tool_frame, animate=False)
-        QTimer.singleShot(0, self._start_tool_open_fade)
+        self._refresh_editor_toolbar_actions()
+        if not getattr(self, "_workspace_restore_in_progress", False):
+            QTimer.singleShot(0, self._start_tool_open_fade)
         self._mark_tool_used(tool_id)
+        if tool_id:
+            workspace = self._settings.get("workspace", {})
+            should_update_workspace = (
+                workspace.get("active_tool_id") != tool_id
+                or not workspace.get("active_file_path")
+            )
+            if should_update_workspace and with_workspace(self._settings, tool_id, None):
+                save_settings(self._settings)
+
+    def _refresh_editor_toolbar_actions(self):
+        layout = getattr(self, "_tool_bar_layout", None)
+        if layout is None:
+            return
+        for widget in getattr(self, "_tool_toolbar_action_widgets", []):
+            try:
+                layout.removeWidget(widget)
+                widget.deleteLater()
+            except RuntimeError:
+                pass
+        self._tool_toolbar_action_widgets = []
+        if self._embedded_editor is None:
+            return
+
+        def add_widget(widget):
+            self._tool_toolbar_action_widgets.append(widget)
+            layout.addWidget(widget)
+
+        tool_id = getattr(self, "_current_tool_id", None)
+        workspace = self._settings.get("workspace", {})
+        restore_path = workspace.get("active_file_path", "") if workspace.get("active_tool_id") == tool_id else ""
+        current_path = self._embedded_editor_current_path()
+        if restore_path and os.path.normcase(restore_path) != os.path.normcase(current_path):
+            restore_btn = _make_styled_btn(
+                self.t("qol_restore_last_file"), P["mid"], P["bg_card_hov"], P["accent"],
+                QFont("Segoe UI", 11), width=150, height=30)
+            restore_btn.clicked.connect(self._restore_workspace_file)
+            add_widget(restore_btn)
+
+            forget_btn = _make_styled_btn(
+                self.t("qol_forget"), P["mid"], P["bg_card_hov"], P["secondary"],
+                QFont("Segoe UI", 11), width=90, height=30)
+            forget_btn.clicked.connect(self._forget_workspace_file)
+            add_widget(forget_btn)
+
+        recent_entries = self._settings.get("recent_files_by_tool", {}).get(tool_id, [])
+        if recent_entries:
+            recent_menu = QMenu(self)
+            for entry in recent_entries:
+                path = entry.get("path", "")
+                action = recent_menu.addAction(entry.get("name") or path)
+                action.setToolTip(path)
+                action.setEnabled(bool(path and os.path.isfile(path) and self._embedded_editor_load_path_method()))
+                action.triggered.connect(lambda _checked=False, p=path: self._open_recent_editor_file(p))
+            recent_btn = _make_styled_btn(
+                self.t("qol_recent_files"), P["mid"], P["bg_card_hov"], P["secondary"],
+                QFont("Segoe UI", 11), width=110, height=30)
+            recent_btn.setMenu(recent_menu)
+            add_widget(recent_btn)
+
+        if self._editor_supports_compare():
+            compare_btn = _make_styled_btn(
+                self.t("qol_compare_from_file"), P["mid"], P["bg_card_hov"], P["secondary"],
+                QFont("Segoe UI", 11), width=140, height=30)
+            compare_btn.clicked.connect(self._open_editor_compare)
+            add_widget(compare_btn)
 
     def _embed_editor(self, body, layout):
         editor = CharacterStatsEditor(body, self.t, embedded=True)
@@ -490,6 +972,10 @@ class EditorPanelMixin:
         editor = StageMotionEditor(body, self.t, embedded=True)
         self._add_embedded_editor(editor, layout)
 
+    def _embed_gimmickdmgparam_editor(self, body, layout):
+        editor = GimmickDmgParamEditor(body, self.t, embedded=True)
+        self._add_embedded_editor(editor, layout)
+
     def _embed_customcardparam_editor(self, body, layout):
         editor = CustomCardParamEditor(body, self.t, embedded=True)
         self._add_embedded_editor(editor, layout)
@@ -524,6 +1010,10 @@ class EditorPanelMixin:
 
     def _embed_texture_editor(self, body, layout):
         editor = TextureEditor(body, self.t, embedded=True)
+        self._add_embedded_editor(editor, layout)
+
+    def _embed_font_editor(self, body, layout):
+        editor = FontEditor(body, self.t, embedded=True)
         self._add_embedded_editor(editor, layout)
 
     def _embed_model_viewer_editor(self, body, layout):
@@ -564,8 +1054,10 @@ class EditorPanelMixin:
 
     def _add_embedded_editor(self, editor, layout):
         self._embedded_editor = editor
+        editor._tool_id = getattr(self, "_current_tool_id", None)
         install_file_drop(editor)
         layout.addWidget(editor, 1)
+        self._install_embedded_editor_save_summary(editor)
 
     def _embed_placeholder(self, body, layout, name, file_hint):
         lbl = QLabel(ui_text("ui_ASBR-Tools_value_value", p0=name, p1=file_hint))

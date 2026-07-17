@@ -18,6 +18,9 @@ from core.style_helpers import (
     ss_transparent,
 )
 from core.editor_file_state import set_file_label, set_file_label_empty
+from core.editor_diff import ChangeItem
+from core.editor_host import confirm_editor_change_summary, notify_editor_file_loaded
+from core.undo_redo import EditorHistory
 from core.skeleton import SkeletonListRow, SkeletonBar
 from parsers.xfbin_parser import parse_xfbin, save_xfbin, CHUNK_SIZE
 from core.translations import ui_text
@@ -47,9 +50,13 @@ class CharacterStatsEditor(QWidget):
         self._characters = []
         self._current_char = None
         self._fields = {}
+        self._field_edit_order = []
         self._char_buttons = []
         self._filepath = None
+        self._saved_characters = []
         self._dirty = False
+        self._history = EditorHistory()
+        self._restoring_history = False
 
         self._load_done_signal.connect(self._on_load_done)
         self._load_error_signal.connect(self._on_load_error)
@@ -73,7 +80,7 @@ class CharacterStatsEditor(QWidget):
         open_btn.setFixedHeight(30)
         open_btn.setFont(QFont("Segoe UI", 10))
         open_btn.setStyleSheet(ss_btn(accent=True))
-        open_btn.clicked.connect(self._load_file)
+        open_btn.clicked.connect(lambda _checked=False: self._load_file())
         top_layout.addWidget(open_btn)
 
         self._save_btn = QPushButton(self.t("btn_save_file"))
@@ -220,14 +227,17 @@ class CharacterStatsEditor(QWidget):
 
     # File I/O
 
-    def _load_file(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, self.t("file_open_char_stats"), game_files_dialog_dir(target_patterns="duelPlayerParam.xfbin"),
-            "XFBIN files (*.xfbin);;All files (*.*)")
-        if not path:
-            return
+    def _load_file(self, path=None):
+        if path is not None and not isinstance(path, (str, os.PathLike)):
+            path = None
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(
+                self, self.t("file_open_char_stats"), game_files_dialog_dir(target_patterns="duelPlayerParam.xfbin"),
+                "XFBIN files (*.xfbin);;All files (*.*)")
+            if not path:
+                return
 
-        create_backup_on_open(path)
+        create_backup_on_open(path, tool_id=getattr(self, "_tool_id", None))
         set_file_label_empty(self._file_label, self.t("loading"))
         self._show_list_skeleton()
         self._show_editor_skeleton()
@@ -271,6 +281,7 @@ class CharacterStatsEditor(QWidget):
     def _show_editor_skeleton(self):
         self._clear_editor()
         self._fields = {}
+        self._field_edit_order = []
 
         hdr = QFrame()
         hdr.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
@@ -314,7 +325,9 @@ class CharacterStatsEditor(QWidget):
         self._editor_layout.addWidget(self._placeholder)
         self._editor_layout.addStretch()
         self._filepath = None
+        self._saved_characters = []
         self._dirty = False
+        self._history.clear()
         set_file_label_empty(self._file_label, self.t("no_file_loaded"))
         QMessageBox.critical(self, self.t("dlg_title_error"),
                              self.t("msg_load_error", error=msg))
@@ -323,8 +336,11 @@ class CharacterStatsEditor(QWidget):
         self._xfbin_data = xfbin_data
         self._characters = characters
         self._filepath = path
+        self._saved_characters = copy.deepcopy(characters)
         self._dirty = False
+        self._history.clear()
         set_file_label(self._file_label, path)
+        notify_editor_file_loaded(self, path)
 
         self._save_btn.setEnabled(True)
         self._add_btn.setEnabled(True)
@@ -338,12 +354,15 @@ class CharacterStatsEditor(QWidget):
         self._apply_fields()
         if not self._filepath:
             return
+        if not confirm_editor_change_summary(self):
+            return
         try:
             path = self._filepath
             save_xfbin(path, self._xfbin_data, self._characters)
             labels = {char['char_id']: char['name'] for char in self._characters}
             with open(self._labels_path(path), 'w', encoding='utf-8') as f:
                 json.dump(labels, f, ensure_ascii=False, indent=2)
+            self._saved_characters = copy.deepcopy(self._characters)
             self._dirty = False
             set_file_label(self._file_label, path)
             QMessageBox.information(self, self.t("dlg_title_success"),
@@ -425,7 +444,14 @@ class CharacterStatsEditor(QWidget):
         if not self._current_char or not self._fields:
             return
         char = self._current_char
-        for key, entry in self._fields.items():
+        keys = list(self._field_edit_order)
+        keys.extend(key for key in self._fields if key not in self._field_edit_order)
+        for key in keys:
+            entry = self._fields.get(key)
+            if entry is None:
+                continue
+            state_before = self.get_undo_state()
+            char_before = copy.deepcopy(char)
             try:
                 val = entry.text()
                 parts = key.split('.')
@@ -458,6 +484,13 @@ class CharacterStatsEditor(QWidget):
                     char[key] = int(val)
             except (ValueError, IndexError):
                 pass
+            if (
+                char != char_before
+                and not self._restoring_history
+                and state_before is not None
+            ):
+                self._history.push(state_before)
+        self._field_edit_order = []
         # Update sidebar button labels to reflect name/id changes
         for btn, c in self._char_buttons:
             if c is char:
@@ -529,6 +562,7 @@ class CharacterStatsEditor(QWidget):
     def _build_editor(self, char):
         self._clear_editor()
         self._fields = {}
+        self._field_edit_order = []
         self._editor_layout.setContentsMargins(10, 8, 10, 0)
         self._editor_layout.setSpacing(12)
 
@@ -732,8 +766,8 @@ class CharacterStatsEditor(QWidget):
         self._editor_layout.addWidget(sf)
 
         # Bottom padding
-        for field in self._fields.values():
-            field.textEdited.connect(self._mark_dirty)
+        for key, field in self._fields.items():
+            field.textEdited.connect(lambda _text, k=key: self._on_field_text_edited(k))
 
         spacer = QWidget()
         spacer.setFixedHeight(20)
@@ -747,6 +781,195 @@ class CharacterStatsEditor(QWidget):
         self._dirty = True
         if self._filepath:
             set_file_label(self._file_label, self._filepath, dirty=True)
+
+    def _on_field_text_edited(self, key):
+        if key in self._field_edit_order:
+            self._field_edit_order.remove(key)
+        self._field_edit_order.append(key)
+        self._mark_dirty()
+
+    def _push_undo_state(self):
+        if self._restoring_history:
+            return
+        state = self.get_undo_state()
+        if state is not None:
+            self._history.push(state)
+
+    def get_undo_state(self):
+        if self._xfbin_data is None:
+            return None
+        current_index = -1
+        if self._current_char in self._characters:
+            current_index = self._characters.index(self._current_char)
+        return {
+            "xfbin_data": bytearray(self._xfbin_data),
+            "characters": copy.deepcopy(self._characters),
+            "current_index": current_index,
+        }
+
+    def restore_undo_state(self, state):
+        if not state:
+            return False
+        self._restoring_history = True
+        try:
+            self._xfbin_data = bytearray(state["xfbin_data"])
+            self._characters = copy.deepcopy(state["characters"])
+            self._fields = {}
+            self._field_edit_order = []
+            self._current_char = None
+            self._populate_list()
+            index = int(state.get("current_index", -1))
+            if 0 <= index < len(self._characters):
+                self._select_char(self._characters[index])
+            self._mark_dirty()
+        finally:
+            self._restoring_history = False
+        return True
+
+    def apply_pending_edits(self):
+        self._apply_fields()
+
+    def get_saved_state(self):
+        return copy.deepcopy(self._saved_characters)
+
+    def get_current_state(self):
+        self.apply_pending_edits()
+        return copy.deepcopy(self._characters)
+
+    def get_change_summary(self):
+        return self.describe_state_diff(self.get_saved_state(), self.get_current_state())
+
+    def load_comparison_state(self, path):
+        _data, characters = parse_xfbin(path)
+        return copy.deepcopy(characters)
+
+    def describe_state_diff(self, before, after):
+        before_map = {char.get("char_id", f"#{idx}"): char for idx, char in enumerate(before or [])}
+        after_map = {char.get("char_id", f"#{idx}"): char for idx, char in enumerate(after or [])}
+        changes = []
+        for char_id, after_char in after_map.items():
+            label = self._diff_char_label(after_char)
+            before_char = before_map.get(char_id)
+            if before_char is None:
+                changes.append(ChangeItem(f"char:{char_id}", "added", self.t("qol_diff_added", item=label), "", "", True))
+                continue
+            before_flat = self._flatten_char(before_char)
+            after_flat = self._flatten_char(after_char)
+            for key in sorted(after_flat):
+                if key == "chunk_offset":
+                    continue
+                if before_flat.get(key) != after_flat.get(key):
+                    changes.append(ChangeItem(
+                        f"field:{char_id}:{key}",
+                        "changed",
+                        f"{label} / {self._diff_field_label(key)}",
+                        str(before_flat.get(key, "")),
+                        str(after_flat.get(key, "")),
+                        True,
+                    ))
+        for char_id, before_char in before_map.items():
+            if char_id not in after_map:
+                changes.append(ChangeItem(
+                    f"char:{char_id}",
+                    "removed",
+                    self.t("qol_diff_removed", item=self._diff_char_label(before_char)),
+                    "",
+                    "",
+                    False,
+                ))
+        return changes
+
+    def copy_from_state(self, external_state, item_ids):
+        if not item_ids:
+            return
+        self.apply_pending_edits()
+        self._push_undo_state()
+        external_map = {char.get("char_id", f"#{idx}"): char for idx, char in enumerate(external_state or [])}
+        current_map = {char.get("char_id", f"#{idx}"): char for idx, char in enumerate(self._characters)}
+        selected = None
+        for item_id in item_ids:
+            parts = item_id.split(":", 2)
+            if len(parts) < 2:
+                continue
+            kind, char_id = parts[0], parts[1]
+            source = external_map.get(char_id)
+            if source is None:
+                continue
+            if kind == "char" and char_id not in current_map:
+                new_char = copy.deepcopy(source)
+                new_char["chunk_offset"] = self._append_chunk(source_char=self._characters[0] if self._characters else None)
+                self._characters.append(new_char)
+                current_map[char_id] = new_char
+                selected = new_char
+            elif kind == "field" and len(parts) == 3:
+                target = current_map.get(char_id)
+                if target is None:
+                    continue
+                value = self._get_path_value(source, parts[2])
+                self._set_path_value(target, parts[2], copy.deepcopy(value))
+                selected = target
+        self._populate_list()
+        if selected in self._characters:
+            self._select_char(selected)
+        self._mark_dirty()
+
+    def _diff_char_label(self, char):
+        name = char.get("name") or char.get("char_id") or "?"
+        char_id = char.get("char_id") or "?"
+        return f"{name} ({char_id})"
+
+    def _diff_field_label(self, key):
+        return key.replace(".", " / ").replace("_", " ")
+
+    def _flatten_char(self, value, prefix=""):
+        result = {}
+        if isinstance(value, dict):
+            for key, child in value.items():
+                child_key = f"{prefix}.{key}" if prefix else str(key)
+                result.update(self._flatten_char(child, child_key))
+        elif isinstance(value, list):
+            for idx, child in enumerate(value):
+                child_key = f"{prefix}.{idx}" if prefix else str(idx)
+                result.update(self._flatten_char(child, child_key))
+        else:
+            result[prefix] = value
+        return result
+
+    def _get_path_value(self, root, path):
+        current = root
+        for part in path.split("."):
+            current = current[int(part)] if isinstance(current, list) else current[part]
+        return current
+
+    def _set_path_value(self, root, path, value):
+        parts = path.split(".")
+        current = root
+        for part in parts[:-1]:
+            current = current[int(part)] if isinstance(current, list) else current[part]
+        last = parts[-1]
+        if isinstance(current, list):
+            current[int(last)] = value
+        else:
+            current[last] = value
+
+    def shortcut_action(self, action_id: str) -> bool:
+        if action_id == "editor.undo":
+            self.apply_pending_edits()
+            state = self._history.undo(self.get_undo_state())
+            return self.restore_undo_state(state)
+        if action_id == "editor.redo":
+            state = self._history.redo(self.get_undo_state())
+            return self.restore_undo_state(state)
+        if action_id == "editor.new":
+            self._add_new_char()
+            return True
+        if action_id == "editor.duplicate":
+            self._duplicate_char()
+            return True
+        if action_id == "editor.delete":
+            self._delete_char()
+            return True
+        return False
 
     # Add / Duplicate / Delete
 
@@ -814,6 +1037,7 @@ class CharacterStatsEditor(QWidget):
         if not self._xfbin_data:
             return
         self._apply_fields()
+        self._push_undo_state()
         new_offset = self._append_chunk()
         char = self._make_default_char(new_offset)
         self._characters.append(char)
@@ -825,6 +1049,7 @@ class CharacterStatsEditor(QWidget):
         if not self._xfbin_data or not self._current_char:
             return
         self._apply_fields()
+        self._push_undo_state()
         src = self._current_char
         new_offset = self._append_chunk(source_char=src)
         char = copy.deepcopy(src)
@@ -847,7 +1072,9 @@ class CharacterStatsEditor(QWidget):
                                       self.t("msg_confirm_delete_item", name=name))
         if result != QMessageBox.StandardButton.Yes:
             return
+        self._push_undo_state()
         self._fields = {}
+        self._field_edit_order = []
         self._characters.remove(self._current_char)
         self._current_char = None
         self._populate_list()

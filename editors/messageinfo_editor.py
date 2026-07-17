@@ -2,10 +2,11 @@
 
 import os
 import copy
+import re
 import threading
 
 from PyQt6.QtWidgets import (
-    QWidget, QFrame, QLabel, QPushButton, QLineEdit,
+    QWidget, QFrame, QLabel, QPushButton, QLineEdit, QComboBox,
     QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QMessageBox,
     QScrollArea, QTextEdit, QSizePolicy, QTableView, QAbstractItemView,
     QHeaderView, QProgressBar,
@@ -21,6 +22,11 @@ from core.style_helpers import (
 )
 from core.editor_file_state import set_file_label, set_file_label_empty
 from core.skeleton import SkeletonBar, SkeletonListRow
+from core.messageinfo_id_map import MessageInfoIdMap
+from core.messageinfo_memory_scanner import (
+    list_processes,
+    scan_process_strings,
+)
 from parsers.messageinfo_parser import (
     parse_messageinfo_xfbin, save_messageinfo_xfbin,
 )
@@ -107,6 +113,7 @@ _CHAR_NAMES: dict[int, str] = {
 
 
 _ALL_STRINGS = "__all_strings__"
+_TEXT_REF_RE = re.compile(r"<text\s+([A-Za-z0-9_./:-]+)\b", re.IGNORECASE)
 
 
 def _char_label(char_id: int) -> str:
@@ -127,6 +134,26 @@ def _clear_layout(layout):
             item.widget().deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
+
+
+def _message_text_id(message: str) -> str:
+    match = _TEXT_REF_RE.search(message or "")
+    return match.group(1) if match else ""
+
+
+def _entry_string_id(entry: dict, id_map: MessageInfoIdMap) -> str:
+    direct = _message_text_id(entry.get("message", ""))
+    if direct:
+        return direct
+    values = id_map.resolve(int(entry.get("crc32_id", 0)))
+    return values[0] if values else ""
+
+
+def _entry_string_display(entry: dict, id_map: MessageInfoIdMap) -> str:
+    direct = _message_text_id(entry.get("message", ""))
+    if direct:
+        return direct
+    return id_map.display(int(entry.get("crc32_id", 0)))
 
 
 class _FocusLineEdit(QLineEdit):
@@ -153,6 +180,7 @@ class _FocusTextEdit(QTextEdit):
 
 class _MessageInfoTableModel(QAbstractTableModel):
     _HEADERS = (
+        "ui_messageinfo_string_id",
         "ui_messageinfo_crc32_id",
         "ui_assist_char_id",
         "ui_messageinfo_cue_id",
@@ -161,10 +189,11 @@ class _MessageInfoTableModel(QAbstractTableModel):
         "ui_messageinfo_message",
     )
 
-    def __init__(self, entries: list[dict], indices: list[int], parent=None):
+    def __init__(self, entries: list[dict], indices: list[int], id_map: MessageInfoIdMap, parent=None):
         super().__init__(parent)
         self._entries = entries
         self._indices = indices
+        self._id_map = id_map
 
     def rowCount(self, parent=QModelIndex()) -> int:
         return 0 if parent.isValid() else len(self._indices)
@@ -197,18 +226,27 @@ class _MessageInfoTableModel(QAbstractTableModel):
 
         col = index.column()
         if col == 0:
-            return f"{entry['crc32_id']:08X}"
+            return _entry_string_display(entry, self._id_map)
         if col == 1:
-            return str(entry["char_id"])
+            return f"{entry['crc32_id']:08X}"
         if col == 2:
-            return str(entry["cue_id"])
+            return str(entry["char_id"])
         if col == 3:
-            return ui_text("ui_messageinfo_reference") if entry["is_ref"] == 1 else ui_text("ui_mainmodeparam_normal")
+            return str(entry["cue_id"])
         if col == 4:
-            return f"{entry['ref_crc32']:08X}" if entry.get("ref_crc32") else ""
+            return ui_text("ui_messageinfo_reference") if entry["is_ref"] == 1 else ui_text("ui_mainmodeparam_normal")
         if col == 5:
+            return f"{entry['ref_crc32']:08X}" if entry.get("ref_crc32") else ""
+        if col == 6:
             return entry["message"].replace("\n", " ")
         return None
+
+    def refresh_all(self):
+        if not self._indices:
+            return
+        left = self.index(0, 0)
+        right = self.index(len(self._indices) - 1, self.columnCount() - 1)
+        self.dataChanged.emit(left, right, [Qt.ItemDataRole.DisplayRole])
 
     def entry_index(self, row: int) -> int | None:
         if 0 <= row < len(self._indices):
@@ -250,7 +288,12 @@ class _MessageInfoFilterProxy(QSortFilterProxyModel):
             return True
         entry = model._entries[entry_idx]
         type_text = ui_text("ui_messageinfo_reference") if entry["is_ref"] == 1 else ui_text("ui_mainmodeparam_normal")
+        string_ids = " ".join((
+            _message_text_id(entry.get("message", "")),
+            *model._id_map.resolve(entry["crc32_id"]),
+        )).lower()
         haystack = " ".join((
+            string_ids,
             f"{entry['crc32_id']:08x}",
             str(entry["char_id"]),
             _char_label(entry["char_id"]).lower(),
@@ -265,6 +308,8 @@ class _MessageInfoFilterProxy(QSortFilterProxyModel):
 class MessageInfoEditor(QWidget):
     _load_done_signal = pyqtSignal(str, object, int, object)
     _load_error_signal = pyqtSignal(str)
+    _scan_done_signal = pyqtSignal(object, int)
+    _scan_error_signal = pyqtSignal(str)
 
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
@@ -275,6 +320,8 @@ class MessageInfoEditor(QWidget):
         self._version: int = 1001
         self._entries: list[dict] = []
         self._orig_entries: list[dict] = []
+        self._id_map = MessageInfoIdMap()
+        self._id_map.load()
 
         self._current_char_id = None
         self._char_buttons: list[tuple] = []      # (QPushButton, char_id)
@@ -284,15 +331,22 @@ class MessageInfoEditor(QWidget):
         self._entries_table: QTableView | None = None
         self._loading_detail = False
         self._detail_widgets: list[QWidget] = []
+        self._scan_running = False
+        self._capture_active = False
 
         # Debounce for right-panel entry search
         self._entry_search_timer = QTimer()
         self._entry_search_timer.setSingleShot(True)
         self._entry_search_timer.setInterval(250)
         self._entry_search_timer.timeout.connect(self._do_entry_search)
+        self._capture_timer = QTimer()
+        self._capture_timer.setInterval(6000)
+        self._capture_timer.timeout.connect(self._scan_now)
 
         self._load_done_signal.connect(self._on_load_done)
         self._load_error_signal.connect(self._on_load_error)
+        self._scan_done_signal.connect(self._on_scan_done)
+        self._scan_error_signal.connect(self._on_scan_error)
 
         self._build_ui()
 
@@ -329,10 +383,53 @@ class MessageInfoEditor(QWidget):
         self._file_lbl = QLabel(ui_text("ui_btladjprm_no_file_loaded"))
         self._file_lbl.setFont(QFont("Consolas", 12))
         self._file_lbl.setStyleSheet(f"color: {P['text_dim']};")
-        tl.addWidget(self._file_lbl)
-        tl.addStretch()
+        tl.addWidget(self._file_lbl, 1)
+
+        self._process_combo = QComboBox()
+        self._process_combo.setFixedHeight(TOOLBAR_BTN_H)
+        self._process_combo.setFixedWidth(220)
+        self._process_combo.setFont(QFont("Segoe UI", 9))
+        self._process_combo.setStyleSheet(ss_input())
+        self._process_combo.currentIndexChanged.connect(lambda _idx: self._update_capture_buttons())
+        tl.addWidget(self._process_combo)
+
+        self._btn_refresh_processes = QPushButton(ui_text("ui_messageinfo_refresh_processes"))
+        self._btn_refresh_processes.setFixedHeight(TOOLBAR_BTN_H)
+        self._btn_refresh_processes.setFont(QFont("Segoe UI", 9))
+        self._btn_refresh_processes.setStyleSheet(ss_btn())
+        self._btn_refresh_processes.clicked.connect(self._refresh_processes)
+        tl.addWidget(self._btn_refresh_processes)
+
+        self._btn_scan_now = QPushButton(ui_text("ui_messageinfo_scan_now"))
+        self._btn_scan_now.setFixedHeight(TOOLBAR_BTN_H)
+        self._btn_scan_now.setFont(QFont("Segoe UI", 9))
+        self._btn_scan_now.setStyleSheet(ss_btn())
+        self._btn_scan_now.clicked.connect(self._scan_now)
+        tl.addWidget(self._btn_scan_now)
+
+        self._btn_start_capture = QPushButton(ui_text("ui_messageinfo_start_capture"))
+        self._btn_start_capture.setFixedHeight(TOOLBAR_BTN_H)
+        self._btn_start_capture.setFont(QFont("Segoe UI", 9))
+        self._btn_start_capture.setStyleSheet(ss_btn(accent=True))
+        self._btn_start_capture.clicked.connect(self._start_capture)
+        tl.addWidget(self._btn_start_capture)
+
+        self._btn_stop_capture = QPushButton(ui_text("ui_messageinfo_stop_capture"))
+        self._btn_stop_capture.setFixedHeight(TOOLBAR_BTN_H)
+        self._btn_stop_capture.setFont(QFont("Segoe UI", 9))
+        self._btn_stop_capture.setStyleSheet(ss_btn())
+        self._btn_stop_capture.clicked.connect(self._stop_capture)
+        tl.addWidget(self._btn_stop_capture)
+
+        self._capture_status = QLabel("")
+        self._capture_status.setFont(QFont("Consolas", 10))
+        self._capture_status.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        tl.addWidget(self._capture_status)
 
         root.addWidget(top)
+        self._refresh_processes()
+        self._update_capture_buttons()
+        self._update_capture_status()
 
         sep = QFrame()
         sep.setFixedHeight(2)
@@ -866,7 +963,7 @@ class MessageInfoEditor(QWidget):
         panel_layout.setContentsMargins(12, 10, 12, 12)
         panel_layout.setSpacing(8)
 
-        self._table_model = _MessageInfoTableModel(self._entries, indices, self)
+        self._table_model = _MessageInfoTableModel(self._entries, indices, self._id_map, self)
         self._proxy_model = _MessageInfoFilterProxy(self)
         self._proxy_model.setSourceModel(self._table_model)
         self._proxy_model.set_filter_text(self._entry_search.text())
@@ -887,7 +984,8 @@ class MessageInfoEditor(QWidget):
         self._entries_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self._entries_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self._entries_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        self._entries_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self._entries_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self._entries_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
         self._entries_table.setStyleSheet(ss_table())
         self._entries_table.selectionModel().selectionChanged.connect(self._on_table_selection_changed)
         panel_layout.addWidget(self._entries_table, 1)
@@ -950,11 +1048,12 @@ class MessageInfoEditor(QWidget):
             self._detail_widgets.append(edit)
             return edit
 
-        self._detail_crc = make_field(ui_text("ui_messageinfo_crc32_id"), 0)
-        self._detail_char = make_field(ui_text("ui_assist_char_id"), 1)
-        self._detail_cue = make_field(ui_text("ui_messageinfo_cue_id"), 2)
-        self._detail_type = make_field(ui_text("ui_dlcinfoparam_type"), 3, read_only=True)
-        self._detail_ref = make_field(ui_text("ui_messageinfo_ref_crc32"), 4)
+        self._detail_string = make_field(ui_text("ui_messageinfo_string_id"), 0)
+        self._detail_crc = make_field(ui_text("ui_messageinfo_crc32_id"), 1)
+        self._detail_char = make_field(ui_text("ui_assist_char_id"), 2)
+        self._detail_cue = make_field(ui_text("ui_messageinfo_cue_id"), 3)
+        self._detail_type = make_field(ui_text("ui_dlcinfoparam_type"), 4, read_only=True)
+        self._detail_ref = make_field(ui_text("ui_messageinfo_ref_crc32"), 5)
         layout.addWidget(fields)
 
         msg_lbl = QLabel(ui_text("ui_messageinfo_message"), detail)
@@ -997,6 +1096,7 @@ class MessageInfoEditor(QWidget):
         layout.addWidget(btn_row)
         self._detail_widgets.extend((self._detail_add_btn, self._detail_dup_btn, self._detail_del_btn))
 
+        self._detail_string.editingFinished.connect(self._apply_detail_string_id)
         self._detail_crc.editingFinished.connect(self._apply_detail_fields)
         self._detail_char.editingFinished.connect(self._apply_detail_fields)
         self._detail_cue.editingFinished.connect(self._apply_detail_fields)
@@ -1010,6 +1110,7 @@ class MessageInfoEditor(QWidget):
             widget.setEnabled(enabled)
         if not enabled and hasattr(self, "_detail_message"):
             self._loading_detail = True
+            self._detail_string.clear()
             self._detail_crc.clear()
             self._detail_char.clear()
             self._detail_cue.clear()
@@ -1038,6 +1139,7 @@ class MessageInfoEditor(QWidget):
         entry = self._entries[entry_idx]
         self._selected_entry_idx = entry_idx
         self._loading_detail = True
+        self._detail_string.setText(self._selected_entry_string_id(entry))
         self._detail_crc.setText(f"{entry['crc32_id']:08X}")
         self._detail_char.setText(str(entry["char_id"]))
         self._detail_cue.setText(str(entry["cue_id"]))
@@ -1080,6 +1182,33 @@ class MessageInfoEditor(QWidget):
         if self._table_model is not None:
             self._table_model.refresh_entry(entry_idx)
 
+    def _primary_string_id(self, crc: int) -> str:
+        values = self._id_map.resolve(crc)
+        return values[0] if values else ""
+
+    def _selected_entry_string_id(self, entry: dict) -> str:
+        return _entry_string_id(entry, self._id_map)
+
+    def _apply_detail_string_id(self):
+        if self._loading_detail or self._selected_entry_idx is None:
+            return
+        string_id = self._detail_string.text().strip()
+        if not string_id:
+            return
+        idx = self._selected_entry_idx
+        entry = self._entries[idx]
+        crc, _changed = self._id_map.add_string(string_id)
+        entry["crc32_id"] = crc
+        if _message_text_id(entry.get("message", "")):
+            entry["message"] = _TEXT_REF_RE.sub(f"<text {string_id}", entry["message"], count=1)
+        self._loading_detail = True
+        self._detail_crc.setText(f"{crc:08X}")
+        self._detail_string.setText(self._selected_entry_string_id(entry))
+        self._detail_message.setPlainText(entry["message"])
+        self._loading_detail = False
+        self._mark_dirty()
+        self._refresh_id_map_views(selected_idx=idx)
+
     def _apply_detail_fields(self):
         if self._loading_detail or self._selected_entry_idx is None:
             return
@@ -1094,6 +1223,9 @@ class MessageInfoEditor(QWidget):
         except ValueError:
             self._load_detail(idx)
             return
+        self._loading_detail = True
+        self._detail_string.setText(self._selected_entry_string_id(entry))
+        self._loading_detail = False
         self._mark_dirty()
         self._refresh_entry_row(idx)
         if entry["char_id"] != old_char:
@@ -1340,6 +1472,150 @@ class MessageInfoEditor(QWidget):
             next_select = len(self._entries) - 1
         self._build_entries_panel(self._current_char_id, select_idx=max(0, next_select))
 
+    # Live String ID capture
+
+    def _refresh_processes(self):
+        selected_pid = self._process_combo.currentData() if hasattr(self, "_process_combo") else None
+        self._process_combo.blockSignals(True)
+        self._process_combo.clear()
+        self._process_combo.addItem(ui_text("ui_messageinfo_select_process"), None)
+        processes = list_processes()
+        if processes:
+            for process in processes:
+                self._process_combo.addItem(process.label, process.pid)
+            if selected_pid is not None:
+                index = self._process_combo.findData(selected_pid)
+                if index >= 0:
+                    self._process_combo.setCurrentIndex(index)
+            else:
+                for index, process in enumerate(processes, start=1):
+                    if process.name.lower() == "asbr.exe":
+                        self._process_combo.setCurrentIndex(index)
+                        break
+        else:
+            self._process_combo.setItemText(0, ui_text("ui_messageinfo_no_processes"))
+        self._process_combo.blockSignals(False)
+        self._update_capture_buttons()
+
+    def _selected_process_pid(self) -> int | None:
+        pid = self._process_combo.currentData()
+        try:
+            return int(pid) if pid is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _start_capture(self):
+        if self._selected_process_pid() is None:
+            self._scan_error_signal.emit(ui_text("ui_messageinfo_select_process_first"))
+            return
+        self._capture_active = True
+        self._capture_timer.start()
+        self._update_capture_buttons()
+        self._scan_now()
+
+    def _stop_capture(self):
+        self._capture_active = False
+        self._capture_timer.stop()
+        self._update_capture_buttons()
+        self._update_capture_status()
+
+    def _scan_now(self):
+        if self._scan_running:
+            return
+        pid = self._selected_process_pid()
+        if pid is None:
+            self._scan_error_signal.emit(ui_text("ui_messageinfo_select_process_first"))
+            return
+        self._scan_running = True
+        self._update_capture_buttons()
+        self._capture_status.setText(ui_text("ui_messageinfo_capture_scanning"))
+
+        def worker():
+            try:
+                result = scan_process_strings(pid)
+                changed = self._id_map.merge_strings(result.strings)
+            except Exception as exc:
+                self._scan_error_signal.emit(str(exc))
+                return
+            self._scan_done_signal.emit(result, changed)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_scan_done(self, result, changed: int):
+        self._scan_running = False
+        self._update_capture_buttons()
+        self._refresh_id_map_views()
+        self._capture_status.setText(
+            ui_text(
+                "ui_messageinfo_capture_done",
+                p0=changed,
+                p1=len(result.strings),
+                p2=self._id_map.count(),
+                p3=self._matched_entry_count(),
+            )
+        )
+
+    def _on_scan_error(self, msg: str):
+        self._scan_running = False
+        self._capture_active = False
+        self._capture_timer.stop()
+        self._update_capture_buttons()
+        self._update_capture_status(error=msg)
+        QMessageBox.warning(self, ui_text("ui_messageinfo_capture_error"), msg)
+
+    def _update_capture_buttons(self):
+        pid_selected = self._selected_process_pid() is not None if hasattr(self, "_process_combo") else False
+        self._btn_refresh_processes.setEnabled(not self._scan_running)
+        self._btn_scan_now.setEnabled(pid_selected and not self._scan_running)
+        self._btn_start_capture.setEnabled(pid_selected and not self._capture_active)
+        self._btn_stop_capture.setEnabled(self._capture_active)
+
+    def _update_capture_status(self, error: str = ""):
+        if error:
+            self._capture_status.setText(ui_text("ui_messageinfo_capture_error_short"))
+            self._capture_status.setToolTip(error)
+            return
+        self._capture_status.setToolTip("")
+        state = ui_text("ui_messageinfo_capture_active") if self._capture_active else ui_text("ui_messageinfo_capture_idle")
+        self._capture_status.setText(
+            ui_text(
+                "ui_messageinfo_capture_status",
+                p0=self._id_map.count(),
+                p1=self._matched_entry_count(),
+                p2=state,
+            )
+        )
+
+    def _matched_entry_count(self) -> int:
+        return sum(
+            1
+            for entry in self._entries
+            if _message_text_id(entry.get("message", "")) or self._id_map.resolve(int(entry.get("crc32_id", 0)))
+        )
+
+    def _import_inline_text_ids(self) -> int:
+        string_ids = {
+            _message_text_id(entry.get("message", ""))
+            for entry in self._entries
+        }
+        string_ids.discard("")
+        return self._id_map.merge_strings(string_ids)
+
+    def _refresh_id_map_views(self, selected_idx: int | None = None):
+        if self._table_model is not None:
+            self._table_model.refresh_all()
+        if self._proxy_model is not None:
+            self._proxy_model.set_filter_text(self._entry_search.text())
+        if selected_idx is None:
+            selected_idx = self._selected_entry_idx
+        if selected_idx is not None and hasattr(self, "_detail_string") and 0 <= selected_idx < len(self._entries):
+            entry = self._entries[selected_idx]
+            if not self._detail_string.hasFocus():
+                self._loading_detail = True
+                self._detail_string.setText(self._selected_entry_string_id(entry))
+                self._loading_detail = False
+        self._update_capture_status()
+
     # Dirty state
 
     def _mark_dirty(self):
@@ -1457,6 +1733,7 @@ class MessageInfoEditor(QWidget):
         self._orig_entries = [dict(e) for e in entries]
         self._current_char_id = None
         self._selected_entry_idx = None
+        self._import_inline_text_ids()
 
         self._btn_open.setEnabled(True)
         set_file_label(self._file_lbl, filepath)
@@ -1468,6 +1745,7 @@ class MessageInfoEditor(QWidget):
             self._select_char(_ALL_STRINGS)
         else:
             self._show_placeholder(ui_text("ui_assist_no_entries_found"))
+        self._update_capture_status()
 
     def _on_save(self):
         if not self._filepath or self._original_data is None:

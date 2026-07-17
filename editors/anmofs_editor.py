@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -25,6 +26,8 @@ from PyQt6.QtWidgets import (
 )
 
 from core.editor_file_state import set_file_label, set_file_label_empty
+from core.editor_diff import ChangeItem
+from core.editor_host import confirm_editor_change_summary, notify_editor_file_loaded
 from core.settings import create_backup_on_open, game_files_dialog_dir
 from core.style_helpers import (
     TOOLBAR_BTN_H,
@@ -48,6 +51,7 @@ from core.style_helpers import (
     ss_table,
     ss_transparent,
 )
+from core.undo_redo import EditorHistory
 from parsers.anmofs_parser import (
     AnmofsEntry,
     append_chunk_page,
@@ -88,6 +92,7 @@ class AnmofsEditor(QWidget):
         self._filepath = None
         self._xfbin = None
         self._chunks = []
+        self._saved_chunks = []
         self._chunk_snapshots = {}
         self._current_chunk = None
         self._chunk_buttons = []
@@ -95,6 +100,8 @@ class AnmofsEditor(QWidget):
         self._dirty = False
         self._rebuilding = False
         self._selected_entry_idx = -1
+        self._history = EditorHistory()
+        self._restoring_history = False
 
         self._load_done_signal.connect(self._on_load_done)
         self._load_error_signal.connect(self._on_load_error)
@@ -116,7 +123,7 @@ class AnmofsEditor(QWidget):
         open_btn.setFixedHeight(TOOLBAR_BTN_H)
         open_btn.setFont(QFont("Segoe UI", 10))
         open_btn.setStyleSheet(ss_btn(accent=True))
-        open_btn.clicked.connect(self._load_file)
+        open_btn.clicked.connect(lambda _checked=False: self._load_file())
         top_layout.addWidget(open_btn)
 
         self._save_btn = QPushButton(self.t("btn_save_file"), top)
@@ -228,16 +235,19 @@ class AnmofsEditor(QWidget):
         label.setStyleSheet(ss_placeholder())
         self._editor_layout.addWidget(label, 1)
 
-    def _load_file(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            self.t("ui_anmofs_open_title"),
-            game_files_dialog_dir(target_patterns="*_anmofs.xfbin"),
-            self.t("ui_anmofs_file_filter"),
-        )
-        if not path:
-            return
-        create_backup_on_open(path)
+    def _load_file(self, path=None):
+        if path is not None and not isinstance(path, (str, os.PathLike)):
+            path = None
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                self.t("ui_anmofs_open_title"),
+                game_files_dialog_dir(target_patterns="*_anmofs.xfbin"),
+                self.t("ui_anmofs_file_filter"),
+            )
+            if not path:
+                return
+        create_backup_on_open(path, tool_id=getattr(self, "_tool_id", None))
         set_file_label_empty(self._file_label, self.t("loading"))
         self._set_controls_enabled(False)
         self._show_placeholder()
@@ -256,9 +266,11 @@ class AnmofsEditor(QWidget):
         self._filepath = None
         self._xfbin = None
         self._chunks = []
+        self._saved_chunks = []
         self._chunk_snapshots = {}
         self._current_chunk = None
         self._dirty = False
+        self._history.clear()
         self._set_controls_enabled(False)
         self._rebuild_chunk_list()
         self._show_placeholder()
@@ -269,10 +281,13 @@ class AnmofsEditor(QWidget):
         self._filepath = path
         self._xfbin = xfbin
         self._chunks = list(chunks)
+        self._saved_chunks = copy.deepcopy(self._chunks)
         self._chunk_snapshots = {id(item.chunk): copy.deepcopy(item) for item in self._chunks}
         self._current_chunk = None
         self._dirty = False
+        self._history.clear()
         set_file_label(self._file_label, path)
+        notify_editor_file_loaded(self, path)
         self._set_controls_enabled(True)
         self._rebuild_chunk_list()
         if self._chunks:
@@ -282,12 +297,15 @@ class AnmofsEditor(QWidget):
         if self._xfbin is None or not self._filepath:
             return
         self._apply_meta_fields()
+        if not confirm_editor_change_summary(self):
+            return
         try:
             save_anmofs_xfbin(self._xfbin, self._filepath, self._chunks)
         except Exception as exc:
             QMessageBox.critical(self, self.t("dlg_title_error"), self.t("msg_save_error", error=exc))
             return
         self._dirty = False
+        self._saved_chunks = copy.deepcopy(self._chunks)
         self._chunk_snapshots = {id(item.chunk): copy.deepcopy(item) for item in self._chunks}
         set_file_label(self._file_label, self._filepath)
         self._refresh_selected_ui()
@@ -517,6 +535,7 @@ class AnmofsEditor(QWidget):
         return f"{float(value):.6g}"
 
     def _on_meta_changed(self):
+        self._push_undo_state()
         self._apply_meta_fields()
         self._sync_name_warning()
         self._refresh_chunk_buttons()
@@ -571,9 +590,16 @@ class AnmofsEditor(QWidget):
                 value = int(text or "0", 0)
                 if not (0 <= value <= 0xFFFFFFFF):
                     raise ValueError
-                entry.frame = value
+                old_value = entry.frame
+                if old_value != value:
+                    self._push_undo_state()
+                    entry.frame = value
             else:
-                setattr(entry, ENTRY_FIELDS[col - 1], float(text or "0"))
+                value = float(text or "0")
+                old_value = getattr(entry, ENTRY_FIELDS[col - 1])
+                if old_value != value:
+                    self._push_undo_state()
+                    setattr(entry, ENTRY_FIELDS[col - 1], value)
         except ValueError:
             self._rebuilding = True
             old_value = entry.frame if col == 1 else getattr(entry, ENTRY_FIELDS[col - 1])
@@ -595,6 +621,7 @@ class AnmofsEditor(QWidget):
     def _add_chunk(self):
         if self._xfbin is None:
             return
+        self._push_undo_state()
         name = self._unique_chunk_name("anmofs_entry")
         item = make_default_chunk(name)
         append_chunk_page(self._xfbin, item)
@@ -609,6 +636,7 @@ class AnmofsEditor(QWidget):
     def _duplicate_chunk(self):
         if self._xfbin is None or self._current_chunk is None:
             return
+        self._push_undo_state()
         name = self._unique_chunk_name(f"{self._current_chunk.chunk_name}_copy")
         item = duplicate_anmofs_chunk(self._current_chunk, name)
         append_chunk_page(self._xfbin, item)
@@ -634,6 +662,7 @@ class AnmofsEditor(QWidget):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
+        self._push_undo_state()
         for page in list(self._xfbin.pages):
             if item.chunk in page.chunks:
                 page.chunks.remove(item.chunk)
@@ -655,6 +684,7 @@ class AnmofsEditor(QWidget):
         item = self._current_chunk
         if item is None:
             return
+        self._push_undo_state()
         source = item.entries[self._selected_entry_idx] if 0 <= self._selected_entry_idx < len(item.entries) else AnmofsEntry()
         new_entry = copy.deepcopy(source)
         new_entry.frame = int(new_entry.frame) + 1
@@ -669,6 +699,7 @@ class AnmofsEditor(QWidget):
         item = self._current_chunk
         if item is None or not item.entries:
             return
+        self._push_undo_state()
         idx = self._selected_entry_idx if 0 <= self._selected_entry_idx < len(item.entries) else 0
         item.entries.insert(idx + 1, copy.deepcopy(item.entries[idx]))
         self._selected_entry_idx = idx + 1
@@ -680,6 +711,7 @@ class AnmofsEditor(QWidget):
         item = self._current_chunk
         if item is None or not item.entries:
             return
+        self._push_undo_state()
         idx = self._selected_entry_idx if 0 <= self._selected_entry_idx < len(item.entries) else len(item.entries) - 1
         item.entries.pop(idx)
         self._selected_entry_idx = min(idx, len(item.entries) - 1)
@@ -691,6 +723,7 @@ class AnmofsEditor(QWidget):
         item = self._current_chunk
         if item is None:
             return
+        self._push_undo_state()
         selected = item.entries[self._selected_entry_idx] if 0 <= self._selected_entry_idx < len(item.entries) else None
         item.entries.sort(key=lambda entry: entry.frame)
         self._selected_entry_idx = item.entries.index(selected) if selected in item.entries else (0 if item.entries else -1)
@@ -704,6 +737,7 @@ class AnmofsEditor(QWidget):
         snapshot = self._chunk_snapshots.get(id(item.chunk))
         if snapshot is None:
             return
+        self._push_undo_state()
         item.chunk_name = snapshot.chunk_name
         item.file_path = snapshot.file_path
         item.anm_name = snapshot.anm_name
@@ -736,3 +770,196 @@ class AnmofsEditor(QWidget):
             self._dirty = True
             self._save_btn.setEnabled(True)
             set_file_label(self._file_label, self._filepath, dirty=True)
+
+    def _push_undo_state(self):
+        if self._restoring_history:
+            return
+        state = self.get_undo_state()
+        if state is not None:
+            self._history.push(state)
+
+    def get_undo_state(self):
+        if self._xfbin is None:
+            return None
+        current_index = -1
+        if self._current_chunk in self._chunks:
+            current_index = self._chunks.index(self._current_chunk)
+        return copy.deepcopy({
+            "xfbin": self._xfbin,
+            "chunks": self._chunks,
+            "chunk_snapshots": self._chunk_snapshots,
+            "current_index": current_index,
+            "selected_entry_idx": self._selected_entry_idx,
+        })
+
+    def restore_undo_state(self, state):
+        if not state:
+            return False
+        self._restoring_history = True
+        try:
+            self._xfbin = state["xfbin"]
+            self._chunks = state["chunks"]
+            self._chunk_snapshots = state.get("chunk_snapshots", {})
+            self._selected_entry_idx = int(state.get("selected_entry_idx", -1))
+            current_index = int(state.get("current_index", -1))
+            self._current_chunk = None
+            self._rebuild_chunk_list()
+            if 0 <= current_index < len(self._chunks):
+                self._select_chunk(self._chunks[current_index])
+            else:
+                self._show_placeholder()
+            self._mark_dirty()
+        finally:
+            self._restoring_history = False
+        return True
+
+    def apply_pending_edits(self):
+        self._apply_meta_fields()
+
+    def get_saved_state(self):
+        return copy.deepcopy(self._saved_chunks)
+
+    def get_current_state(self):
+        self.apply_pending_edits()
+        return copy.deepcopy(self._chunks)
+
+    def get_change_summary(self):
+        return self.describe_state_diff(self.get_saved_state(), self.get_current_state())
+
+    def load_comparison_state(self, path):
+        _xfbin, chunks = load_anmofs_xfbin(path)
+        return copy.deepcopy(chunks)
+
+    def describe_state_diff(self, before, after):
+        before_map = {item.chunk_name: item for item in before or []}
+        after_map = {item.chunk_name: item for item in after or []}
+        changes = []
+        for name, after_item in after_map.items():
+            before_item = before_map.get(name)
+            if before_item is None:
+                changes.append(ChangeItem(f"chunk:{name}", "added", self.t("qol_diff_added", item=name), "", "", True))
+                continue
+            for field in ("file_path", "anm_name", "characode", "reserved"):
+                before_value = getattr(before_item, field)
+                after_value = getattr(after_item, field)
+                if before_value != after_value:
+                    changes.append(ChangeItem(
+                        f"meta:{name}:{field}",
+                        "changed",
+                        f"{name} / {field}",
+                        str(before_value),
+                        str(after_value),
+                        True,
+                    ))
+            max_entries = max(len(before_item.entries), len(after_item.entries))
+            for idx in range(max_entries):
+                if idx >= len(before_item.entries):
+                    changes.append(ChangeItem(
+                        f"entryadd:{name}:{idx}",
+                        "added",
+                        self.t("qol_diff_added", item=f"{name} entry {idx}"),
+                        "",
+                        "",
+                        True,
+                    ))
+                    continue
+                if idx >= len(after_item.entries):
+                    changes.append(ChangeItem(
+                        f"entry:{name}:{idx}",
+                        "removed",
+                        self.t("qol_diff_removed", item=f"{name} entry {idx}"),
+                        "",
+                        "",
+                        False,
+                    ))
+                    continue
+                before_entry = before_item.entries[idx]
+                after_entry = after_item.entries[idx]
+                for field in ENTRY_FIELDS:
+                    before_value = getattr(before_entry, field)
+                    after_value = getattr(after_entry, field)
+                    if before_value != after_value:
+                        changes.append(ChangeItem(
+                            f"entry:{name}:{idx}:{field}",
+                            "changed",
+                            f"{name} / entry {idx} / {field}",
+                            str(before_value),
+                            str(after_value),
+                            True,
+                        ))
+        for name in before_map:
+            if name not in after_map:
+                changes.append(ChangeItem(f"chunk:{name}", "removed", self.t("qol_diff_removed", item=name), "", "", False))
+        return changes
+
+    def copy_from_state(self, external_state, item_ids):
+        if not item_ids:
+            return
+        self.apply_pending_edits()
+        self._push_undo_state()
+        external_map = {item.chunk_name: item for item in external_state or []}
+        current_map = {item.chunk_name: item for item in self._chunks}
+        selected = None
+        for item_id in item_ids:
+            parts = item_id.split(":")
+            if len(parts) < 2:
+                continue
+            kind, name = parts[0], parts[1]
+            source = external_map.get(name)
+            if source is None:
+                continue
+            target = current_map.get(name)
+            if kind == "chunk" and target is None:
+                copied = duplicate_anmofs_chunk(source, source.chunk_name)
+                append_chunk_page(self._xfbin, copied)
+                self._chunks.append(copied)
+                self._chunk_snapshots[id(copied.chunk)] = copy.deepcopy(copied)
+                current_map[copied.chunk_name] = copied
+                selected = copied
+            elif kind == "meta" and len(parts) == 3 and target is not None:
+                setattr(target, parts[2], copy.deepcopy(getattr(source, parts[2])))
+                selected = target
+            elif kind == "entryadd" and len(parts) == 3 and target is not None:
+                idx = int(parts[2])
+                if 0 <= idx < len(source.entries):
+                    target.entries.insert(min(idx, len(target.entries)), copy.deepcopy(source.entries[idx]))
+                    selected = target
+            elif kind == "entry" and len(parts) == 4 and target is not None:
+                idx = int(parts[2])
+                field = parts[3]
+                if 0 <= idx < len(source.entries):
+                    while len(target.entries) <= idx:
+                        target.entries.append(AnmofsEntry())
+                    setattr(target.entries[idx], field, copy.deepcopy(getattr(source.entries[idx], field)))
+                    selected = target
+        self._rebuild_chunk_list()
+        if selected in self._chunks:
+            self._current_chunk = None
+            self._select_chunk(selected)
+        self._mark_dirty()
+
+    def shortcut_action(self, action_id: str) -> bool:
+        if action_id == "editor.undo":
+            self.apply_pending_edits()
+            state = self._history.undo(self.get_undo_state())
+            return self.restore_undo_state(state)
+        if action_id == "editor.redo":
+            state = self._history.redo(self.get_undo_state())
+            return self.restore_undo_state(state)
+        if action_id == "editor.new":
+            self._add_entry() if self._table_has_focus() else self._add_chunk()
+            return True
+        if action_id == "editor.duplicate":
+            self._duplicate_entry() if self._table_has_focus() else self._duplicate_chunk()
+            return True
+        if action_id == "editor.delete":
+            self._delete_entry() if self._table_has_focus() else self._delete_chunk()
+            return True
+        return False
+
+    def _table_has_focus(self) -> bool:
+        table = getattr(self, "_table", None)
+        if table is None:
+            return False
+        focus = QApplication.focusWidget()
+        return focus is table or (focus is not None and table.isAncestorOf(focus))

@@ -2,8 +2,17 @@ import json
 import fnmatch
 import os
 import shutil
+import copy
 
 from core.runtime_paths import app_path, settings_path
+from core.shortcuts import normalize_shortcut_settings
+from core.qol_state import (
+    append_backup_history,
+    create_indexed_backup,
+    normalise_backup_history,
+    normalise_recent_files_by_tool,
+    normalise_workspace,
+)
 
 
 DEFAULT_SETTINGS = {
@@ -17,12 +26,19 @@ DEFAULT_SETTINGS = {
     "recent_tools_on_top": True,
     "favorite_tools": [],
     "pinned_tools": {},
+    "recent_files_by_tool": {},
+    "workspace": {},
+    "restore_workspace_on_startup": True,
+    "change_summary_disabled_by_tool": {},
+    "experimental_generic_compare_copy": False,
+    "backup_history": [],
     "animation_card_perspective": True,
     "animation_editor_fade": True,
     "animation_right_panel_fade": True,
     "animation_sidebar_highlight": True,
     "animation_theme_personality": True,
     "animation_theme_personality_motion": True,
+    "shortcuts": normalize_shortcut_settings({}),
 }
 
 
@@ -40,10 +56,22 @@ def load_settings() -> dict:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
-                    return {**DEFAULT_SETTINGS, **data}
+                    return _merge_settings(data)
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             pass
-    return DEFAULT_SETTINGS.copy()
+    return _merge_settings({})
+
+
+def _merge_settings(data: dict) -> dict:
+    merged = copy.deepcopy(DEFAULT_SETTINGS)
+    merged.update(data)
+    merged["shortcuts"] = normalize_shortcut_settings(data.get("shortcuts", {}))
+    merged["recent_files_by_tool"] = normalise_recent_files_by_tool(data.get("recent_files_by_tool", {}))
+    merged["workspace"] = normalise_workspace(data.get("workspace", {}))
+    merged["backup_history"] = normalise_backup_history(data.get("backup_history", []))
+    if not isinstance(merged.get("change_summary_disabled_by_tool"), dict):
+        merged["change_summary_disabled_by_tool"] = {}
+    return merged
 
 
 def save_settings(data: dict):
@@ -100,23 +128,72 @@ def game_files_dialog_dir(fallback: str = "", target_patterns=None) -> str:
     return ""
 
 
-def create_backup_on_open(path: str) -> str | None:
+def create_backup_on_open(path: str, tool_id: str | None = None, reason: str = "open") -> dict[str, object] | None:
     """Create a side-by-side backup for a file selected for editing."""
     if not path or not load_settings().get("backup_on_open", True):
         return None
     if not os.path.isfile(path):
         return None
 
-    folder, filename = os.path.split(path)
-    stem, ext = os.path.splitext(filename)
-    backup_path = os.path.join(folder, f"{stem}_backup{ext}")
-    counter = 1
-    while os.path.exists(backup_path):
-        backup_path = os.path.join(folder, f"{stem}_backup_{counter}{ext}")
-        counter += 1
-
     try:
-        shutil.copy2(path, backup_path)
+        entry = create_indexed_backup(path, tool_id=tool_id, reason=reason)
     except OSError:
         return None
-    return backup_path
+    if not entry:
+        return None
+    settings = load_settings()
+    append_backup_history(settings, entry)
+    save_settings(settings)
+    return entry
+
+
+def restore_backup_entry(entry: dict) -> dict[str, object] | None:
+    source_path = entry.get("source_path")
+    backup_path = entry.get("backup_path")
+    if not source_path or not backup_path:
+        return None
+    if not os.path.isfile(backup_path):
+        return None
+
+    settings = load_settings()
+    safety_entry = None
+    if os.path.isfile(source_path):
+        safety_entry = create_indexed_backup(
+            source_path,
+            tool_id=entry.get("tool_id") or None,
+            reason="restore_safety",
+        )
+        if safety_entry:
+            append_backup_history(settings, safety_entry)
+    shutil.copy2(backup_path, source_path)
+    save_settings(settings)
+    return safety_entry
+
+
+def delete_backup_entry(backup_path: str) -> bool:
+    settings = load_settings()
+    backup_path = os.path.normpath(backup_path)
+    deleted = False
+    try:
+        if os.path.isfile(backup_path):
+            os.remove(backup_path)
+            deleted = True
+    except OSError:
+        deleted = False
+    settings["backup_history"] = [
+        entry for entry in normalise_backup_history(settings.get("backup_history", []))
+        if os.path.normcase(entry.get("backup_path", "")) != os.path.normcase(backup_path)
+    ]
+    save_settings(settings)
+    return deleted
+
+
+def clear_missing_backup_entries() -> int:
+    settings = load_settings()
+    history = normalise_backup_history(settings.get("backup_history", []))
+    kept = [entry for entry in history if os.path.isfile(entry.get("backup_path", ""))]
+    removed = len(history) - len(kept)
+    if removed:
+        settings["backup_history"] = kept
+        save_settings(settings)
+    return removed

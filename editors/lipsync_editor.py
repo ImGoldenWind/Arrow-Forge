@@ -2883,6 +2883,15 @@ class LipSyncEditor(QWidget):
         self._undo_stack.setdefault(key, []).append(copy.deepcopy(clip.keys))
         self._restore_keys_for_current_clip(stack.pop())
 
+    def shortcut_action(self, action_id: str) -> bool:
+        if action_id == "editor.undo":
+            self._undo_timeline()
+            return True
+        if action_id == "editor.redo":
+            self._redo_timeline()
+            return True
+        return False
+
     def _make_line(self, parent, label_text: str, value: str):
         container = QWidget(parent)
         container.setStyleSheet(ss_transparent())

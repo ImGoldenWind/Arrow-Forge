@@ -5,7 +5,8 @@ from core.icons import (
     icon_hit, icon_damage, icon_balance, icon_battle_result, icon_duel_setting, icon_arcade_reward, icon_net_rank, icon_net_result, icon_online_mission, icon_projectile, icon_effect,
     icon_movelist, icon_command_list_param, icon_constraint, icon_story, icon_dialogue,
     icon_assist, icon_support_item, icon_game_text, icon_term_list, icon_tutorial_param, icon_stage, icon_ui, icon_gimmick,
-    icon_texture, icon_model_viewer, icon_xfbin, icon_usm_video,
+    icon_gimmick_damage,
+    icon_texture, icon_font_editor, icon_model_viewer, icon_xfbin, icon_usm_video,
     icon_char_viewer, icon_guide_char, icon_dictionary, icon_custom_card,
     icon_custom_default, icon_dlc_info, icon_gallery, icon_player_title,
     icon_trophy_param,
@@ -60,6 +61,7 @@ TOOLS = {
     "STAGE_UI": [
         ("StageInfo.bin", icon_stage,   "tool_stage_info", "dlg_stage_info"),
         ("Xcmnsfprm.bin", icon_gimmick, "tool_gimmick",    "dlg_gimmick"),
+        ("gimmickDmgParam.bin.xfbin", icon_gimmick_damage, "tool_gimmick_dmg", "dlg_gimmick_dmg"),
         ("info",          icon_ui,      "tool_ui_coll",    "dlg_ui_coll"),
     ],
 
@@ -86,6 +88,7 @@ TOOLS = {
     "ASSETS": [
         (".awb",        icon_sound,       "tool_sound",       "dlg_sound"),
         (".xfbin textures",     icon_texture,     "tool_texture",     "dlg_texture"),
+        ("font/*.xfbin",        icon_font_editor, "tool_font",        "dlg_font"),
         ("bod*.xfbin models",   icon_model_viewer, "tool_model_viewer", "dlg_model_viewer"),
         (".xfbin sounds",       icon_xfbin,       "tool_xfbin_audio", "dlg_xfbin_audio"),
         (".usm",                icon_usm_video,   "tool_usm_video",   "dlg_usm_video"),

@@ -241,8 +241,14 @@ def icon_ui():
 def icon_gimmick():
     return _themed_icon("fa6s.gear")
 
+def icon_gimmick_damage():
+    return _themed_icon("fa6s.bomb")
+
 def icon_texture():
     return _themed_icon("fa6s.images")
+
+def icon_font_editor():
+    return _themed_icon("fa6s.font")
 
 def icon_model_viewer():
     return _themed_icon("fa6s.cube")

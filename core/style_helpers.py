@@ -159,13 +159,13 @@ def ss_input() -> str:
     selection_bg = P.get("selection_bg", P["accent"])
     selection_text = P.get("selection_text", P["bg_dark"])
     return (
-        f"QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{"
+        f"QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QKeySequenceEdit {{"
         f"  background-color: {bg}; color: {P['text_main']}; "
         f"  border: 1px solid {border}; border-radius: {radius}; padding: {padding}; "
         f"  selection-background-color: {selection_bg}; selection-color: {selection_text}; }}"
-        f"QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover {{"
+        f"QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover, QKeySequenceEdit:hover {{"
         f"  background-color: {P.get('input_hover_bg', P.get('bg_card_hov', bg))}; }}"
-        f"QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{"
+        f"QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QKeySequenceEdit:focus {{"
         f"  border: 1px solid {focus}; background-color: {P.get('input_focus_bg', P.get('bg_card_hov', bg))}; }}"
         f"QSpinBox::up-button, QSpinBox::down-button, "
         f"QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{"
@@ -252,6 +252,49 @@ def ss_listwidget() -> str:
     )
 
 
+def ss_treewidget() -> str:
+    """QTreeWidget used by compact editor sidebars."""
+    bg = P.get("input_bg", P["bg_card"])
+    border = P.get("input_border", P["border"])
+    radius = P.get("input_radius", "4px")
+    selection_bg = P.get("selection_bg", P["accent"])
+    selection_text = P.get("selection_text", P["bg_dark"])
+    hover_bg = P.get("list_hover_bg", P["mid"])
+    group_text = P.get("tree_group_text", P["text_main"])
+    return (
+        f"QTreeWidget {{ background-color: {bg}; color: {P['text_main']}; "
+        f"border: 1px solid {border}; border-radius: {radius}; outline: none; }}"
+        f"QTreeWidget::item {{ min-height: 24px; padding: 2px 6px; }}"
+        f"QTreeWidget::item:selected {{ background-color: {selection_bg}; color: {selection_text}; border: none; }}"
+        f"QTreeWidget::item:focus {{ border: none; outline: none; }}"
+        f"QTreeWidget::item:hover {{ background-color: {hover_bg}; }}"
+        f"QTreeWidget::branch {{ background: transparent; border-image: none; image: none; }}"
+        f"QTreeWidget::item:has-children {{ color: {group_text}; font-weight: 600; }}"
+        f"{ss_vertical_scrollbar(bg, width=10)}"
+    )
+
+
+def ss_sidebar_treewidget() -> str:
+    """Flat QTreeWidget embedded directly into a standard sidebar."""
+    bg = P.get("panel_bg", P["bg_panel"])
+    selection_bg = P.get("selection_bg", P["accent"])
+    selection_text = P.get("selection_text", P["bg_dark"])
+    hover_bg = P.get("list_hover_bg", P["mid"])
+    group_text = P.get("tree_group_text", P["text_main"])
+    return (
+        f"QTreeWidget {{ background: transparent; color: {P['text_main']}; "
+        f"border: none; border-radius: 0; outline: none; }}"
+        f"QTreeWidget::viewport {{ background: transparent; border: none; }}"
+        f"QTreeWidget::item {{ min-height: 24px; padding: 2px 6px; border: none; }}"
+        f"QTreeWidget::item:selected {{ background-color: {selection_bg}; color: {selection_text}; border: none; }}"
+        f"QTreeWidget::item:focus {{ border: none; outline: none; }}"
+        f"QTreeWidget::item:hover {{ background-color: {hover_bg}; }}"
+        f"QTreeWidget::branch {{ background: transparent; border-image: none; image: none; }}"
+        f"QTreeWidget::item:has-children {{ color: {group_text}; font-weight: 600; }}"
+        f"{ss_vertical_scrollbar(bg, width=10)}"
+    )
+
+
 # Containers
 
 def ss_toolbar() -> str:
@@ -293,9 +336,39 @@ def ss_inspector_group() -> str:
     """Compact model-viewer inspector group."""
     bg = P.get("panel_card_bg", P["bg_panel"])
     border = P.get("panel_card_border", P["border"])
+    radius = P.get("input_radius", "6px")
     return (
-        f"QFrame {{ background-color: {bg}; border: 1px solid {border}; "
-        f"border-radius: {P.get('panel_card_radius', '10px')}; }}"
+        f"QFrame#ModelInspectorCard {{ background-color: {bg}; border: 1px solid {border}; "
+        f"border-radius: {radius}; }}"
+        f"QFrame#ModelInspectorCard QLabel {{ border: none; background: transparent; }}"
+        f"QTextEdit#ModelInspectorRaw {{ background-color: {bg}; color: {P['text_main']}; "
+        f"border: 1px solid {border}; border-radius: {radius}; padding: 8px; }}"
+    )
+
+
+def ss_inspector_input() -> str:
+    """Flat controls inside model-viewer inspector cards."""
+    bg = P.get("input_bg", P["bg_card"])
+    focus = P.get("input_focus_border", P["accent"])
+    radius = P.get("input_radius", "4px")
+    padding = P.get("input_padding", "3px 6px")
+    selection_bg = P.get("selection_bg", P["accent"])
+    selection_text = P.get("selection_text", P["bg_dark"])
+    return (
+        f"QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{"
+        f"  background-color: {bg}; color: {P['text_main']}; "
+        f"  border: 1px solid transparent; border-radius: {radius}; padding: {padding}; "
+        f"  selection-background-color: {selection_bg}; selection-color: {selection_text}; }}"
+        f"QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover {{"
+        f"  background-color: {P.get('input_hover_bg', P.get('bg_card_hov', bg))}; }}"
+        f"QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{"
+        f"  border: 1px solid {focus}; background-color: {P.get('input_focus_bg', P.get('bg_card_hov', bg))}; }}"
+        f"QSpinBox::up-button, QSpinBox::down-button, "
+        f"QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{"
+        f"  width: 0; height: 0; border: none; }}"
+        f"QComboBox::drop-down {{ background: transparent; border: none; width: 20px; }}"
+        f"QComboBox QAbstractItemView {{ background: {bg}; color: {P['text_main']}; "
+        f"  selection-background-color: {selection_bg}; selection-color: {selection_text}; }}"
     )
 
 

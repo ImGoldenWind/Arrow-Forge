@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 from typing import Iterable
 
 import numpy as np
@@ -41,6 +42,7 @@ class RenderMesh:
     colors: np.ndarray | None
     faces: np.ndarray
     texture: ResolvedTextureRef | MissingTextureRef | None
+    texture_slots: dict[str, ResolvedTextureRef | MissingTextureRef]
     visible: bool = True
 
 
@@ -77,7 +79,12 @@ class ModelXfbinDocument:
         return refs
 
 
-def load_model_xfbin(model_path: str, texture_paths: Iterable[str] | None = None) -> ModelXfbinDocument:
+def load_model_xfbin(
+    model_path: str,
+    texture_paths: Iterable[str] | None = None,
+    *,
+    palette_alias_index: int | None = None,
+) -> ModelXfbinDocument:
     xfbin = read_xfbin(model_path)
     doc = ModelXfbinDocument(
         path=model_path,
@@ -90,11 +97,11 @@ def load_model_xfbin(model_path: str, texture_paths: Iterable[str] | None = None
         dynamics_chunks=_chunks_of_type(xfbin, NuccChunkDynamics),
     )
     for tex_path in texture_paths or []:
-        add_texture_xfbin(doc, tex_path)
+        add_texture_xfbin(doc, tex_path, palette_alias_index=palette_alias_index)
     return doc
 
 
-def add_texture_xfbin(doc: ModelXfbinDocument, texture_path: str) -> int:
+def add_texture_xfbin(doc: ModelXfbinDocument, texture_path: str, *, palette_alias_index: int | None = None) -> int:
     _, entries = load_texture_xfbin(texture_path)
     added = 0
     for entry in entries:
@@ -105,7 +112,11 @@ def add_texture_xfbin(doc: ModelXfbinDocument, texture_path: str) -> int:
             pil_image=entry.pil_image,
             source_path=texture_path,
         )
-        for key in {_texture_key(entry.name), _texture_key(entry.file_path)}:
+        keys = {_texture_key(entry.name), _texture_key(entry.file_path)}
+        if palette_alias_index is not None:
+            keys.add(_texture_key(_texture_palette_alias(entry.name, palette_alias_index)))
+            keys.add(_texture_key(_texture_palette_alias(entry.file_path, palette_alias_index)))
+        for key in keys:
             if key:
                 doc.external_textures[key] = ref
         added += 1
@@ -129,14 +140,18 @@ def build_render_scene(doc: ModelXfbinDocument) -> RenderScene:
         for group in model.nud.mesh_groups:
             for mesh in group.meshes:
                 vertices = np.array([v.position for v in mesh.vertices], dtype=np.float32)
+                vertices = _to_view_space_array(vertices)
                 faces = np.array(mesh.faces, dtype=np.int32) if mesh.faces else np.zeros((0, 3), dtype=np.int32)
                 normals = _array_or_none([v.normal for v in mesh.vertices], np.float32)
+                if normals is not None:
+                    normals = _to_view_space_array(normals)
                 uvs = _first_uv_array(mesh.vertices)
                 colors = _array_or_none([v.color for v in mesh.vertices], np.float32)
                 if colors is not None:
                     colors = colors / 255.0
                 material = _material_for_mesh(model, mesh_counter)
-                texture = _primary_texture_for_material(material, texture_refs)
+                texture_slots = _textures_for_material(material, texture_refs)
+                texture = texture_slots.get("diffuse") or _primary_texture_for_material(material, texture_refs)
                 meshes.append(RenderMesh(
                     name=f"{model.name} / {group.name} / {mesh_counter + 1}",
                     model_chunk=model,
@@ -148,6 +163,7 @@ def build_render_scene(doc: ModelXfbinDocument) -> RenderScene:
                     colors=colors,
                     faces=faces,
                     texture=texture,
+                    texture_slots=texture_slots,
                 ))
                 if len(vertices):
                     all_vertices.append(vertices)
@@ -201,6 +217,12 @@ def _texture_key(value: str | None) -> str:
     return Path(normalized).stem if "/" in normalized else normalized
 
 
+def _texture_palette_alias(value: str | None, palette_index: int) -> str:
+    if not value:
+        return ""
+    return re.sub(r"#\d+", f"#{palette_index}", value)
+
+
 def _texture_ref_from_chunk(chunk: NuccChunkTexture, source_path: str) -> ResolvedTextureRef | None:
     pil_image = None
     if getattr(chunk, "nut", None) and chunk.nut.textures:
@@ -241,6 +263,53 @@ def _primary_texture_for_material(material: NuccChunkMaterial | None, texture_re
     return None
 
 
+def _textures_for_material(material: NuccChunkMaterial | None, texture_refs: dict[str, ResolvedTextureRef]) -> dict[str, ResolvedTextureRef | MissingTextureRef]:
+    result: dict[str, ResolvedTextureRef | MissingTextureRef] = {}
+    if material is None:
+        return result
+    slot_idx = 0
+    for group in material.texture_groups:
+        for chunk in group.texture_chunks:
+            resolved = _resolve_texture(chunk, texture_refs)
+            if resolved is None:
+                slot_idx += 1
+                continue
+            role = _texture_role(getattr(chunk, "name", "") or getattr(chunk, "filePath", ""), slot_idx)
+            result.setdefault(f"slot_{slot_idx}", resolved)
+            result.setdefault(role, resolved)
+            slot_idx += 1
+    return result
+
+
+def _texture_role(name: str, slot_idx: int | None = None) -> str:
+    lowered = (name or "").lower()
+    if "haching" in lowered or "hatching" in lowered:
+        if lowered.endswith("_n") or "_n_" in lowered or lowered.endswith("_n#0"):
+            return "hatching_normal"
+        return "hatching"
+    if re.search(r"(?:^|[_/-])n(?:[#_.-]|\d|$)", lowered):
+        return "normal"
+    if re.search(r"(?:^|[_/-])s(?:[#_.-]|\d|$)", lowered):
+        return "specular"
+    if re.search(r"(?:^|[_/-])m(?:[#_.-]|\d|$)", lowered):
+        return "mask"
+    if re.search(r"(?:^|[_/-])d(?:[#_.-]|\d|$)", lowered):
+        return "diffuse"
+    if slot_idx == 0:
+        return "diffuse"
+    if slot_idx == 1:
+        return "normal"
+    if slot_idx == 2:
+        return "hatching_normal"
+    if slot_idx == 3:
+        return "hatching"
+    if slot_idx == 4:
+        return "mask"
+    if slot_idx == 5:
+        return "specular"
+    return "diffuse"
+
+
 def _material_for_mesh(model: NuccChunkModel, mesh_index: int):
     if not model.material_chunks:
         return None
@@ -255,6 +324,20 @@ def _array_or_none(values, dtype):
     return np.array(values, dtype=dtype)
 
 
+def _to_view_space_array(values: np.ndarray) -> np.ndarray:
+    if values.size == 0:
+        return values
+    transformed = np.empty_like(values, dtype=np.float32)
+    transformed[:, 0] = values[:, 0]
+    transformed[:, 1] = values[:, 2]
+    transformed[:, 2] = -values[:, 1]
+    return transformed
+
+
+def _to_view_space_point(value) -> tuple[float, float, float]:
+    return (float(value[0]), float(value[2]), -float(value[1]))
+
+
 def _first_uv_array(vertices):
     uvs = []
     for vertex in vertices:
@@ -267,11 +350,90 @@ def _first_uv_array(vertices):
 
 def _build_bone_lines(coord_chunks: list[NuccChunkCoord]):
     lines = []
+    world_positions = _coord_world_positions(coord_chunks)
     for chunk in coord_chunks:
         node = chunk.node
         if node.parent is None:
             continue
-        start = tuple(float(x) for x in node.parent.position)
-        end = tuple(float(x) for x in node.position)
+        start_raw = world_positions.get(node.parent)
+        end_raw = world_positions.get(node)
+        if start_raw is None or end_raw is None:
+            continue
+        start = _to_view_space_point(start_raw)
+        end = _to_view_space_point(end_raw)
         lines.append((node.name, start, end))
     return lines
+
+
+def _coord_world_positions(coord_chunks: list[NuccChunkCoord]) -> dict[object, tuple[float, float, float]]:
+    matrices: dict[object, np.ndarray] = {}
+    visiting: set[object] = set()
+
+    def matrix_for(node) -> np.ndarray:
+        if node in matrices:
+            return matrices[node]
+        if node in visiting:
+            return _coord_local_matrix(node)
+        visiting.add(node)
+        local = _coord_local_matrix(node)
+        if node.parent is not None:
+            world = matrix_for(node.parent) @ local
+        else:
+            world = local
+        visiting.discard(node)
+        matrices[node] = world
+        return world
+
+    result = {}
+    for chunk in coord_chunks:
+        world = matrix_for(chunk.node)
+        result[chunk.node] = tuple(float(x) for x in world[:3, 3])
+    return result
+
+
+def _coord_local_matrix(node) -> np.ndarray:
+    matrix = np.identity(4, dtype=np.float32)
+    matrix[:3, 3] = np.array(node.position, dtype=np.float32)
+    rx, ry, rz = (float(v) for v in node.rotation)
+    sx, sy, sz = (float(v) for v in node.scale)
+    matrix = matrix @ _rotation_matrix_x(rx)
+    matrix = matrix @ _rotation_matrix_y(ry)
+    matrix = matrix @ _rotation_matrix_z(rz)
+    matrix = matrix @ np.diag([sx, sy, sz, 1.0]).astype(np.float32)
+    return matrix
+
+
+def _rotation_matrix_x(degrees: float) -> np.ndarray:
+    radians = np.deg2rad(degrees)
+    c = float(np.cos(radians))
+    s = float(np.sin(radians))
+    return np.array([
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, c, -s, 0.0],
+        [0.0, s, c, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ], dtype=np.float32)
+
+
+def _rotation_matrix_y(degrees: float) -> np.ndarray:
+    radians = np.deg2rad(degrees)
+    c = float(np.cos(radians))
+    s = float(np.sin(radians))
+    return np.array([
+        [c, 0.0, s, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [-s, 0.0, c, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ], dtype=np.float32)
+
+
+def _rotation_matrix_z(degrees: float) -> np.ndarray:
+    radians = np.deg2rad(degrees)
+    c = float(np.cos(radians))
+    s = float(np.sin(radians))
+    return np.array([
+        [c, -s, 0.0, 0.0],
+        [s, c, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ], dtype=np.float32)

@@ -4,65 +4,102 @@
   "game_files_dir": "D:\\Users\\ImGoldenWind\\Documents\\.ASBR MODDING\\ASBR files\\data",
   "backup_on_open": false,
   "check_updates_on_startup": true,
-  "last_update_check": "2026-05-30",
+  "last_update_check": "2026-07-12",
   "recent_tools": [
-    "dlg_model_viewer",
-    "dlg_anmofs",
-    "dlg_lip_sync",
-    "dlg_movelist",
-    "dlg_char_skill",
-    "dlg_dlc_info",
-    "dlg_costume",
-    "dlg_char_id",
     "dlg_char_stats",
-    "dlg_cpu_ai",
-    "dlg_assist",
-    "dlg_projectile",
-    "dlg_command_list_param",
-    "dlg_dictionary",
-    "dlg_ui_coll",
-    "dlg_support_item",
-    "dlg_tutorial_param",
-    "dlg_dialogue",
+    "dlg_stage_info",
     "dlg_game_text",
+    "dlg_dialogue",
     "dlg_story",
-    "dlg_term_list",
-    "dlg_battle_result",
+    "dlg_duel_setting",
     "dlg_dmg_effect",
     "dlg_char_const",
-    "dlg_xfbin_audio",
-    "dlg_sound",
-    "dlg_asb_acf",
-    "dlg_texture",
-    "dlg_sound_param",
-    "dlg_trophy_param",
-    "dlg_net_rank",
-    "dlg_net_result",
-    "dlg_online_mission",
-    "dlg_player_title",
-    "dlg_arcade_reward",
-    "dlg_custom_card",
-    "dlg_sound_test",
-    "dlg_gallery_param",
-    "dlg_custom_default",
-    "dlg_char_viewer",
-    "dlg_gimmick",
-    "dlg_stage_info",
-    "dlg_guide_char",
-    "dlg_duel_setting",
-    "dlg_battle_adj",
-    "dlg_hit_react",
-    "dlg_effect",
-    "dlg_usm_video"
+    "dlg_cpu_ai",
+    "dlg_projectile",
+    "dlg_anmofs",
+    "dlg_assist",
+    "dlg_movelist",
+    "dlg_command_list_param",
+    "dlg_char_skill",
+    "dlg_char_id",
+    "dlg_support_item",
+    "dlg_term_list",
+    "dlg_guide_char"
   ],
   "recent_tools_on_top": false,
   "favorite_tools": [],
   "pinned_tools": {},
+  "recent_files_by_tool": {
+    "dummy_tool": [
+      {
+        "path": "C:\\Users\\IMGOLD~1\\AppData\\Local\\Temp\\tmpnaf4k_sa.xfbin",
+        "name": "tmpnaf4k_sa.xfbin",
+        "opened_at": "2026-06-25T17:43:05+00:00"
+      }
+    ],
+    "dlg_anmofs": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\.ASBR MODDING\\ASBR files\\data\\spc\\7jir01_anmofs.xfbin",
+        "name": "7jir01_anmofs.xfbin",
+        "opened_at": "2026-06-25T18:09:14+00:00"
+      }
+    ]
+  },
+  "workspace": {
+    "active_tool_id": "dlg_char_stats",
+    "active_file_path": "",
+    "updated_at": "2026-07-12T00:51:42+00:00"
+  },
+  "restore_workspace_on_startup": false,
+  "change_summary_disabled_by_tool": {
+    "dlg_dialogue": true
+  },
+  "experimental_generic_compare_copy": false,
+  "backup_history": [],
   "animation_card_perspective": true,
   "animation_editor_fade": true,
   "animation_right_panel_fade": true,
   "animation_sidebar_highlight": true,
   "animation_theme_personality": true,
   "animation_theme_personality_motion": true,
-  "show_guide": true
+  "shortcuts": {
+    "app.back": [
+      "Alt+Left",
+      "Esc"
+    ],
+    "app.command_palette": [
+      "Ctrl+Shift+P"
+    ],
+    "app.settings": [
+      "Ctrl+,"
+    ],
+    "app.tool_search": [
+      "Ctrl+K"
+    ],
+    "editor.focus_search": [
+      "Ctrl+F"
+    ],
+    "editor.open": [
+      "Ctrl+O"
+    ],
+    "editor.save": [
+      "Ctrl+S"
+    ],
+    "editor.undo": [
+      "Ctrl+Z"
+    ],
+    "editor.redo": [
+      "Ctrl+Y",
+      "Ctrl+Shift+Z"
+    ],
+    "editor.new": [
+      "Ctrl+N"
+    ],
+    "editor.duplicate": [
+      "Ctrl+D"
+    ],
+    "editor.delete": [
+      "Del"
+    ]
+  }
 }

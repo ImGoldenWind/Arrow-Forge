@@ -1,10 +1,11 @@
 import os
 
 from PyQt6.QtCore import QSize, Qt, QUrl
-from PyQt6.QtGui import QCursor, QDesktopServices, QFont
+from PyQt6.QtGui import QCursor, QDesktopServices, QFont, QKeySequence
 from PyQt6.QtWidgets import (
     QButtonGroup, QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QRadioButton, QScrollArea, QTabWidget, QVBoxLayout, QWidget,
+    QKeySequenceEdit, QMessageBox, QPushButton, QRadioButton, QScrollArea, QTabWidget,
+    QVBoxLayout, QWidget,
 )
 
 from core import updater
@@ -12,9 +13,23 @@ from core.icons import (
     icon_constraint, icon_social_discord, icon_social_github, icon_social_nexusmods,
     icon_social_youtube,
 )
-from core.settings import save_settings
+from core.settings import (
+    clear_missing_backup_entries,
+    delete_backup_entry,
+    load_settings,
+    restore_backup_entry,
+    save_settings,
+)
+from core.shortcuts import (
+    ACTION_BY_ID,
+    SHORTCUT_ACTIONS,
+    default_shortcut_settings,
+    find_shortcut_conflict,
+    normalize_sequence,
+    normalize_shortcut_settings,
+)
 from core.style_helpers import (
-    ss_locked_theme_name, ss_page_scrollarea, ss_settings_card, ss_settings_check,
+    ss_btn, ss_input, ss_locked_theme_name, ss_page_scrollarea, ss_settings_card, ss_settings_check,
     ss_settings_tab_widget, ss_settings_top_card, ss_theme_lock_button,
 )
 from core.themes import P, THEMES, apply_theme, is_theme_available, visible_theme_keys
@@ -95,11 +110,13 @@ class SettingsDialogMixin:
         appearance_layout = _make_settings_tab("settings_tab_appearance")
         files_layout = _make_settings_tab("settings_tab_files")
         updates_tab_layout = _make_settings_tab("settings_tab_updates")
+        hotkeys_layout = _make_settings_tab("settings_tab_hotkeys")
+        experimental_layout = _make_settings_tab("settings_tab_experimental")
 
-        def _settings_checkbox(text_key, setting_key, callback, indent=0):
+        def _settings_checkbox(text_key, setting_key, callback, indent=0, default=True):
             checkbox = QCheckBox(self.t(text_key))
             checkbox.setFont(QFont("Segoe UI", 14))
-            checkbox.setChecked(self._settings.get(setting_key, True))
+            checkbox.setChecked(self._settings.get(setting_key, default))
             style = ss_settings_check()
             if indent:
                 style += (
@@ -172,6 +189,11 @@ class SettingsDialogMixin:
             "recent_tools_on_top",
             "recent_tools_on_top",
             self._set_recent_tools_on_top,
+        ))
+        tool_list_layout.addWidget(_settings_checkbox(
+            "restore_workspace_on_startup",
+            "restore_workspace_on_startup",
+            self._set_restore_workspace_on_startup,
         ))
 
         general_layout.addWidget(tool_list_card)
@@ -388,6 +410,8 @@ class SettingsDialogMixin:
         backup_layout.addWidget(backup_hint)
 
         files_layout.addWidget(backup_card)
+        files_layout.addSpacing(16)
+        self._build_backup_manager(files_layout)
         files_layout.addStretch()
 
         # Updates section
@@ -438,6 +462,42 @@ class SettingsDialogMixin:
         updates_tab_layout.addWidget(updates_card)
         updates_tab_layout.addStretch()
 
+        self._build_shortcuts_settings_tab(hotkeys_layout)
+
+        # Experimental section
+        experimental_card = QFrame()
+        experimental_card.setStyleSheet(ss_settings_top_card())
+        experimental_card_layout = QVBoxLayout(experimental_card)
+        experimental_card_layout.setContentsMargins(20, 18, 20, 18)
+        experimental_card_layout.setSpacing(10)
+
+        experimental_title = QLabel(self.t("experimental_title"))
+        experimental_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        experimental_title.setStyleSheet(f"color: {P['accent']}; border: none;")
+        experimental_card_layout.addWidget(experimental_title)
+
+        experimental_hint = QLabel(self.t("experimental_hint"))
+        experimental_hint.setFont(QFont("Segoe UI", 12))
+        experimental_hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
+        experimental_hint.setWordWrap(True)
+        experimental_card_layout.addWidget(experimental_hint)
+
+        experimental_card_layout.addWidget(_settings_checkbox(
+            "experimental_generic_compare_copy",
+            "experimental_generic_compare_copy",
+            self._set_experimental_generic_compare_copy,
+            default=False,
+        ))
+
+        generic_compare_hint = QLabel(self.t("experimental_generic_compare_copy_hint"))
+        generic_compare_hint.setFont(QFont("Segoe UI", 12))
+        generic_compare_hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
+        generic_compare_hint.setWordWrap(True)
+        experimental_card_layout.addWidget(generic_compare_hint)
+
+        experimental_layout.addWidget(experimental_card)
+        experimental_layout.addStretch()
+
         # Guide Character section
         guide_card = QFrame()
         guide_card.setStyleSheet(ss_settings_card())
@@ -477,6 +537,324 @@ class SettingsDialogMixin:
         panel_layout.addWidget(tabs, 1)
 
         self._show_frame(panel)
+
+    def _build_shortcuts_settings_tab(self, layout):
+        self._shortcut_editors = {}
+        self._settings["shortcuts"] = normalize_shortcut_settings(self._settings.get("shortcuts", {}))
+
+        intro_card = QFrame()
+        intro_card.setStyleSheet(ss_settings_top_card())
+        intro_layout = QVBoxLayout(intro_card)
+        intro_layout.setContentsMargins(20, 18, 20, 18)
+        intro_layout.setSpacing(10)
+
+        title = QLabel(self.t("shortcuts_title"))
+        title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {P['accent']}; border: none;")
+        intro_layout.addWidget(title)
+
+        hint = QLabel(self.t("shortcuts_hint"))
+        hint.setFont(QFont("Segoe UI", 12))
+        hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
+        hint.setWordWrap(True)
+        intro_layout.addWidget(hint)
+
+        reset_all = QPushButton(self.t("shortcut_reset_all"))
+        reset_all.setFixedHeight(30)
+        reset_all.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        reset_all.setStyleSheet(ss_btn())
+        reset_all.clicked.connect(self._reset_all_shortcuts)
+        intro_layout.addWidget(reset_all, 0, Qt.AlignmentFlag.AlignLeft)
+
+        layout.addWidget(intro_card)
+        layout.addSpacing(16)
+
+        for group_key in ("shortcuts_group_application", "shortcuts_group_editor"):
+            card = QFrame()
+            card.setStyleSheet(ss_settings_card())
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(20, 18, 20, 18)
+            card_layout.setSpacing(8)
+
+            group_title = QLabel(self.t(group_key))
+            group_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+            group_title.setStyleSheet(f"color: {P['accent']}; border: none;")
+            card_layout.addWidget(group_title)
+
+            header = QWidget()
+            header.setStyleSheet("border: none; background: transparent;")
+            header_layout = QHBoxLayout(header)
+            header_layout.setContentsMargins(0, 0, 0, 0)
+            header_layout.setSpacing(8)
+            header_layout.addSpacing(260)
+            for key in ("shortcut_primary", "shortcut_secondary"):
+                label = QLabel(self.t(key))
+                label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+                label.setStyleSheet(f"color: {P['text_sec']}; border: none;")
+                label.setFixedWidth(150)
+                header_layout.addWidget(label)
+            header_layout.addStretch()
+            card_layout.addWidget(header)
+
+            for action in SHORTCUT_ACTIONS:
+                if action.group_key == group_key:
+                    card_layout.addWidget(self._make_shortcut_row(action))
+
+            layout.addWidget(card)
+            layout.addSpacing(16)
+
+        layout.addStretch()
+
+    def _make_shortcut_row(self, action):
+        row = QWidget()
+        row.setStyleSheet("border: none; background: transparent;")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+
+        label = QLabel(self.t(action.label_key))
+        label.setFont(QFont("Segoe UI", 12))
+        label.setStyleSheet(f"color: {P['text_main']}; border: none;")
+        label.setFixedWidth(252)
+        row_layout.addWidget(label)
+
+        current = self._settings.get("shortcuts", {}).get(action.action_id, [])
+        for index in range(2):
+            editor = QKeySequenceEdit()
+            editor.setFixedWidth(150)
+            editor.setFixedHeight(30)
+            editor.setFont(QFont("Segoe UI", 10))
+            editor.setStyleSheet(ss_input())
+            if index < len(current):
+                editor.setKeySequence(QKeySequence(current[index]))
+            editor.keySequenceChanged.connect(
+                lambda sequence, action_id=action.action_id, slot=index, widget=editor:
+                    self._set_shortcut_sequence(action_id, slot, sequence, widget)
+            )
+            self._shortcut_editors[(action.action_id, index)] = editor
+            row_layout.addWidget(editor)
+
+        reset_btn = QPushButton(self.t("shortcut_reset"))
+        reset_btn.setFixedHeight(30)
+        reset_btn.setFont(QFont("Segoe UI", 10))
+        reset_btn.setStyleSheet(ss_btn())
+        reset_btn.clicked.connect(lambda _checked=False, action_id=action.action_id: self._reset_shortcut(action_id))
+        row_layout.addWidget(reset_btn)
+        row_layout.addStretch()
+        return row
+
+    def _set_shortcut_sequence(self, action_id: str, index: int, sequence, widget):
+        current = normalize_shortcut_settings(self._settings.get("shortcuts", {}))
+        sequences = list(current.get(action_id, []))
+        while len(sequences) <= index:
+            sequences.append("")
+        sequences[index] = normalize_sequence(sequence)
+        sequences = [item for item in sequences if item]
+        deduped = []
+        for item in sequences:
+            if item not in deduped:
+                deduped.append(item)
+        current[action_id] = deduped
+
+        conflict = find_shortcut_conflict(current)
+        if conflict:
+            shortcut, first, second = conflict
+            QMessageBox.warning(
+                self,
+                self.t("shortcuts_conflict_title"),
+                self.t(
+                    "shortcuts_conflict_message",
+                    shortcut=shortcut,
+                    first=self.t(ACTION_BY_ID[first].label_key),
+                    second=self.t(ACTION_BY_ID[second].label_key),
+                ),
+            )
+            self._refresh_shortcut_editors()
+            return
+
+        self._settings["shortcuts"] = current
+        save_settings(self._settings)
+        manager = getattr(self, "_shortcut_manager", None)
+        if manager is not None:
+            manager.reload()
+        self._refresh_shortcut_editors()
+
+    def _reset_shortcut(self, action_id: str):
+        current = normalize_shortcut_settings(self._settings.get("shortcuts", {}))
+        current[action_id] = default_shortcut_settings().get(action_id, [])
+        self._settings["shortcuts"] = current
+        save_settings(self._settings)
+        manager = getattr(self, "_shortcut_manager", None)
+        if manager is not None:
+            manager.reload()
+        self._refresh_shortcut_editors()
+
+    def _reset_all_shortcuts(self):
+        self._settings["shortcuts"] = default_shortcut_settings()
+        save_settings(self._settings)
+        manager = getattr(self, "_shortcut_manager", None)
+        if manager is not None:
+            manager.reload()
+        self._refresh_shortcut_editors()
+
+    def _refresh_shortcut_editors(self):
+        shortcuts = normalize_shortcut_settings(self._settings.get("shortcuts", {}))
+        self._settings["shortcuts"] = shortcuts
+        for (action_id, index), editor in getattr(self, "_shortcut_editors", {}).items():
+            sequences = shortcuts.get(action_id, [])
+            value = sequences[index] if index < len(sequences) else ""
+            editor.blockSignals(True)
+            editor.setKeySequence(QKeySequence(value))
+            editor.blockSignals(False)
+
+    def _build_backup_manager(self, layout):
+        card = QFrame()
+        card.setStyleSheet(ss_settings_card())
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(20, 18, 20, 18)
+        card_layout.setSpacing(10)
+
+        title = QLabel(self.t("qol_backup_manager_title"))
+        title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {P['accent']}; border: none;")
+        card_layout.addWidget(title)
+
+        self._backup_manager_search = QLineEdit()
+        self._backup_manager_search.setPlaceholderText(self.t("qol_backup_search"))
+        self._backup_manager_search.setFixedHeight(30)
+        self._backup_manager_search.setFont(QFont("Segoe UI", 11))
+        self._backup_manager_search.setStyleSheet(ss_input())
+        self._backup_manager_search.textChanged.connect(self._refresh_backup_manager)
+        card_layout.addWidget(self._backup_manager_search)
+
+        self._backup_manager_list = QWidget()
+        self._backup_manager_list.setStyleSheet("background: transparent; border: none;")
+        self._backup_manager_list_layout = QVBoxLayout(self._backup_manager_list)
+        self._backup_manager_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._backup_manager_list_layout.setSpacing(6)
+        card_layout.addWidget(self._backup_manager_list)
+
+        footer = QWidget()
+        footer.setStyleSheet("background: transparent; border: none;")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(0, 0, 0, 0)
+        footer_layout.addStretch()
+        clear_missing = QPushButton(self.t("qol_backup_clear_missing"))
+        clear_missing.setFixedHeight(30)
+        clear_missing.setStyleSheet(ss_btn())
+        clear_missing.clicked.connect(self._clear_missing_backups)
+        footer_layout.addWidget(clear_missing)
+        card_layout.addWidget(footer)
+
+        layout.addWidget(card)
+        self._refresh_backup_manager()
+
+    def _clear_backup_manager_rows(self):
+        layout = getattr(self, "_backup_manager_list_layout", None)
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _refresh_backup_manager(self):
+        layout = getattr(self, "_backup_manager_list_layout", None)
+        if layout is None:
+            return
+        self._settings = load_settings()
+        self._clear_backup_manager_rows()
+        query = ""
+        if getattr(self, "_backup_manager_search", None) is not None:
+            query = self._backup_manager_search.text().strip().lower()
+        history = self._settings.get("backup_history", [])
+        shown = 0
+        for entry in history:
+            source_path = entry.get("source_path", "")
+            backup_path = entry.get("backup_path", "")
+            haystack = " ".join((source_path, backup_path, entry.get("tool_id", ""), entry.get("reason", ""))).lower()
+            if query and query not in haystack:
+                continue
+            layout.addWidget(self._make_backup_row(entry))
+            shown += 1
+            if shown >= 30:
+                break
+        if not shown:
+            empty = QLabel(self.t("qol_backup_empty"))
+            empty.setFont(QFont("Segoe UI", 11))
+            empty.setStyleSheet(f"color: {P['text_dim']}; border: none;")
+            layout.addWidget(empty)
+
+    def _make_backup_row(self, entry):
+        row = QFrame()
+        row.setStyleSheet(f"QFrame {{ background: {P['bg_card']}; border: 1px solid {P['border']}; border-radius: 6px; }}")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(10, 8, 10, 8)
+        row_layout.setSpacing(8)
+
+        backup_path = entry.get("backup_path", "")
+        source_path = entry.get("source_path", "")
+        exists = os.path.isfile(backup_path)
+        label = QLabel(self.t(
+            "qol_backup_row",
+            name=os.path.basename(backup_path) or backup_path,
+            reason=entry.get("reason", ""),
+            status=self.t("qol_backup_status_ok") if exists else self.t("qol_backup_status_missing"),
+        ))
+        label.setFont(QFont("Segoe UI", 11))
+        label.setToolTip(f"{backup_path}\n{source_path}")
+        label.setStyleSheet(f"color: {P['text_main'] if exists else P['text_dim']}; border: none; background: transparent;")
+        row_layout.addWidget(label, 1)
+
+        open_btn = QPushButton(self.t("qol_open_folder"))
+        open_btn.setFixedHeight(28)
+        open_btn.setStyleSheet(ss_btn())
+        open_btn.clicked.connect(lambda _checked=False, p=backup_path: self._open_backup_folder(p))
+        row_layout.addWidget(open_btn)
+
+        restore_btn = QPushButton(self.t("qol_restore"))
+        restore_btn.setFixedHeight(28)
+        restore_btn.setEnabled(exists)
+        restore_btn.setStyleSheet(ss_btn(accent=True))
+        restore_btn.clicked.connect(lambda _checked=False, e=dict(entry): self._restore_backup(e))
+        row_layout.addWidget(restore_btn)
+
+        delete_btn = QPushButton(self.t("qol_delete"))
+        delete_btn.setFixedHeight(28)
+        delete_btn.setStyleSheet(ss_btn(danger=True))
+        delete_btn.clicked.connect(lambda _checked=False, p=backup_path: self._delete_backup(p))
+        row_layout.addWidget(delete_btn)
+        return row
+
+    def _open_backup_folder(self, backup_path):
+        folder = os.path.dirname(backup_path)
+        if folder and os.path.isdir(folder):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
+    def _restore_backup(self, entry):
+        result = QMessageBox.question(
+            self,
+            self.t("qol_backup_restore_title"),
+            self.t("qol_backup_restore_message", path=entry.get("source_path", "")),
+        )
+        if result != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            restore_backup_entry(entry)
+        except Exception as exc:
+            QMessageBox.critical(self, self.t("dlg_title_error"), self.t("qol_backup_restore_error", error=exc))
+            return
+        self._refresh_backup_manager()
+
+    def _delete_backup(self, backup_path):
+        delete_backup_entry(backup_path)
+        self._refresh_backup_manager()
+
+    def _clear_missing_backups(self):
+        removed = clear_missing_backup_entries()
+        QMessageBox.information(self, self.t("qol_backup_manager_title"), self.t("qol_backup_missing_cleared", count=removed))
+        self._refresh_backup_manager()
 
     def _select_game_files_dir(self):
         current_dir = self._settings.get("game_files_dir", "")
@@ -590,6 +968,14 @@ class SettingsDialogMixin:
             return
         if self._current_cat in self._cat_frames:
             self._show_category(self._current_cat)
+
+    def _set_restore_workspace_on_startup(self, value: bool):
+        self._settings["restore_workspace_on_startup"] = value
+        save_settings(self._settings)
+
+    def _set_experimental_generic_compare_copy(self, value: bool):
+        self._settings["experimental_generic_compare_copy"] = value
+        save_settings(self._settings)
 
     def _open_credits(self):
         if self._settings_win:
