@@ -8,19 +8,21 @@ from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit,
     QVBoxLayout, QHBoxLayout, QScrollArea,
     QFileDialog, QMessageBox,
-    QTabWidget, QGridLayout,
+    QTabWidget, QGridLayout, QColorDialog,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QColor
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_sep, ss_accent_sep, ss_input,
+    add_editor_card_title, make_editor_field, make_empty_state,
+    make_editor_field_shell, make_editor_grid_card,
+    ss_accent_sep, ss_bg_dark, ss_bg_panel, ss_btn, ss_input,
     ss_sidebar_btn, ss_search, ss_scrollarea, ss_scrollarea_transparent,
-    ss_section_label, ss_field_label, ss_tab_widget,
+    ss_editor_card, ss_file_label, ss_sep,
+    ss_sidebar_frame, ss_tab_widget, ss_transparent,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
-from core.utils.ui_helpers import _add_card_section_title
 from core.editor_file_state import set_file_label
 from parsers.stageinfo_parser import (
     parse_stageinfo_xfbin, save_stageinfo_xfbin,
@@ -43,41 +45,23 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
 
 def _card_frame():
-    f = QFrame()
-    f.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
-    return f
-
-
-def _section_lbl(text):
-    lbl = QLabel(text)
-    lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
-    lbl.setStyleSheet(ss_section_label())
-    lbl.setContentsMargins(20, 10, 0, 2)
-    return lbl
+    card = QFrame()
+    card.setObjectName("EditorCard")
+    card.setStyleSheet(ss_editor_card())
+    return card
 
 
 def _make_field(label_text, value_text):
-    f = QWidget()
-    f.setStyleSheet("background: transparent;")
-    fl = QVBoxLayout(f)
-    fl.setContentsMargins(0, 0, 0, 0)
-    fl.setSpacing(2)
-    lbl = QLabel(str(label_text))
-    lbl.setFont(QFont("Segoe UI", 12))
-    lbl.setStyleSheet(ss_field_label())
-    fl.addWidget(lbl)
-    e = QLineEdit(str(value_text))
-    e.setFixedHeight(30)
-    e.setFont(QFont("Consolas", 13))
-    e.setStyleSheet(ss_input())
-    fl.addWidget(e)
-    return f, e
+    return make_editor_field(label_text, value_text)
 
 
 def _entry_btn(title, subtitle, selected, on_click):
@@ -109,7 +93,7 @@ def _right_scroll():
     scroll.setFrameShape(QFrame.Shape.NoFrame)
     scroll.setStyleSheet(ss_scrollarea())
     inner = QWidget()
-    inner.setStyleSheet(f"background-color: {P['bg_dark']};")
+    inner.setStyleSheet(ss_bg_dark())
     layout = QVBoxLayout(inner)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(8)
@@ -124,37 +108,76 @@ class _ColorWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._updating = False
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(4)
+        row.setSpacing(6)
+
+        self._preview = QPushButton()
+        self._preview.setFixedSize(52, 30)
+        self._preview.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._preview.setToolTip(ui_text("ui_stageinfo_pick_color"))
+        self._preview.clicked.connect(self._pick_color)
+        row.addWidget(self._preview)
+
         self._edits = []
-        for _ in range(4):
+        for placeholder in ("B0", "B1", "B2", "B3"):
             e = QLineEdit("00")
             e.setFixedWidth(36)
-            e.setFixedHeight(28)
+            e.setFixedHeight(30)
             e.setMaxLength(2)
+            e.setPlaceholderText(placeholder)
             e.setFont(QFont("Consolas", 10))
             e.setStyleSheet(ss_input())
             e.textChanged.connect(self._on_change)
             row.addWidget(e)
             self._edits.append(e)
-        self._preview = QLabel()
-        self._preview.setFixedSize(24, 18)
-        self._preview.setStyleSheet(f"border: 1px solid {P['border']}; border-radius: 3px;")
-        row.addWidget(self._preview)
         row.addStretch()
 
     def _on_change(self):
+        if self._updating:
+            return
+        self._update_preview()
+        self.changed.emit()
+
+    def _current_color(self):
+        try:
+            vals = [int(e.text() or "0", 16) & 0xFF for e in self._edits]
+        except ValueError:
+            vals = [0, 0, 0, 255]
+        return QColor(vals[0], vals[1], vals[2], vals[3])
+
+    def _pick_color(self):
+        color = QColorDialog.getColor(
+            self._current_color(),
+            self,
+            ui_text("ui_stageinfo_pick_color"),
+            QColorDialog.ColorDialogOption.ShowAlphaChannel,
+        )
+        if not color.isValid():
+            return
+        self._updating = True
+        values = (color.red(), color.green(), color.blue(), color.alpha())
+        for edit, value in zip(self._edits, values):
+            edit.setText(f"{value:02X}")
+        self._updating = False
         self._update_preview()
         self.changed.emit()
 
     def _update_preview(self):
         try:
-            r, g, b = (int(self._edits[i].text() or '0', 16) for i in range(3))
+            r, g, b, a = (int(self._edits[i].text() or '0', 16) & 0xFF for i in range(4))
         except ValueError:
+            self._preview.setStyleSheet(
+                f"QPushButton {{ background-color: {P['bg_card']}; "
+                f"border: 1px solid {P.get('danger', P.get('accent_dim', P['accent']))}; "
+                f"border-radius: 5px; }}"
+            )
             return
         self._preview.setStyleSheet(
-            f"background-color: rgb({r},{g},{b}); border: 1px solid {P['border']}; border-radius: 3px;"
+            f"QPushButton {{ background-color: rgba({r}, {g}, {b}, {a}); "
+            f"border: 1px solid {P['border']}; border-radius: 5px; }}"
+            f"QPushButton:hover {{ border: 1px solid {P['accent']}; }}"
         )
 
     def get_bytes(self):
@@ -167,10 +190,14 @@ class _ColorWidget(QWidget):
         return bytes(out)
 
     def set_bytes(self, data):
-        self._edits[0].blockSignals(True)
+        self._updating = True
+        for edit in self._edits:
+            edit.blockSignals(True)
         for e, b in zip(self._edits, data[:4]):
             e.setText(ui_text("ui_stageinfo_value", p0=b))
-        self._edits[0].blockSignals(False)
+        for edit in self._edits:
+            edit.blockSignals(False)
+        self._updating = False
         self._update_preview()
 
 
@@ -191,22 +218,18 @@ class _GeneralTab(QWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet(ss_scrollarea())
         inner = QWidget()
-        inner.setStyleSheet(f"background-color: {P['bg_dark']};")
+        inner.setStyleSheet(ss_bg_dark())
         root = QVBoxLayout(inner)
         root.setContentsMargins(0, 8, 0, 8)
         root.setSpacing(8)
 
         # Stage Code card
-        code_card = _card_frame()
-        code_inner = QWidget(code_card)
-        code_inner.setStyleSheet("background: transparent;")
-        code_lay = QHBoxLayout(code_inner)
-        code_lay.setContentsMargins(0, 4, 0, 0)
-        code_main = QVBoxLayout(code_card)
-        code_main.setContentsMargins(12, 12, 12, 12)
-        code_main.setSpacing(8)
-        _add_card_section_title(code_main, ui_text("ui_stageinfo_stage_code_max_23_chars"))
-        code_main.addWidget(code_inner)
+        code_card, code_grid = make_editor_grid_card(
+            title=ui_text("ui_stageinfo_stage_code_max_23_chars"),
+            icon_name="fa6s.barcode",
+            grid_margins=(0, 4, 0, 0),
+            vertical_spacing=8,
+        )
 
         self._code_edit = QLineEdit()
         self._code_edit.setMaxLength(23)
@@ -214,7 +237,10 @@ class _GeneralTab(QWidget):
         self._code_edit.setFont(QFont("Consolas", 16))
         self._code_edit.setStyleSheet(ss_input())
         self._code_edit.editingFinished.connect(self._on_change)
+        code_field, code_lay, _label, _hint = make_editor_field_shell(ui_text("ui_stageinfo_code"))
         code_lay.addWidget(self._code_edit)
+        code_grid.addWidget(code_field, 0, 0)
+        code_grid.setColumnStretch(0, 1)
         root.addWidget(code_card)
 
         # XfbinPaths card
@@ -222,7 +248,7 @@ class _GeneralTab(QWidget):
         paths_lay = QVBoxLayout(self._paths_card)
         paths_lay.setContentsMargins(12, 12, 12, 12)
         paths_lay.setSpacing(6)
-        _add_card_section_title(paths_lay, ui_text("ui_stageinfo_xfbin_paths_asset_files_this_stage_loads"))
+        add_editor_card_title(paths_lay, ui_text("ui_stageinfo_xfbin_paths_asset_files_this_stage_loads"), "fa6s.folder-tree")
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
@@ -243,7 +269,7 @@ class _GeneralTab(QWidget):
         paths_lay.addLayout(btn_row)
 
         self._paths_container = QWidget()
-        self._paths_container.setStyleSheet("background: transparent;")
+        self._paths_container.setStyleSheet(ss_transparent())
         self._paths_layout = QVBoxLayout(self._paths_container)
         self._paths_layout.setContentsMargins(0, 0, 0, 0)
         self._paths_layout.setSpacing(4)
@@ -350,50 +376,39 @@ class _ParamsTab(QWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet(ss_scrollarea())
         inner = QWidget()
-        inner.setStyleSheet(f"background-color: {P['bg_dark']};")
+        inner.setStyleSheet(ss_bg_dark())
         root = QVBoxLayout(inner)
         root.setContentsMargins(0, 8, 0, 8)
         root.setSpacing(8)
 
         # Colours card
-        col_card = _card_frame()
-        col_inner = QWidget(col_card)
-        col_inner.setStyleSheet("background: transparent;")
-        col_grid = QGridLayout(col_inner)
-        col_grid.setContentsMargins(0, 4, 0, 0)
-        col_grid.setHorizontalSpacing(20)
-        col_grid.setVerticalSpacing(8)
-        col_main = QVBoxLayout(col_card)
-        col_main.setContentsMargins(12, 12, 12, 12)
-        col_main.setSpacing(8)
-        _add_card_section_title(col_main, ui_text("ui_stageinfo_colours_4_bytes_each_b0_b1_b2_b3_raw_hex"))
-        col_main.addWidget(col_inner)
+        col_card, col_grid = make_editor_grid_card(
+            title=ui_text("ui_stageinfo_colours_4_bytes_each_b0_b1_b2_b3_raw_hex"),
+            icon_name="fa6s.palette",
+            grid_margins=(0, 4, 0, 0),
+            horizontal_spacing=16,
+            vertical_spacing=12,
+        )
 
         for idx, (off, lbl_text) in enumerate(zip(self._COLOR_OFFSETS, self._COLOR_LABELS)):
-            lbl = QLabel(lbl_text)
-            lbl.setFont(QFont("Segoe UI", 12))
-            lbl.setStyleSheet(ss_field_label())
+            fw, fl, _label, _hint = make_editor_field_shell(lbl_text)
             cw = _ColorWidget()
             cw.changed.connect(self._on_change)
-            col_grid.addWidget(lbl, idx, 0)
-            col_grid.addWidget(cw, idx, 1)
+            fl.addWidget(cw)
+            row, col = divmod(idx, 2)
+            col_grid.addWidget(fw, row, col)
+            col_grid.setColumnStretch(col, 1)
             self._color_widgets.append((off, cw))
 
         root.addWidget(col_card)
 
         # Scalar params card
-        scl_card = _card_frame()
-        scl_inner = QWidget(scl_card)
-        scl_inner.setStyleSheet("background: transparent;")
-        scl_grid = QGridLayout(scl_inner)
-        scl_grid.setContentsMargins(0, 4, 0, 0)
-        scl_grid.setHorizontalSpacing(16)
-        scl_grid.setVerticalSpacing(8)
-        scl_main = QVBoxLayout(scl_card)
-        scl_main.setContentsMargins(12, 12, 12, 12)
-        scl_main.setSpacing(8)
-        _add_card_section_title(scl_main, ui_text("ui_stageinfo_scalar_parameters"))
-        scl_main.addWidget(scl_inner)
+        scl_card, scl_grid = make_editor_grid_card(
+            title=ui_text("ui_stageinfo_scalar_parameters"),
+            icon_name="fa6s.sliders",
+            grid_margins=(0, 4, 0, 0),
+            vertical_spacing=10,
+        )
 
         for fi, (off, lbl_text, is_float) in enumerate(self._SCALAR_FIELDS):
             row, col = divmod(fi, 3)
@@ -404,32 +419,18 @@ class _ParamsTab(QWidget):
         root.addWidget(scl_card)
 
         # Reserved bytes card
-        res_card = _card_frame()
-        res_inner = QWidget(res_card)
-        res_inner.setStyleSheet("background: transparent;")
-        res_grid = QGridLayout(res_inner)
-        res_grid.setContentsMargins(0, 4, 0, 0)
-        res_grid.setHorizontalSpacing(16)
-        res_grid.setVerticalSpacing(8)
-        res_main = QVBoxLayout(res_card)
-        res_main.setContentsMargins(12, 12, 12, 12)
-        res_main.setSpacing(8)
-        _add_card_section_title(res_main, ui_text("ui_stageinfo_reserved_unknown_bytes_hex"))
-        res_main.addWidget(res_inner)
+        res_card, res_grid = make_editor_grid_card(
+            title=ui_text("ui_stageinfo_reserved_unknown_bytes_hex"),
+            icon_name="fa6s.code",
+            grid_margins=(0, 4, 0, 0),
+            vertical_spacing=10,
+        )
 
         for ci, (off, sz, lbl_text) in enumerate([
             (44, 8,  ui_text("ui_stageinfo_reserved_1_44_8_bytes")),
             (96, 40, ui_text("ui_stageinfo_reserved_2_96_40_bytes")),
         ]):
-            fw = QWidget()
-            fw.setStyleSheet("background: transparent;")
-            fl = QVBoxLayout(fw)
-            fl.setContentsMargins(0, 0, 0, 0)
-            fl.setSpacing(2)
-            lbl = QLabel(lbl_text)
-            lbl.setFont(QFont("Segoe UI", 12))
-            lbl.setStyleSheet(ss_field_label())
-            fl.addWidget(lbl)
+            fw, fl, _label, _hint = make_editor_field_shell(lbl_text)
             e = QLineEdit()
             e.setFixedHeight(30)
             e.setFont(QFont("Consolas", 13))
@@ -449,15 +450,9 @@ class _ParamsTab(QWidget):
         outer.addWidget(scroll)
 
     def _make_scalar_field(self, off, lbl_text, is_float):
-        fw = QWidget()
-        fw.setStyleSheet("background: transparent;")
-        fl = QVBoxLayout(fw)
-        fl.setContentsMargins(0, 0, 0, 0)
-        fl.setSpacing(2)
-        lbl = QLabel(ui_text("ui_stageinfo_value_value", p0=lbl_text, p1=off))
-        lbl.setFont(QFont("Segoe UI", 12))
-        lbl.setStyleSheet(ss_field_label())
-        fl.addWidget(lbl)
+        fw, fl, _label, _hint = make_editor_field_shell(
+            ui_text("ui_stageinfo_value_value", p0=lbl_text, p1=off)
+        )
         w = QLineEdit()
         w.setFixedHeight(30)
         w.setFont(QFont("Consolas", 13))
@@ -523,7 +518,7 @@ class _ClumpsTab(QWidget):
         root.setSpacing(0)
 
         btn_bar = QFrame()
-        btn_bar.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border: none; }}")
+        btn_bar.setStyleSheet(ss_bg_panel() + " border: none;")
         btn_bar_lay = QHBoxLayout(btn_bar)
         btn_bar_lay.setContentsMargins(12, 6, 12, 6)
         btn_bar_lay.setSpacing(4)
@@ -702,7 +697,7 @@ class StageInfoEditor(QWidget):
         # Toolbar
         top = QFrame()
         top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(f"background-color: {P['bg_panel']};")
+        top.setStyleSheet(ss_bg_panel())
         tl = QHBoxLayout(top)
         tl.setContentsMargins(12, 8, 12, 8)
         tl.setSpacing(4)
@@ -724,7 +719,7 @@ class StageInfoEditor(QWidget):
 
         self._file_lbl = QLabel(ui_text("xfa_no_file"))
         self._file_lbl.setFont(QFont("Consolas", 12))
-        self._file_lbl.setStyleSheet(f"color: {P['text_dim']};")
+        self._file_lbl.setStyleSheet(ss_file_label())
         tl.addWidget(self._file_lbl)
         tl.addStretch()
 
@@ -744,7 +739,7 @@ class StageInfoEditor(QWidget):
         # Left sidebar
         list_frame = QFrame()
         list_frame.setFixedWidth(260)
-        list_frame.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; }}")
+        list_frame.setStyleSheet(ss_sidebar_frame())
         list_vlay = QVBoxLayout(list_frame)
         list_vlay.setContentsMargins(8, 8, 8, 4)
         list_vlay.setSpacing(4)
@@ -758,7 +753,7 @@ class StageInfoEditor(QWidget):
         list_vlay.addWidget(self._search)
 
         actions_frame = QWidget()
-        actions_frame.setStyleSheet("background: transparent;")
+        actions_frame.setStyleSheet(ss_transparent())
         actions_layout = QHBoxLayout(actions_frame)
         actions_layout.setContentsMargins(0, 2, 0, 4)
         actions_layout.setSpacing(4)
@@ -796,7 +791,7 @@ class StageInfoEditor(QWidget):
         self._list_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._list_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._list_widget = QWidget()
-        self._list_widget.setStyleSheet("background-color: transparent;")
+        self._list_widget.setStyleSheet(ss_transparent())
         self._list_layout = QVBoxLayout(self._list_widget)
         self._list_layout.setContentsMargins(0, 0, 0, 0)
         self._list_layout.setSpacing(1)
@@ -808,21 +803,27 @@ class StageInfoEditor(QWidget):
 
         divider = QFrame()
         divider.setFixedWidth(1)
-        divider.setStyleSheet(f"background-color: {P['mid']};")
+        divider.setStyleSheet(ss_sep())
         main_layout.addWidget(divider)
 
         # Right panel
         right = QWidget()
-        right.setStyleSheet(f"background-color: {P['bg_dark']};")
+        right.setStyleSheet(ss_bg_dark())
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
         right_lay.setSpacing(0)
 
-        self._placeholder = QLabel(ui_text("ui_stageinfo_open_a_stageinfo_bin_xfbin_file_to_begin_editing"))
-        self._placeholder.setFont(QFont("Segoe UI", 16))
-        self._placeholder.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        right_lay.addWidget(self._placeholder, 1)
+        self._placeholder_wrap = QWidget(right)
+        self._placeholder_wrap.setStyleSheet(ss_transparent())
+        self._placeholder_layout = QVBoxLayout(self._placeholder_wrap)
+        self._placeholder_layout.setContentsMargins(0, 0, 0, 0)
+        self._placeholder_layout.setSpacing(0)
+        self._show_placeholder(
+            ui_text("ui_stageinfo_open_a_stageinfo_bin_xfbin_file_to_begin_editing"),
+            title=ui_text("no_file_loaded"),
+            icon_name="fa6s.map-location-dot",
+        )
+        right_lay.addWidget(self._placeholder_wrap, 1)
 
         self._tabs = QTabWidget()
         self._tabs.setFont(QFont("Segoe UI", 11))
@@ -845,6 +846,19 @@ class StageInfoEditor(QWidget):
 
         main_layout.addWidget(right, 1)
         root.addWidget(main, 1)
+
+    def _show_placeholder(self, text, *, title=None, icon_name="fa6s.list"):
+        _clear_layout(self._placeholder_layout)
+        card = make_empty_state(
+            self._placeholder_wrap,
+            title=title or ui_text("ui_model_viewer_select_item"),
+            text=text,
+            icon_name=icon_name,
+        )
+        self._placeholder_layout.addStretch()
+        self._placeholder_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
+        self._placeholder_layout.addStretch()
+        self._placeholder_wrap.setVisible(True)
 
     # File I/O
 
@@ -876,11 +890,12 @@ class StageInfoEditor(QWidget):
         self._btn_dup.setEnabled(True)
         self._btn_del.setEnabled(True)
 
-        self._placeholder.setText(ui_text("ui_stageinfo_select_a_stage"))
-        self._placeholder.setVisible(True)
+        self._show_placeholder(ui_text("ui_stageinfo_select_a_stage"))
         self._tabs.setVisible(False)
 
         self._rebuild_stage_list()
+        if self._result['stages']:
+            self._on_stage_selected(0)
 
     def _save_file(self):
         if not self._filepath or self._result is None:
@@ -932,7 +947,7 @@ class StageInfoEditor(QWidget):
         self._tab_params.load_stage(stage)
         self._tab_clumps.load_stage(stage)
 
-        self._placeholder.setVisible(False)
+        self._placeholder_wrap.setVisible(False)
         self._tabs.setVisible(True)
 
     def _flush_current(self):
@@ -1002,8 +1017,7 @@ class StageInfoEditor(QWidget):
         self._current_idx = -1
         del self._result['stages'][row]
         self._tabs.setVisible(False)
-        self._placeholder.setVisible(True)
-        self._placeholder.setText(ui_text("ui_stageinfo_select_a_stage"))
+        self._show_placeholder(ui_text("ui_stageinfo_select_a_stage"))
         self._rebuild_stage_list()
         self._mark_dirty()
 

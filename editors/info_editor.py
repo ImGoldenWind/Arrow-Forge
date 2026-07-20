@@ -10,10 +10,14 @@ from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont, QPainter, QColor, QPen, QBrush, QCursor
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_sep, ss_accent_sep, ss_input, ss_search, ss_tab_widget, ss_scrollarea,
-    ss_scrollarea_transparent, ss_tab_bar, TOOLBAR_H, TOOLBAR_BTN_H,
+    add_editor_card_title,
+    ss_accent_label, ss_bg_dark, ss_bg_panel, ss_btn, ss_dim_label,
+    ss_file_label, ss_main_label, ss_sep, ss_accent_sep, ss_input, ss_search,
+    ss_sidebar_frame, ss_tab_widget, ss_scrollarea, ss_scrollarea_transparent,
+    ss_tab_bar, ss_field_label, ss_transparent, make_editor_card,
+    make_editor_field_shell, make_empty_state,
+    TOOLBAR_H, TOOLBAR_BTN_H,
 )
-from core.utils.ui_helpers import _add_card_section_title
 from core.editor_file_state import set_file_label
 from core.skeleton import SkeletonListRow
 from parsers.info_parser import (
@@ -33,7 +37,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -55,8 +62,41 @@ def _set_bg(widget, color):
 def _style_entry(entry, *, h=32, font=None):
     entry.setStyleSheet(ss_input())
     entry.setFixedHeight(h)
+    entry.setMinimumWidth(0)
     if font:
         entry.setFont(font)
+
+
+def _make_info_card(parent=None, *, margins=(16, 12, 16, 12), spacing=8):
+    return make_editor_card(parent, margins=margins, spacing=spacing)
+
+
+def _style_info_label(label):
+    label.setStyleSheet(ss_field_label())
+    label.setWordWrap(True)
+    label.setMinimumWidth(0)
+
+
+def _style_accent_entry(entry):
+    entry.setStyleSheet(ss_input() + f" QLineEdit {{ color: {P['accent']}; }}")
+
+
+def _field_shell(label_text, hint_text="", *, label_size=12):
+    frame, layout, _label, _hint = make_editor_field_shell(
+        label_text,
+        hint_text,
+        label_font_size=label_size,
+        spacing=3,
+    )
+    layout.setContentsMargins(8, 0, 8, 0)
+    return frame, layout
+
+
+def _value_label(text, *, size=14, bold=True):
+    label = QLabel(str(text))
+    label.setFont(_make_font("Consolas", size, bold=bold))
+    label.setStyleSheet(ss_accent_label())
+    return label
 
 
 # Collision canvas (visual map - read only)
@@ -70,7 +110,7 @@ class _CollisionMapCanvas(QWidget):
         self._canvas_w = 600
         self._canvas_h = 180
         self.setFixedHeight(self._canvas_h)
-        self.setMinimumWidth(self._canvas_w)
+        self.setMinimumWidth(0)
 
     def set_collisions(self, collisions):
         self._collisions = list(collisions)
@@ -137,7 +177,7 @@ class _InteractiveCollisionCanvas(QWidget):
         self._canvas_w = 620
         self._canvas_h = 260
         self.setFixedHeight(self._canvas_h)
-        self.setMinimumWidth(self._canvas_w)
+        self.setMinimumWidth(0)
         self.setMouseTracking(True)
 
         self._drag_mode = None
@@ -552,7 +592,7 @@ class InfoEditor(QWidget):
         # Toolbar
         top = QFrame()
         top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(f"background-color: {P['bg_panel']};")
+        top.setStyleSheet(ss_bg_panel())
         top_layout = QHBoxLayout(top)
         top_layout.setContentsMargins(12, 8, 12, 8)
         top_layout.setSpacing(4)
@@ -574,14 +614,14 @@ class InfoEditor(QWidget):
 
         self._file_label = QLabel(self.t("no_file_loaded"))
         self._file_label.setFont(QFont("Consolas", 12))
-        self._file_label.setStyleSheet(f"color: {P['text_dim']};")
+        self._file_label.setStyleSheet(ss_file_label())
         top_layout.addWidget(self._file_label)
 
         top_layout.addStretch()
 
         self._info_label = QLabel("")
         self._info_label.setFont(QFont("Consolas", 10))
-        self._info_label.setStyleSheet(f"color: {P['secondary']}; background: transparent;")
+        self._info_label.setStyleSheet(ss_accent_label())
         top_layout.addWidget(self._info_label)
 
         root_layout.addWidget(top)
@@ -609,7 +649,7 @@ class InfoEditor(QWidget):
 
         # Tab widget — "Collisions" tab (collision list + editor)
         right_panel = QWidget()
-        right_panel.setStyleSheet(f"background-color: {P['bg_dark']};")
+        right_panel.setStyleSheet(ss_bg_dark())
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
@@ -626,32 +666,37 @@ class InfoEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_content = QWidget()
-        self._editor_content.setStyleSheet(f"background-color: {P['bg_dark']};")
+        self._editor_content.setMinimumWidth(0)
+        self._editor_content.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_content)
         self._editor_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_content)
         right_layout.addWidget(self._editor_scroll, 1)
 
         # Placeholder
-        self._placeholder = QLabel(self.t("placeholder_info"))
-        self._placeholder.setFont(_make_font("Segoe UI", 16))
-        self._placeholder.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._placeholder.setContentsMargins(0, 60, 0, 60)
-        self._editor_layout.addWidget(self._placeholder)
+        self._editor_layout.addStretch()
+        self._placeholder = make_empty_state(
+            self._editor_content,
+            title=self.t("no_file_loaded"),
+            text=self.t("placeholder_info"),
+            icon_name="fa6s.object-group",
+        )
+        self._editor_layout.addWidget(self._placeholder, 0, Qt.AlignmentFlag.AlignCenter)
+        self._editor_layout.addStretch()
 
         main_layout.addWidget(right_panel, 1)
 
         root_layout.addWidget(main, 1)
 
     def _build_set_list(self):
-        panel = QWidget()
+        panel = QFrame()
         panel.setFixedWidth(260)
-        panel.setStyleSheet(f"background-color: {P['bg_panel']};")
+        panel.setStyleSheet(ss_sidebar_frame())
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 8, 8, 4)
         layout.setSpacing(4)
@@ -667,7 +712,7 @@ class InfoEditor(QWidget):
 
         # Actions
         actions = QWidget()
-        actions.setStyleSheet("background: transparent;")
+        actions.setStyleSheet(ss_transparent())
         al = QHBoxLayout(actions)
         al.setContentsMargins(0, 2, 0, 4)
         al.setSpacing(4)
@@ -696,9 +741,11 @@ class InfoEditor(QWidget):
         self._set_scroll = QScrollArea()
         self._set_scroll.setWidgetResizable(True)
         self._set_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._set_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._set_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._set_list_widget = QWidget()
-        self._set_list_widget.setStyleSheet("background: transparent;")
+        self._set_list_widget.setMinimumWidth(0)
+        self._set_list_widget.setStyleSheet(ss_transparent())
         self._set_list_layout = QVBoxLayout(self._set_list_widget)
         self._set_list_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._set_list_layout.setContentsMargins(0, 0, 0, 0)
@@ -711,14 +758,14 @@ class InfoEditor(QWidget):
     def _build_collision_tabs_bar(self):
         bar = QFrame()
         bar.setFixedHeight(48)
-        bar.setStyleSheet(f"background-color: {P['bg_panel']};")
+        bar.setStyleSheet(ss_bg_panel())
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(8)
 
         self._coll_header = QLabel(self.t("collisions_header"))
         self._coll_header.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        self._coll_header.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+        self._coll_header.setStyleSheet(ss_accent_label())
         layout.addWidget(self._coll_header)
 
         self._coll_tab_widget = QTabBar()
@@ -759,9 +806,9 @@ class InfoEditor(QWidget):
         return bar
 
     def _build_coll_list(self):
-        panel = QWidget()
+        panel = QFrame()
         panel.setFixedWidth(220)
-        panel.setStyleSheet(f"background-color: {P['bg_panel']};")
+        panel.setStyleSheet(ss_sidebar_frame())
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 8, 8, 4)
         layout.setSpacing(4)
@@ -769,7 +816,7 @@ class InfoEditor(QWidget):
         # Header
         self._coll_header = QLabel(self.t("collisions_header"))
         self._coll_header.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        self._coll_header.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+        self._coll_header.setStyleSheet(ss_accent_label())
         layout.addWidget(self._coll_header)
 
         # Search
@@ -783,7 +830,7 @@ class InfoEditor(QWidget):
 
         # Actions — same as Character Stats
         actions = QWidget()
-        actions.setStyleSheet("background: transparent;")
+        actions.setStyleSheet(ss_transparent())
         al = QHBoxLayout(actions)
         al.setContentsMargins(0, 2, 0, 4)
         al.setSpacing(4)
@@ -1035,49 +1082,31 @@ class InfoEditor(QWidget):
         desc = get_scene_description(s['name'])
 
         # Set header
-        hdr = QWidget()
-        hdr.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
-        hdr_layout = QVBoxLayout(hdr)
-        hdr_layout.setContentsMargins(16, 12, 16, 12)
+        hdr, hdr_layout = _make_info_card()
+        add_editor_card_title(hdr_layout, self.t("label_scene_name"), "fa6s.object-group", desc)
 
         hdr_inner = QWidget()
-        hdr_inner.setStyleSheet("background: transparent;")
+        hdr_inner.setStyleSheet(ss_transparent())
         hdr_grid = QGridLayout(hdr_inner)
         hdr_grid.setContentsMargins(0, 0, 0, 0)
         hdr_grid.setColumnStretch(0, 1)
         hdr_grid.setColumnStretch(1, 1)
 
         # Scene name (editable)
-        name_w = QWidget()
-        name_w.setStyleSheet("background: transparent;")
-        name_l = QVBoxLayout(name_w)
-        name_l.setContentsMargins(0, 0, 16, 0)
-        name_l.setSpacing(2)
-        lbl = QLabel(self.t("label_scene_name"))
-        lbl.setFont(_make_font("Segoe UI", 12))
-        lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        name_l.addWidget(lbl)
+        name_w, name_l = _field_shell(self.t("label_scene_name"))
         e_name = QLineEdit()
         e_name.setText(s['name'])
         _style_entry(e_name, h=36, font=_make_font("Consolas", 16, bold=True))
-        e_name.setStyleSheet(e_name.styleSheet() + f" QLineEdit {{ color: {P['accent']}; }}")
+        _style_accent_entry(e_name)
         name_l.addWidget(e_name)
         self._fields['_set_name'] = e_name
         hdr_grid.addWidget(name_w, 0, 0)
 
         # Description (read-only)
-        desc_w = QWidget()
-        desc_w.setStyleSheet("background: transparent;")
-        desc_l = QVBoxLayout(desc_w)
-        desc_l.setContentsMargins(0, 0, 0, 0)
-        desc_l.setSpacing(2)
-        lbl2 = QLabel(self.t("label_description"))
-        lbl2.setFont(_make_font("Segoe UI", 12))
-        lbl2.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        desc_l.addWidget(lbl2)
+        desc_w, desc_l = _field_shell(self.t("label_description"))
         lbl3 = QLabel(desc)
         lbl3.setFont(_make_font("Segoe UI", 15, bold=True))
-        lbl3.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        lbl3.setStyleSheet(ss_main_label())
         lbl3.setContentsMargins(0, 4, 0, 0)
         desc_l.addWidget(lbl3)
         hdr_grid.addWidget(desc_w, 0, 1)
@@ -1087,14 +1116,11 @@ class InfoEditor(QWidget):
 
         # Stats
         self._add_section(self.t("section_statistics"))
-        stats_panel = QWidget()
-        stats_panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
-        sp_layout = QVBoxLayout(stats_panel)
-        sp_layout.setContentsMargins(16, 12, 16, 12)
+        stats_panel, sp_layout = _make_info_card()
         self._apply_pending_section_title(sp_layout)
 
         sg = QWidget()
-        sg.setStyleSheet("background: transparent;")
+        sg.setStyleSheet(ss_transparent())
         sg_grid = QGridLayout(sg)
         sg_grid.setContentsMargins(0, 0, 0, 0)
 
@@ -1108,18 +1134,8 @@ class InfoEditor(QWidget):
             (self.t("stats_types_used"), ", ".join(sorted(unique_types)) if unique_types else self.t("stats_types_none")),
         ]
         for i, (label, value) in enumerate(stats):
-            fw = QWidget()
-            fw.setStyleSheet("background: transparent;")
-            fl = QVBoxLayout(fw)
-            fl.setContentsMargins(8, 0, 8, 0)
-            fl.setSpacing(0)
-            sl = QLabel(label)
-            sl.setFont(_make_font("Segoe UI", 12))
-            sl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
-            fl.addWidget(sl)
-            vl = QLabel(value)
-            vl.setFont(_make_font("Consolas", 20, bold=True))
-            vl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+            fw, fl = _field_shell(label)
+            vl = _value_label(value, size=20)
             fl.addWidget(vl)
             sg_grid.addWidget(fw, 0, i)
             sg_grid.setColumnStretch(i, 1)
@@ -1130,10 +1146,7 @@ class InfoEditor(QWidget):
         # Collision name breakdown
         if collisions:
             self._add_section(self.t("section_coll_names"))
-            names_panel = QWidget()
-            names_panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
-            np_layout = QVBoxLayout(names_panel)
-            np_layout.setContentsMargins(16, 12, 16, 12)
+            names_panel, np_layout = _make_info_card()
             self._apply_pending_section_title(np_layout)
 
             name_counts = {}
@@ -1143,18 +1156,18 @@ class InfoEditor(QWidget):
 
             for n, count in sorted(name_counts.items()):
                 row_w = QWidget()
-                row_w.setStyleSheet("background: transparent;")
+                row_w.setStyleSheet(ss_transparent())
                 rl = QHBoxLayout(row_w)
                 rl.setContentsMargins(0, 1, 0, 1)
                 rl.setSpacing(8)
                 cl = QLabel(ui_text("ui_info_value_x", p0=count))
                 cl.setFont(_make_font("Consolas", 12, bold=True))
-                cl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+                cl.setStyleSheet(ss_accent_label())
                 cl.setFixedWidth(40)
                 rl.addWidget(cl)
                 nl = QLabel(n)
                 nl.setFont(_make_font("Consolas", 12))
-                nl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+                nl.setStyleSheet(ss_main_label())
                 rl.addWidget(nl)
                 rl.addStretch()
                 np_layout.addWidget(row_w)
@@ -1174,15 +1187,12 @@ class InfoEditor(QWidget):
         # Bottom spacer
         spacer = QWidget()
         spacer.setFixedHeight(20)
-        spacer.setStyleSheet("background: transparent;")
+        spacer.setStyleSheet(ss_transparent())
         self._editor_layout.addWidget(spacer)
 
     def _build_visual_map(self, collisions):
         """Draw a miniature visual representation of collision boxes."""
-        map_panel = QWidget()
-        map_panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
-        mp_layout = QVBoxLayout(map_panel)
-        mp_layout.setContentsMargins(12, 12, 12, 12)
+        map_panel, mp_layout = _make_info_card(margins=(12, 12, 12, 12))
         self._apply_pending_section_title(mp_layout)
 
         canvas = _CollisionMapCanvas()
@@ -1198,14 +1208,11 @@ class InfoEditor(QWidget):
             self._pending_section_title = None
             return
 
-        panel = QWidget()
-        panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
-        p_layout = QVBoxLayout(panel)
-        p_layout.setContentsMargins(16, 12, 16, 12)
+        panel, p_layout = _make_info_card()
         self._apply_pending_section_title(p_layout)
 
         inner = QWidget()
-        inner.setStyleSheet("background: transparent;")
+        inner.setStyleSheet(ss_transparent())
         ig = QGridLayout(inner)
         ig.setContentsMargins(0, 0, 0, 0)
 
@@ -1216,25 +1223,15 @@ class InfoEditor(QWidget):
             (self.t("css_typical_size"), f"{analysis['typical_size'][0]}x{analysis['typical_size'][1]}"),
         ]
         for i, (label, value) in enumerate(stats):
-            fw = QWidget()
-            fw.setStyleSheet("background: transparent;")
-            fl = QVBoxLayout(fw)
-            fl.setContentsMargins(8, 0, 8, 0)
-            fl.setSpacing(0)
-            sl = QLabel(label)
-            sl.setFont(_make_font("Segoe UI", 12))
-            sl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
-            fl.addWidget(sl)
-            vl = QLabel(value)
-            vl.setFont(_make_font("Consolas", 20, bold=True))
-            vl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+            fw, fl = _field_shell(label)
+            vl = _value_label(value, size=20)
             fl.addWidget(vl)
             ig.addWidget(fw, 0, i)
             ig.setColumnStretch(i, 1)
 
         # Row breakdown
         row_info = QWidget()
-        row_info.setStyleSheet("background: transparent;")
+        row_info.setStyleSheet(ss_transparent())
         ri_layout = QVBoxLayout(row_info)
         ri_layout.setContentsMargins(8, 8, 8, 0)
         ri_layout.setSpacing(1)
@@ -1242,19 +1239,19 @@ class InfoEditor(QWidget):
             row_colls = analysis['rows'][y_val]
             rl = QLabel(ui_text("ui_info_row_y_value_value_slots_x_value_value", p0=y_val, p1=len(row_colls), p2=row_colls[0]['x'], p3=row_colls[-1]['x'] + row_colls[-1]['w']))
             rl.setFont(_make_font("Consolas", 11))
-            rl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
+            rl.setStyleSheet(ss_field_label())
             ri_layout.addWidget(rl)
         ig.addWidget(row_info, 1, 0, 1, 3)
 
         # Note
         note_w = QWidget()
-        note_w.setStyleSheet("background: transparent;")
+        note_w.setStyleSheet(ss_transparent())
         note_l = QVBoxLayout(note_w)
         note_l.setContentsMargins(8, 10, 8, 0)
         note_text = self.t("css_analysis_note", face_count=analysis['face_icon_count'])
         nl = QLabel(note_text)
         nl.setFont(_make_font("Segoe UI", 12))
-        nl.setStyleSheet(f"color: {P['secondary']}; background: transparent;")
+        nl.setStyleSheet(ss_accent_label())
         nl.setWordWrap(True)
         nl.setMaximumWidth(500)
         note_l.addWidget(nl)
@@ -1270,10 +1267,7 @@ class InfoEditor(QWidget):
         dragged to move and resized via corner handles."""
         self._add_section(self.t("section_visual_layout_drag"))
 
-        map_panel = QWidget()
-        map_panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
-        mp_layout = QVBoxLayout(map_panel)
-        mp_layout.setContentsMargins(12, 12, 12, 12)
+        map_panel, mp_layout = _make_info_card(margins=(12, 12, 12, 12))
         self._apply_pending_section_title(mp_layout)
 
         self._interactive_canvas = _InteractiveCollisionCanvas()
@@ -1284,7 +1278,7 @@ class InfoEditor(QWidget):
         # Coordinate label
         self._vis_coord_label = QLabel("")
         self._vis_coord_label.setFont(_make_font("Consolas", 10))
-        self._vis_coord_label.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        self._vis_coord_label.setStyleSheet(ss_dim_label())
         mp_layout.addWidget(self._vis_coord_label)
 
         # Timer to update coord label — reuse existing timer if present
@@ -1394,17 +1388,17 @@ class InfoEditor(QWidget):
                 pass
 
         set_desc = get_scene_description(self._current_set['name']) if self._current_set else ''
+        coll_name = coll.get('name', '') or self.t("coll_unnamed")
 
         # Header
-        hdr = QWidget()
-        hdr.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
-        hdr_layout = QVBoxLayout(hdr)
-        hdr_layout.setContentsMargins(16, 12, 16, 12)
-
-        lbl = QLabel(self.t("coll_header_label", idx=idx, desc=set_desc))
-        lbl.setFont(_make_font("Segoe UI", 14, bold=True))
-        lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
-        hdr_layout.addWidget(lbl)
+        hdr, hdr_layout = _make_info_card()
+        _row, title_lbl, _subtitle_lbl = add_editor_card_title(
+            hdr_layout,
+            self.t("coll_header_label", idx=idx, desc=coll_name),
+            "fa6s.vector-square",
+            set_desc,
+        )
+        title_lbl.setWordWrap(True)
         self._editor_layout.addWidget(hdr)
 
         # Interactive visual map
@@ -1413,27 +1407,16 @@ class InfoEditor(QWidget):
 
         # Identity fields
         self._add_section(self.t("section_identity"))
-        id_panel = QWidget()
-        id_panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
-        ip_layout = QVBoxLayout(id_panel)
-        ip_layout.setContentsMargins(12, 12, 12, 12)
+        id_panel, ip_layout = _make_info_card(margins=(12, 12, 12, 12))
         self._apply_pending_section_title(ip_layout)
 
         ig = QWidget()
-        ig.setStyleSheet("background: transparent;")
+        ig.setStyleSheet(ss_transparent())
         ig_grid = QGridLayout(ig)
         ig_grid.setContentsMargins(0, 0, 0, 0)
 
         # Type
-        type_w = QWidget()
-        type_w.setStyleSheet("background: transparent;")
-        type_l = QVBoxLayout(type_w)
-        type_l.setContentsMargins(8, 0, 8, 0)
-        type_l.setSpacing(2)
-        tl = QLabel(self.t("label_coll_type"))
-        tl.setFont(_make_font("Segoe UI", 12))
-        tl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        type_l.addWidget(tl)
+        type_w, type_l = _field_shell(self.t("label_coll_type"))
         e_type = QLineEdit()
         e_type.setText(str(coll.get('type', 0)))
         _style_entry(e_type, h=34, font=_make_font("Consolas", 16, bold=True))
@@ -1444,15 +1427,7 @@ class InfoEditor(QWidget):
         ig_grid.setColumnStretch(0, 0)
 
         # Name
-        name_w = QWidget()
-        name_w.setStyleSheet("background: transparent;")
-        name_l = QVBoxLayout(name_w)
-        name_l.setContentsMargins(8, 0, 8, 0)
-        name_l.setSpacing(2)
-        nl = QLabel(self.t("label_coll_name"))
-        nl.setFont(_make_font("Segoe UI", 12))
-        nl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        name_l.addWidget(nl)
+        name_w, name_l = _field_shell(self.t("label_coll_name"))
         e_name = QLineEdit()
         e_name.setText(coll.get('name', ''))
         _style_entry(e_name, h=34, font=_make_font("Consolas", 16))
@@ -1466,14 +1441,11 @@ class InfoEditor(QWidget):
 
         # Position & Size
         self._add_section(self.t("section_pos_size"))
-        pos_panel = QWidget()
-        pos_panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
-        pp_layout = QVBoxLayout(pos_panel)
-        pp_layout.setContentsMargins(12, 12, 12, 12)
+        pos_panel, pp_layout = _make_info_card(margins=(12, 12, 12, 12))
         self._apply_pending_section_title(pp_layout)
 
         pg = QWidget()
-        pg.setStyleSheet("background: transparent;")
+        pg.setStyleSheet(ss_transparent())
         pg_grid = QGridLayout(pg)
         pg_grid.setContentsMargins(0, 0, 0, 0)
 
@@ -1483,41 +1455,29 @@ class InfoEditor(QWidget):
             ('w', self.t("pos_w"), self.t("pos_w_hint")),
             ('h', self.t("pos_h"), self.t("pos_h_hint")),
         ]
+        pos_cols = 2 if self.width() < 1000 else 4
         for i, (key, label, hint) in enumerate(pos_fields):
-            fw = QWidget()
-            fw.setStyleSheet("background: transparent;")
-            fl = QVBoxLayout(fw)
-            fl.setContentsMargins(8, 0, 8, 0)
-            fl.setSpacing(2)
-            sl = QLabel(label)
-            sl.setFont(_make_font("Segoe UI", 12))
-            sl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
-            fl.addWidget(sl)
+            fw, fl = _field_shell(label, hint)
             e = QLineEdit()
             e.setText(str(coll.get(key, 0)))
             _style_entry(e, h=32, font=_make_font("Consolas", 14))
             fl.addWidget(e)
             self._fields[key] = e
-            hl = QLabel(hint)
-            hl.setFont(_make_font("Segoe UI", 10))
-            hl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-            fl.addWidget(hl)
-            pg_grid.addWidget(fw, 0, i)
-            pg_grid.setColumnStretch(i, 1)
+            row = i // pos_cols
+            col = i % pos_cols
+            pg_grid.addWidget(fw, row, col)
+            pg_grid.setColumnStretch(col, 1)
 
         pp_layout.addWidget(pg)
         self._editor_layout.addWidget(pos_panel)
 
         # Margin / Padding (rto/lbo)
         self._add_section(self.t("section_margins"))
-        margin_panel = QWidget()
-        margin_panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
-        mgp_layout = QVBoxLayout(margin_panel)
-        mgp_layout.setContentsMargins(12, 12, 12, 12)
+        margin_panel, mgp_layout = _make_info_card(margins=(12, 12, 12, 12))
         self._apply_pending_section_title(mgp_layout)
 
         mg = QWidget()
-        mg.setStyleSheet("background: transparent;")
+        mg.setStyleSheet(ss_transparent())
         mg_grid = QGridLayout(mg)
         mg_grid.setContentsMargins(0, 0, 0, 0)
 
@@ -1527,41 +1487,29 @@ class InfoEditor(QWidget):
             (ui_text("ui_info_lbox"), self.t(ui_text("ui_info_margin_lbox")), self.t(ui_text("ui_info_margin_lbox_hint"))),
             (ui_text("ui_info_lboy"), self.t(ui_text("ui_info_margin_lboy")), self.t(ui_text("ui_info_margin_lboy_hint"))),
         ]
+        margin_cols = 2 if self.width() < 1000 else 4
         for i, (key, label, hint) in enumerate(margin_fields):
-            fw = QWidget()
-            fw.setStyleSheet("background: transparent;")
-            fl = QVBoxLayout(fw)
-            fl.setContentsMargins(8, 0, 8, 0)
-            fl.setSpacing(2)
-            sl = QLabel(label)
-            sl.setFont(_make_font("Segoe UI", 12))
-            sl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
-            fl.addWidget(sl)
+            fw, fl = _field_shell(label, hint)
             e = QLineEdit()
             e.setText(str(coll.get(key, 0)))
             _style_entry(e, h=32, font=_make_font("Consolas", 14))
             fl.addWidget(e)
             self._fields[key] = e
-            hl = QLabel(hint)
-            hl.setFont(_make_font("Segoe UI", 10))
-            hl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-            fl.addWidget(hl)
-            mg_grid.addWidget(fw, 0, i)
-            mg_grid.setColumnStretch(i, 1)
+            row = i // margin_cols
+            col = i % margin_cols
+            mg_grid.addWidget(fw, row, col)
+            mg_grid.setColumnStretch(col, 1)
 
         mgp_layout.addWidget(mg)
         self._editor_layout.addWidget(margin_panel)
 
         # Computed info
         self._add_section(self.t("section_computed"))
-        comp_panel = QWidget()
-        comp_panel.setStyleSheet(f"background-color: {P['bg_panel']}; border-radius: 10px;")
-        cp_layout = QVBoxLayout(comp_panel)
-        cp_layout.setContentsMargins(16, 12, 16, 12)
+        comp_panel, cp_layout = _make_info_card()
         self._apply_pending_section_title(cp_layout)
 
         cg = QWidget()
-        cg.setStyleSheet("background: transparent;")
+        cg.setStyleSheet(ss_transparent())
         cg_grid = QGridLayout(cg)
         cg_grid.setContentsMargins(0, 0, 0, 0)
 
@@ -1576,23 +1524,16 @@ class InfoEditor(QWidget):
             (self.t("computed_br"), "br", f"({x + w}, {y + h})"),
             (self.t("computed_eff"), "eff", f"({x + lboX}, {y + rtoY}) to ({x + w + rtoX}, {y + h + lboY})"),
         ]
+        computed_cols = 1 if self.width() < 900 else 3
         for i, (label, key, value) in enumerate(computed):
-            fw = QWidget()
-            fw.setStyleSheet("background: transparent;")
-            fl = QVBoxLayout(fw)
-            fl.setContentsMargins(8, 0, 8, 0)
-            fl.setSpacing(0)
-            sl = QLabel(label)
-            sl.setFont(_make_font("Segoe UI", 12))
-            sl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
-            fl.addWidget(sl)
-            vl = QLabel(value)
-            vl.setFont(_make_font("Consolas", 14, bold=True))
-            vl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+            fw, fl = _field_shell(label)
+            vl = _value_label(value, size=14)
             fl.addWidget(vl)
             self._computed_labels[key] = vl
-            cg_grid.addWidget(fw, 0, i)
-            cg_grid.setColumnStretch(i, 1)
+            row = i // computed_cols
+            col = i % computed_cols
+            cg_grid.addWidget(fw, row, col)
+            cg_grid.setColumnStretch(col, 1)
 
         cp_layout.addWidget(cg)
         self._editor_layout.addWidget(comp_panel)
@@ -1600,7 +1541,7 @@ class InfoEditor(QWidget):
         # Bottom spacer
         spacer = QWidget()
         spacer.setFixedHeight(20)
-        spacer.setStyleSheet("background: transparent;")
+        spacer.setStyleSheet(ss_transparent())
         self._editor_layout.addWidget(spacer)
 
         # Bind position/size fields to update canvas on typing
@@ -1718,4 +1659,4 @@ class InfoEditor(QWidget):
         self._pending_section_title = None
         if section_title:
             layout.setSpacing(max(layout.spacing(), 8))
-            _add_card_section_title(layout, section_title)
+            add_editor_card_title(layout, section_title, "fa6s.object-group")

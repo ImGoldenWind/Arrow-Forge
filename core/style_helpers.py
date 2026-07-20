@@ -48,6 +48,8 @@ def ss_btn(accent: bool = False, danger: bool = False) -> str:
     radius = P.get("button_radius", "6px")
     border = P.get("button_border", "none")
     button_fg = P.get("button_text", P["text_main"])
+    disabled_bg = P.get("button_disabled_bg", P.get("bg_card", P["mid"]))
+    disabled_fg = P.get("button_disabled_text", P.get("text_sec", P["text_dim"]))
     if danger:
         hover_bg = P.get("button_danger_hover", P["accent_dim"])
         hover_fg = P.get("button_danger_hover_text", P.get("button_hover_text", P["bg_dark"]))
@@ -57,7 +59,7 @@ def ss_btn(accent: bool = False, danger: bool = False) -> str:
             f"QPushButton:focus {{ border: 1px solid {P.get('input_focus_border', P['accent'])}; }}"
             f"QPushButton:hover {{ background-color: {hover_bg}; color: {hover_fg}; }}"
             f"QPushButton:pressed {{ background-color: {P.get('bg_card_hov', P['mid'])}; padding-top: 4px; padding-bottom: 2px; }}"
-            f"QPushButton:disabled {{ background-color: {P['mid']}; color: {P['text_dim']}; }}"
+            f"QPushButton:disabled {{ background-color: {disabled_bg}; color: {disabled_fg}; }}"
         )
     if accent:
         hover_bg = P.get("button_accent_hover", P["accent_dim"])
@@ -69,7 +71,7 @@ def ss_btn(accent: bool = False, danger: bool = False) -> str:
             f"QPushButton:focus {{ border: 1px solid {P.get('input_focus_border', P['accent'])}; }}"
             f"QPushButton:hover {{ background-color: {hover_bg}; color: {hover_fg}; }}"
             f"QPushButton:pressed {{ background-color: {P.get('button_accent_pressed', hover_bg)}; padding-top: 4px; padding-bottom: 2px; }}"
-            f"QPushButton:disabled {{ background-color: {P['mid']}; color: {P['text_dim']}; }}"
+            f"QPushButton:disabled {{ background-color: {disabled_bg}; color: {disabled_fg}; }}"
         )
     hover_bg = P.get("button_hover", P["accent_dim"])
     hover_fg = P.get("button_hover_text", P["bg_dark"])
@@ -79,7 +81,7 @@ def ss_btn(accent: bool = False, danger: bool = False) -> str:
         f"QPushButton:focus {{ border: 1px solid {P.get('input_focus_border', P['accent'])}; }}"
         f"QPushButton:hover {{ background-color: {hover_bg}; color: {hover_fg}; }}"
         f"QPushButton:pressed {{ background-color: {P.get('bg_card_hov', P['mid'])}; padding-top: 4px; padding-bottom: 2px; }}"
-        f"QPushButton:disabled {{ background-color: {P['mid']}; color: {P['text_dim']}; }}"
+        f"QPushButton:disabled {{ background-color: {disabled_bg}; color: {disabled_fg}; }}"
     )
 
 
@@ -158,6 +160,8 @@ def ss_input() -> str:
     padding = P.get("input_padding", "3px 6px")
     selection_bg = P.get("selection_bg", P["accent"])
     selection_text = P.get("selection_text", P["bg_dark"])
+    disabled_bg = P.get("input_disabled_bg", P.get("bg_card", bg))
+    disabled_fg = P.get("input_disabled_text", P.get("text_sec", P["text_dim"]))
     return (
         f"QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QKeySequenceEdit {{"
         f"  background-color: {bg}; color: {P['text_main']}; "
@@ -167,6 +171,8 @@ def ss_input() -> str:
         f"  background-color: {P.get('input_hover_bg', P.get('bg_card_hov', bg))}; }}"
         f"QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QKeySequenceEdit:focus {{"
         f"  border: 1px solid {focus}; background-color: {P.get('input_focus_bg', P.get('bg_card_hov', bg))}; }}"
+        f"QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled, QKeySequenceEdit:disabled {{"
+        f"  background-color: {disabled_bg}; color: {disabled_fg}; border: 1px solid {border}; }}"
         f"QSpinBox::up-button, QSpinBox::down-button, "
         f"QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{"
         f"  width: 0; height: 0; border: none; }}"
@@ -185,17 +191,20 @@ def ss_search() -> str:
     padding = P.get("input_padding", "2px 6px")
     selection_bg = P.get("selection_bg", P["accent"])
     selection_text = P.get("selection_text", P["bg_dark"])
+    disabled_bg = P.get("input_disabled_bg", P.get("bg_card", bg))
+    disabled_fg = P.get("input_disabled_text", P.get("text_sec", P["text_dim"]))
     return (
         f"QLineEdit {{ background-color: {bg}; border: 1px solid {border}; "
         f"color: {P['text_main']}; padding: {padding}; border-radius: {radius}; "
         f"selection-background-color: {selection_bg}; selection-color: {selection_text}; }}"
         f"QLineEdit:hover {{ background-color: {P.get('input_hover_bg', P.get('bg_card_hov', bg))}; }}"
         f"QLineEdit:focus {{ border: 1px solid {focus}; background-color: {P.get('input_focus_bg', P.get('bg_card_hov', bg))}; }}"
+        f"QLineEdit:disabled {{ background-color: {disabled_bg}; color: {disabled_fg}; border: 1px solid {border}; }}"
     )
 
 
 def ss_textedit() -> str:
-    """QTextEdit."""
+    """QTextEdit / QPlainTextEdit."""
     bg = P.get("input_bg", P["bg_card"])
     border = P.get("input_border", P["border"])
     focus = P.get("input_focus_border", P["accent"])
@@ -203,11 +212,11 @@ def ss_textedit() -> str:
     selection_bg = P.get("selection_bg", P["accent"])
     selection_text = P.get("selection_text", P["bg_dark"])
     return (
-        f"QTextEdit {{ background-color: {bg}; color: {P['text_main']}; "
+        f"QTextEdit, QPlainTextEdit {{ background-color: {bg}; color: {P['text_main']}; "
         f"border: 1px solid {border}; border-radius: {radius}; padding: 4px; "
         f"selection-background-color: {selection_bg}; selection-color: {selection_text}; }}"
-        f"QTextEdit:hover {{ background-color: {P.get('input_hover_bg', P.get('bg_card_hov', bg))}; }}"
-        f"QTextEdit:focus {{ border: 1px solid {focus}; background-color: {P.get('input_focus_bg', P.get('bg_card_hov', bg))}; }}"
+        f"QTextEdit:hover, QPlainTextEdit:hover {{ background-color: {P.get('input_hover_bg', P.get('bg_card_hov', bg))}; }}"
+        f"QTextEdit:focus, QPlainTextEdit:focus {{ border: 1px solid {focus}; background-color: {P.get('input_focus_bg', P.get('bg_card_hov', bg))}; }}"
         f"{ss_scrollbars(bg)}"
     )
 
@@ -218,18 +227,23 @@ def ss_table() -> str:
     """QTableWidget/QTableView including internal scrollbars (10 px width)."""
     bg = P.get("input_bg", P["bg_card"])
     border = P.get("input_border", P["border"])
+    radius = P.get("input_radius", "4px")
     selection_bg = P.get("selection_bg", P["accent"])
     selection_text = P.get("selection_text", P["bg_dark"])
     header_bg = P.get("table_header_bg", P["bg_panel"])
     header_text = P.get("table_header_text", P["text_sec"])
+    hover_bg = P.get("list_hover_bg", P["mid"])
     return (
         f"QTableWidget, QTableView {{ background-color: {bg}; color: {P['text_main']}; "
-        f"gridline-color: {border}; border: none; outline: none; }}"
-        f"QTableWidget::item, QTableView::item {{ padding: 3px 6px; border: none; }}"
+        f"gridline-color: {border}; border: 1px solid {border}; border-radius: {radius}; outline: none; "
+        f"selection-background-color: {selection_bg}; selection-color: {selection_text}; }}"
+        f"QTableWidget::item, QTableView::item {{ min-height: 24px; padding: 4px 7px; border: none; }}"
         f"QTableWidget::item:selected, QTableView::item:selected {{ background-color: {selection_bg}; color: {selection_text}; }}"
-        f"QTableWidget::item:hover, QTableView::item:hover {{ background-color: {P.get('list_hover_bg', P['mid'])}; }}"
+        f"QTableWidget::item:hover, QTableView::item:hover {{ background-color: {hover_bg}; }}"
         f"QHeaderView::section {{ background-color: {header_bg}; color: {header_text}; "
-        f"border: 1px solid {border}; padding: 4px 6px; font-weight: bold; }}"
+        f"border: none; border-right: 1px solid {border}; border-bottom: 1px solid {border}; "
+        f"padding: 5px 7px; min-height: 24px; font-weight: bold; }}"
+        f"QTableCornerButton::section {{ background-color: {header_bg}; border: none; border-bottom: 1px solid {border}; }}"
         f"{ss_scrollbars(header_bg)}"
     )
 
@@ -270,6 +284,9 @@ def ss_treewidget() -> str:
         f"QTreeWidget::item:hover {{ background-color: {hover_bg}; }}"
         f"QTreeWidget::branch {{ background: transparent; border-image: none; image: none; }}"
         f"QTreeWidget::item:has-children {{ color: {group_text}; font-weight: 600; }}"
+        f"QHeaderView::section {{ background-color: {P.get('table_header_bg', P['bg_panel'])}; "
+        f"color: {P.get('table_header_text', P['text_sec'])}; border: none; "
+        f"border-bottom: 1px solid {border}; padding: 5px 7px; font: 10pt 'Segoe UI'; }}"
         f"{ss_vertical_scrollbar(bg, width=10)}"
     )
 
@@ -310,6 +327,18 @@ def ss_bg_dark() -> str:
 def ss_bg_panel() -> str:
     """Plain bg_panel background for toolbars and sidebars."""
     return f"background-color: {P.get('toolbar_bg', P['bg_panel'])};"
+
+
+def ss_splitter() -> str:
+    """Subtle splitter handles shared by embedded editor panes."""
+    handle = P.get("splitter_handle", P["mid"])
+    hover = P.get("splitter_handle_hover", P["accent_dim"])
+    return (
+        f"QSplitter::handle {{ background-color: {handle}; }}"
+        f"QSplitter::handle:hover {{ background-color: {hover}; }}"
+        f"QSplitter::handle:horizontal {{ width: 2px; margin: 0px; }}"
+        f"QSplitter::handle:vertical {{ height: 2px; margin: 0px; }}"
+    )
 
 
 def ss_transparent() -> str:
@@ -409,13 +438,198 @@ def ss_panel_title() -> str:
 
 
 def ss_editor_card(selected: bool = False) -> str:
-    """DuelPlayerParam-like editor card: rounded panel, no visible border."""
+    """DuelPlayerParam-like editor card with optional selected-row emphasis."""
     bg = P["bg_panel"]
     radius = "10px"
+    border = f"1px solid {P.get('accent', P['border'])}" if selected else "none"
     return (
         f"QFrame#EditorCard {{ background-color: {bg}; "
-        f"border-radius: {radius}; border: none; }}"
+        f"border-radius: {radius}; border: {border}; }}"
     )
+
+
+def make_editor_card(parent=None, *, margins=(16, 14, 16, 14), spacing=10):
+    """Create the standard CharacterStats/MoveList editor card."""
+    from PyQt6.QtWidgets import QFrame, QVBoxLayout
+
+    card = QFrame(parent)
+    card.setObjectName("EditorCard")
+    card.setStyleSheet(ss_editor_card())
+    layout = QVBoxLayout(card)
+    layout.setContentsMargins(*margins)
+    layout.setSpacing(spacing)
+    return card, layout
+
+
+def add_editor_card_title(layout, title, icon_name=None, subtitle=None, *, icon_size=18):
+    """Add the standard icon + panel title row used by visual editors."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QFont
+    from PyQt6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+
+    row = QWidget()
+    row.setStyleSheet(ss_transparent())
+    row_layout = QHBoxLayout(row)
+    row_layout.setContentsMargins(0, 0, 0, 0)
+    row_layout.setSpacing(8)
+
+    if icon_name:
+        try:
+            import qtawesome as qta
+
+            icon = QLabel()
+            icon.setFixedSize(icon_size, icon_size)
+            icon.setStyleSheet(ss_transparent())
+            icon.setPixmap(qta.icon(icon_name, color=P["accent"]).pixmap(icon_size, icon_size))
+            row_layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
+        except Exception:
+            pass
+
+    text_box = QWidget()
+    text_box.setStyleSheet(ss_transparent())
+    text_layout = QVBoxLayout(text_box)
+    text_layout.setContentsMargins(0, 0, 0, 0)
+    text_layout.setSpacing(2)
+
+    title_lbl = QLabel(str(title))
+    title_lbl.setMinimumWidth(0)
+    title_lbl.setWordWrap(True)
+    title_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+    title_lbl.setStyleSheet(ss_panel_title())
+    text_layout.addWidget(title_lbl)
+
+    subtitle_lbl = None
+    if subtitle:
+        subtitle_lbl = QLabel(str(subtitle))
+        subtitle_lbl.setMinimumWidth(0)
+        subtitle_lbl.setWordWrap(True)
+        subtitle_lbl.setFont(QFont("Segoe UI", 10))
+        subtitle_lbl.setStyleSheet(ss_dim_label())
+        text_layout.addWidget(subtitle_lbl)
+
+    row_layout.addWidget(text_box, 1)
+    layout.addWidget(row)
+    return row, title_lbl, subtitle_lbl
+
+
+def make_empty_state(parent=None, *, title, text="", icon_name="fa6s.folder-open"):
+    """Create the standard no-selection/no-file card used in editor bodies."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QSizePolicy
+
+    card, layout = make_editor_card(parent, margins=(22, 18, 22, 18), spacing=10)
+    card.setMinimumSize(520, 132)
+    card.setMaximumWidth(620)
+    card.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Maximum)
+    _row, title_lbl, subtitle_lbl = add_editor_card_title(layout, title, icon_name, text, icon_size=22)
+    title_lbl.setStyleSheet(ss_main_label())
+    title_lbl.setMinimumHeight(24)
+    if subtitle_lbl is not None:
+        subtitle_lbl.setWordWrap(True)
+        subtitle_lbl.setMinimumHeight(62)
+        subtitle_lbl.setMaximumWidth(560)
+        subtitle_lbl.setStyleSheet(ss_field_label())
+    card.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+    return card
+
+
+def make_editor_field(label_text, value_text="", *, height=30, value_font=None, accent=False):
+    """Create a label-above-input field matching the card editor language."""
+    from PyQt6.QtGui import QFont
+    from PyQt6.QtWidgets import QLabel, QLineEdit, QVBoxLayout, QWidget
+
+    field = QWidget()
+    field.setStyleSheet(ss_transparent())
+    field_layout = QVBoxLayout(field)
+    field_layout.setContentsMargins(0, 0, 0, 0)
+    field_layout.setSpacing(4)
+
+    label = QLabel(str(label_text))
+    label.setFont(QFont("Segoe UI", 12))
+    label.setStyleSheet(ss_field_label())
+    field_layout.addWidget(label)
+
+    edit = QLineEdit(str(value_text))
+    edit.setFixedHeight(height)
+    edit.setFont(value_font or QFont("Consolas", 13))
+    edit.setStyleSheet(ss_input() + (f"QLineEdit {{ color: {P['accent']}; font-weight: bold; }}" if accent else ""))
+    edit.setCursorPosition(_first_printable_pos(str(value_text)))
+    field_layout.addWidget(edit)
+    return field, edit
+
+
+def make_editor_field_shell(label_text, hint_text="", *, label_font_size=12, hint_font_size=9, spacing=3):
+    """Create the standard label/hint shell for custom editor controls."""
+    from PyQt6.QtGui import QFont
+    from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
+
+    frame = QWidget()
+    frame.setMinimumWidth(0)
+    frame.setStyleSheet(ss_transparent())
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(spacing)
+
+    label = QLabel(str(label_text))
+    label.setMinimumWidth(0)
+    label.setWordWrap(True)
+    label.setFont(QFont("Segoe UI", label_font_size))
+    label.setStyleSheet(ss_field_label())
+    layout.addWidget(label)
+
+    hint = None
+    if hint_text:
+        hint = QLabel(str(hint_text))
+        hint.setMinimumWidth(0)
+        hint.setWordWrap(True)
+        hint.setFont(QFont("Segoe UI", hint_font_size))
+        hint.setStyleSheet(ss_dim_label())
+        layout.addWidget(hint)
+
+    return frame, layout, label, hint
+
+
+def make_editor_grid_card(
+    parent=None,
+    *,
+    title=None,
+    icon_name="fa6s.sliders",
+    subtitle=None,
+    margins=(16, 14, 16, 14),
+    spacing=10,
+    grid_margins=None,
+    horizontal_spacing=16,
+    vertical_spacing=10,
+):
+    """Create a standard editor card containing a field grid.
+
+    This is the common loaded-state layout used by the Character Stats /
+    Move List family: icon title row, then a dense grid of label-over-input
+    controls with consistent spacing.
+    """
+    from PyQt6.QtWidgets import QGridLayout, QWidget
+
+    card, layout = make_editor_card(parent, margins=margins, spacing=spacing)
+    if title:
+        add_editor_card_title(layout, title, icon_name, subtitle)
+
+    inner = QWidget(card)
+    inner.setStyleSheet(ss_transparent())
+    grid = QGridLayout(inner)
+    if grid_margins is None:
+        grid_margins = (0, 4, 0, 0) if title else (12, 12, 12, 12)
+    grid.setContentsMargins(*grid_margins)
+    grid.setHorizontalSpacing(horizontal_spacing)
+    grid.setVerticalSpacing(vertical_spacing)
+    layout.addWidget(inner)
+    return card, grid
+
+
+def _first_printable_pos(text: str) -> int:
+    for index, char in enumerate(text):
+        if char.isprintable() and ord(char) >= 32 and char not in {"\u25a1", "\ufffd"}:
+            return index
+    return 0
 
 
 def _rgba(hex_color: str, alpha: int) -> str:
@@ -458,6 +672,89 @@ def ss_progressbar() -> str:
         f"height: 12px; }}"
         f"QProgressBar::chunk {{ background: {chunk}; border-radius: {chunk_radius}; }}"
     )
+
+
+def ss_embedded_tool_surface() -> str:
+    """Shared visual polish applied by the host around every embedded editor.
+
+    The rules are deliberately palette-driven and mostly target stock Qt
+    controls that older editors may not style themselves yet. Editor-local
+    styles still win for highly custom widgets.
+    """
+    bg = P.get("bg_dark", "#000000")
+    panel = P.get("panel_bg", P["bg_panel"])
+    card = P.get("panel_card_bg", P["bg_panel"])
+    border = P.get("panel_card_border", P["border"])
+    input_bg = P.get("input_bg", P["bg_card"])
+    input_border = P.get("input_border", P["border"])
+    selection_bg = P.get("selection_bg", P["accent"])
+    selection_text = P.get("selection_text", P["bg_dark"])
+    radius = P.get("panel_card_radius", "10px")
+    input_radius = P.get("input_radius", "4px")
+    tooltip_bg = P.get("toast_bg", P.get("dialog_bg", P["bg_panel"]))
+    tooltip_border = P.get("toast_border", P["border_hov"])
+    splitter = P.get("splitter_handle", P["mid"])
+    splitter_hover = P.get("splitter_handle_hover", P["accent_dim"])
+    return (
+        f"QWidget#EmbeddedToolFrame, QWidget#EmbeddedToolBody, QWidget#EmbeddedToolEditor {{"
+        f"  background: {bg}; color: {P['text_main']}; }}"
+        f"QWidget#EmbeddedToolHeader {{ background: {P.get('toolbar_bg', P['bg_panel'])}; }}"
+        f"QWidget#EmbeddedToolEditor QSplitter::handle {{ background: {splitter}; }}"
+        f"QWidget#EmbeddedToolEditor QSplitter::handle:hover {{ background: {splitter_hover}; }}"
+        f"QWidget#EmbeddedToolEditor QSplitter::handle:horizontal {{ width: 2px; margin: 0px; }}"
+        f"QWidget#EmbeddedToolEditor QSplitter::handle:vertical {{ height: 2px; margin: 0px; }}"
+        f"QWidget#EmbeddedToolEditor QGroupBox {{ color: {P['text_main']}; border: 1px solid {border}; "
+        f"  border-radius: {radius}; margin-top: 10px; padding: 10px 8px 8px 8px; background: {card}; }}"
+        f"QWidget#EmbeddedToolEditor QGroupBox::title {{ subcontrol-origin: margin; left: 10px; "
+        f"  padding: 0px 5px; color: {P.get('text_sec', P['text_main'])}; background: transparent; }}"
+        f"QWidget#EmbeddedToolEditor QPlainTextEdit {{ background-color: {input_bg}; color: {P['text_main']}; "
+        f"  border: 1px solid {input_border}; border-radius: {input_radius}; padding: 6px; "
+        f"  selection-background-color: {selection_bg}; selection-color: {selection_text}; }}"
+        f"QWidget#EmbeddedToolEditor QTextBrowser {{ background-color: {input_bg}; color: {P['text_main']}; "
+        f"  border: 1px solid {input_border}; border-radius: {input_radius}; padding: 6px; }}"
+        f"QWidget#EmbeddedToolEditor QTableWidget, QWidget#EmbeddedToolEditor QTableView, "
+        f"QWidget#EmbeddedToolEditor QTreeWidget, QWidget#EmbeddedToolEditor QListWidget {{"
+        f"  background-color: {input_bg}; color: {P['text_main']}; border: 1px solid {input_border}; "
+        f"  border-radius: {input_radius}; outline: none; }}"
+        f"QWidget#EmbeddedToolEditor QTableWidget::item, QWidget#EmbeddedToolEditor QTableView::item, "
+        f"QWidget#EmbeddedToolEditor QTreeWidget::item, QWidget#EmbeddedToolEditor QListWidget::item {{"
+        f"  padding: 4px 6px; }}"
+        f"QWidget#EmbeddedToolEditor QTableWidget::item:selected, QWidget#EmbeddedToolEditor QTableView::item:selected, "
+        f"QWidget#EmbeddedToolEditor QTreeWidget::item:selected, QWidget#EmbeddedToolEditor QListWidget::item:selected {{"
+        f"  background-color: {selection_bg}; color: {selection_text}; }}"
+        f"QWidget#EmbeddedToolEditor QHeaderView::section {{ background-color: {P.get('table_header_bg', panel)}; "
+        f"  color: {P.get('table_header_text', P['text_sec'])}; border: 1px solid {input_border}; "
+        f"  padding: 5px 7px; font-weight: 600; }}"
+        f"QWidget#EmbeddedToolEditor QTabWidget::pane {{ border: none; background: {bg}; }}"
+        f"QWidget#EmbeddedToolEditor QToolTip {{ background-color: {tooltip_bg}; color: {P['text_main']}; "
+        f"  border: 1px solid {tooltip_border}; padding: 5px 7px; border-radius: 5px; }}"
+        f"{ss_progressbar()}"
+        f"{ss_blocking_overlay()}"
+        f"{ss_blocking_overlay_card()}"
+        f"{ss_scrollbars(panel, size=10)}"
+    )
+
+
+def polish_widget_tree(widget) -> None:
+    """Apply shared theme polish to a widget subtree without changing behavior."""
+    if widget is None:
+        return
+    existing = widget.styleSheet() or ""
+    surface = ss_embedded_tool_surface()
+    if surface not in existing:
+        widget.setStyleSheet(existing + surface)
+
+    try:
+        from PyQt6.QtWidgets import QMenu, QProgressBar
+    except Exception:
+        return
+
+    for progress in widget.findChildren(QProgressBar):
+        if not progress.styleSheet():
+            progress.setStyleSheet(ss_progressbar())
+    for menu in widget.findChildren(QMenu):
+        if not menu.styleSheet():
+            menu.setStyleSheet(ss_menu())
 
 
 def ss_entry_card(selected: bool = False) -> str:
@@ -729,12 +1026,12 @@ def ss_dim_label() -> str:
 
 def ss_placeholder() -> str:
     """Placeholder label when no file is loaded (dim, transparent)."""
-    return f"color: {P['text_dim']}; background-color: transparent;"
+    return f"color: {P.get('placeholder_text', P.get('text_sec', P['text_dim']))}; background-color: transparent;"
 
 
 def ss_file_label() -> str:
     """Loaded filename display label in toolbar."""
-    return f"color: {P['text_dim']}; background: transparent;"
+    return f"color: {P.get('file_label_text', P.get('text_sec', P['text_dim']))}; background: transparent;"
 
 
 def ss_file_label_loaded() -> str:
@@ -905,36 +1202,55 @@ def ss_dialog() -> str:
 # Tab widgets
 
 def ss_tab_widget() -> str:
-    """QTabWidget with rounded-top-corner background-based tab styling."""
+    """QTabWidget styled as a compact editor tab strip."""
     tab_bg = P.get("tab_bg", P["bg_panel"])
-    tab_hover_bg = P.get("tab_hover_bg", tab_bg)
+    tab_hover_bg = P.get("tab_hover_bg", P.get("bg_card_hov", tab_bg))
     tab_selected_bg = P.get("tab_selected_bg", P["mid"])
     tab_text = P.get("tab_text", P["text_dim"])
-    tab_selected_text = P.get("tab_selected_text", P["accent"])
-    tab_border = P.get("tab_border", "none")
-    tab_radius = P.get("tab_radius", "4px")
+    tab_selected_text = P.get("tab_selected_text", P["text_main"])
+    tab_border = P.get("tab_border", f"1px solid {P['border']}")
+    tab_radius = P.get("tab_radius", "6px")
+    tab_bar_bg = P.get("tab_bar_bg", P.get("toolbar_bg", P["bg_panel"]))
+    accent = P.get("tab_accent", P["accent"])
     return (
-        f"QTabWidget::pane {{ border: none; background: {P['bg_dark']}; }}"
+        f"QTabWidget {{ background: {P['bg_dark']}; border: none; }}"
+        f"QTabWidget::pane {{ border: none; background: {P['bg_dark']}; top: -1px; }}"
+        f"QTabWidget::tab-bar {{ alignment: left; }}"
+        f"QTabBar {{ background: {tab_bar_bg}; border: none; padding: 4px 8px 0px 8px; min-height: 34px; }}"
         f"QTabBar::tab {{ background: {tab_bg}; color: {tab_text}; border: {tab_border}; "
-        f"padding: 6px 16px; margin-right: 2px; border-radius: {tab_radius} {tab_radius} 0 0; }}"
-        f"QTabBar::tab:selected {{ background: {tab_selected_bg}; color: {tab_selected_text}; }}"
-        f"QTabBar::tab:hover {{ background: {tab_hover_bg}; color: {tab_selected_text}; }}"
+        f"border-bottom: 1px solid {P['border']}; padding: 6px 16px; margin-right: 3px; "
+        f"min-height: 24px; min-width: 72px; "
+        f"border-top-left-radius: {tab_radius}; border-top-right-radius: {tab_radius}; "
+        f"border-bottom-left-radius: 0px; border-bottom-right-radius: 0px; }}"
+        f"QTabBar::tab:selected {{ background: {tab_selected_bg}; color: {tab_selected_text}; "
+        f"border-top: 2px solid {accent}; border-bottom: 1px solid {tab_selected_bg}; "
+        f"font-weight: 600; }}"
+        f"QTabBar::tab:hover:!selected {{ background: {tab_hover_bg}; color: {P['text_main']}; }}"
+        f"QTabBar::tab:disabled {{ color: {P['text_dim']}; background: {P.get('bg_card', tab_bg)}; }}"
     )
 
 
 def ss_tab_bar() -> str:
     """Standalone QTabBar styled like editor tab strips."""
     tab_bg = P.get("tab_bg", P["bg_panel"])
-    tab_hover_bg = P.get("tab_hover_bg", tab_bg)
+    tab_hover_bg = P.get("tab_hover_bg", P.get("bg_card_hov", tab_bg))
     tab_selected_bg = P.get("tab_selected_bg", P["mid"])
     tab_text = P.get("tab_text", P["text_dim"])
-    tab_selected_text = P.get("tab_selected_text", P["accent"])
-    tab_border = P.get("tab_border", "none")
-    tab_radius = P.get("tab_radius", "4px")
+    tab_selected_text = P.get("tab_selected_text", P["text_main"])
+    tab_border = P.get("tab_border", f"1px solid {P['border']}")
+    tab_radius = P.get("tab_radius", "6px")
+    tab_bar_bg = P.get("tab_bar_bg", P.get("toolbar_bg", P["bg_panel"]))
+    accent = P.get("tab_accent", P["accent"])
     return (
-        f"QTabBar {{ background: transparent; }}"
+        f"QTabBar {{ background: {tab_bar_bg}; border: none; padding: 4px 8px 0px 8px; min-height: 34px; }}"
         f"QTabBar::tab {{ background: {tab_bg}; color: {tab_text}; border: {tab_border}; "
-        f"padding: 6px 16px; margin-right: 2px; border-radius: {tab_radius} {tab_radius} 0 0; }}"
-        f"QTabBar::tab:selected {{ background: {tab_selected_bg}; color: {tab_selected_text}; }}"
-        f"QTabBar::tab:hover {{ background: {tab_hover_bg}; color: {tab_selected_text}; }}"
+        f"border-bottom: 1px solid {P['border']}; padding: 6px 16px; margin-right: 3px; "
+        f"min-height: 24px; min-width: 72px; "
+        f"border-top-left-radius: {tab_radius}; border-top-right-radius: {tab_radius}; "
+        f"border-bottom-left-radius: 0px; border-bottom-right-radius: 0px; }}"
+        f"QTabBar::tab:selected {{ background: {tab_selected_bg}; color: {tab_selected_text}; "
+        f"border-top: 2px solid {accent}; border-bottom: 1px solid {tab_selected_bg}; "
+        f"font-weight: 600; }}"
+        f"QTabBar::tab:hover:!selected {{ background: {tab_hover_bg}; color: {P['text_main']}; }}"
+        f"QTabBar::tab:disabled {{ color: {P['text_dim']}; background: {P.get('bg_card', tab_bg)}; }}"
     )

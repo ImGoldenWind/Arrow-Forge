@@ -10,7 +10,6 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QComboBox,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -21,7 +20,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.themes import P
 from core.editor_file_state import set_file_label
 from core.settings import create_backup_on_open, game_files_dialog_dir
 from core.style_helpers import (
@@ -31,19 +29,20 @@ from core.style_helpers import (
     ss_bg_panel,
     ss_btn,
     ss_accent_sep,
-    ss_field_label,
     ss_file_label,
     ss_input,
     ss_main_label,
-    ss_panel,
-    ss_placeholder,
+    ss_dim_label,
     ss_scrollarea,
     ss_scrollarea_transparent,
-    ss_section_label,
     ss_sep,
     ss_search,
+    ss_sidebar_btn,
     ss_sidebar_frame,
     ss_transparent,
+    make_empty_state,
+    make_editor_field_shell,
+    make_editor_grid_card,
 )
 from core.translations import ui_text
 from parsers.cpu_parser import (
@@ -97,7 +96,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -225,7 +227,9 @@ class CpuEditor(QWidget):
         self._list_scroll.setWidgetResizable(True)
         self._list_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._list_scroll.setStyleSheet(ss_scrollarea_transparent())
+        self._list_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._list_widget = QWidget()
+        self._list_widget.setMinimumWidth(0)
         self._list_widget.setStyleSheet(ss_transparent())
         self._list_layout = QVBoxLayout(self._list_widget)
         self._list_layout.setContentsMargins(0, 0, 0, 0)
@@ -247,8 +251,8 @@ class CpuEditor(QWidget):
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_widget)
         self._show_placeholder(self._tr("ui_cpu_open_cpu_xfbin", ui_text("ui_cpu_open_cpu_xfbin")))
         main_layout.addWidget(self._editor_scroll, 1)
@@ -257,12 +261,14 @@ class CpuEditor(QWidget):
 
     def _show_placeholder(self, text):
         _clear_layout(self._editor_layout)
-        label = QLabel(text)
-        label.setFont(QFont("Segoe UI", 16))
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setStyleSheet(ss_placeholder())
+        card = make_empty_state(
+            self._editor_widget,
+            title=ui_text("no_file_loaded"),
+            text=text,
+            icon_name="fa6s.microchip",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(label)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     def _on_open(self):
@@ -359,7 +365,7 @@ class CpuEditor(QWidget):
             if item["group"] != last_group:
                 label = QLabel(self._group_title(item["group"]))
                 label.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
-                label.setStyleSheet(ss_section_label())
+                label.setStyleSheet(ss_dim_label())
                 self._list_layout.addWidget(label)
                 last_group = item["group"]
             btn = self._make_item_button(item)
@@ -392,20 +398,22 @@ class CpuEditor(QWidget):
         btn = QPushButton()
         btn.setFixedHeight(44)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet(self._sidebar_item_style(selected))
+        btn.setStyleSheet(ss_sidebar_btn(selected=selected))
         layout = QVBoxLayout(btn)
         layout.setContentsMargins(10, 3, 10, 3)
         layout.setSpacing(0)
 
         title = QLabel(item["label"])
         title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        title.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        title.setStyleSheet(ss_main_label())
+        title.setMinimumWidth(0)
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(title)
 
         subtitle = QLabel(item.get("subtitle", ""))
         subtitle.setFont(QFont("Consolas", 11))
-        subtitle.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        subtitle.setStyleSheet(ss_dim_label())
+        subtitle.setMinimumWidth(0)
         subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(subtitle)
 
@@ -428,7 +436,7 @@ class CpuEditor(QWidget):
         self._current_element = element
         self._current_arcade_index = None
         for btn, item in self._buttons:
-            btn.setStyleSheet(self._sidebar_item_style(selected=(item["element"] is element)))
+            btn.setStyleSheet(ss_sidebar_btn(selected=(item["element"] is element)))
         self._build_detail(element)
         self._update_action_buttons()
 
@@ -436,7 +444,7 @@ class CpuEditor(QWidget):
         self._current_arcade_index = index
         self._current_element = None
         for btn, item in self._buttons:
-            btn.setStyleSheet(self._sidebar_item_style(selected=(item.get("index") == index)))
+            btn.setStyleSheet(ss_sidebar_btn(selected=(item.get("index") == index)))
         self._build_arcade_detail(index)
         self._update_action_buttons()
 
@@ -448,30 +456,24 @@ class CpuEditor(QWidget):
             self._show_placeholder(self._tr("ui_cpu_select_entry", ui_text("ui_cpu_select_entry")))
             return
 
-        card = QFrame()
-        card.setStyleSheet(ss_panel())
-        outer = QVBoxLayout(card)
-        outer.setContentsMargins(14, 12, 14, 14)
-        outer.setSpacing(10)
-
-        title = QLabel(item["label"])
-        title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        title.setStyleSheet(ss_main_label())
-        outer.addWidget(title)
-
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(8)
-        outer.addLayout(grid)
+        card, grid = make_editor_grid_card(
+            self._editor_widget,
+            title=item["label"],
+            icon_name="fa6s.brain",
+            subtitle=item.get("subtitle", ""),
+            grid_margins=(0, 2, 0, 0),
+            horizontal_spacing=12,
+            vertical_spacing=8,
+        )
 
         self._block_changes = True
+        cols = 1 if self.width() < 900 else 2
         for idx, (key, value) in enumerate(element.attrib.items()):
             field = self._make_field(element, key, value)
-            grid.addWidget(field, idx // 2, idx % 2)
+            grid.addWidget(field, idx // cols, idx % cols)
         self._block_changes = False
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
+        for col in range(cols):
+            grid.setColumnStretch(col, 1)
 
         self._editor_layout.addWidget(card)
         self._editor_layout.addStretch()
@@ -484,76 +486,59 @@ class CpuEditor(QWidget):
             return
 
         entry = self._arcade["entries"][index]
-        card = QFrame()
-        card.setStyleSheet(ss_panel())
-        outer = QVBoxLayout(card)
-        outer.setContentsMargins(14, 12, 14, 14)
-        outer.setSpacing(10)
-
-        title = QLabel(entry.get("name") or f"Entry {index + 1}")
-        title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        title.setStyleSheet(ss_main_label())
-        outer.addWidget(title)
-
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(8)
-        outer.addLayout(grid)
+        card, grid = make_editor_grid_card(
+            self._editor_widget,
+            title=entry.get("name") or f"Entry {index + 1}",
+            icon_name="fa6s.brain",
+            subtitle=" / ".join(str(value) for value in entry.get("levels", [])),
+            grid_margins=(0, 2, 0, 0),
+            horizontal_spacing=12,
+            vertical_spacing=8,
+        )
 
         self._block_changes = True
         grid.addWidget(self._make_arcade_name_field(entry), 0, 0)
+        cols = 1 if self.width() < 900 else 2
         levels = list(entry.get("levels", []))[:ARCADE_CPU_LEVEL_COUNT]
         levels += [0] * (ARCADE_CPU_LEVEL_COUNT - len(levels))
         entry["levels"] = levels
         for idx, value in enumerate(levels):
             field = self._make_arcade_level_field(entry, idx, value)
-            grid.addWidget(field, (idx + 1) // 2, (idx + 1) % 2)
+            pos = idx + 1
+            grid.addWidget(field, pos // cols, pos % cols)
         self._block_changes = False
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
+        for col in range(cols):
+            grid.setColumnStretch(col, 1)
 
         self._editor_layout.addWidget(card)
         self._editor_layout.addStretch()
 
     def _make_arcade_name_field(self, entry):
-        wrap = QWidget()
-        wrap.setStyleSheet(ss_transparent())
-        layout = QVBoxLayout(wrap)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-
-        label = QLabel(self._tr("ui_cpu_arcade_name", "Name"))
-        label.setFont(QFont("Segoe UI", 12))
-        label.setStyleSheet(ss_field_label())
-        layout.addWidget(label)
+        wrap, layout, _label, _hint = make_editor_field_shell(self._tr("ui_cpu_arcade_name", "Name"))
 
         widget = QLineEdit(entry.get("name", ""))
+        widget.setMinimumWidth(0)
         widget.textEdited.connect(lambda text, target=entry: self._set_arcade_name(target, text))
         widget.setFixedHeight(30)
         widget.setFont(QFont("Consolas", 13))
         widget.setStyleSheet(ss_input())
+        widget.setCursorPosition(0)
         layout.addWidget(widget)
         self._fields["name"] = widget
         return wrap
 
     def _make_arcade_level_field(self, entry, index, value):
-        wrap = QWidget()
-        wrap.setStyleSheet(ss_transparent())
-        layout = QVBoxLayout(wrap)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-
-        label = QLabel(self._tr(f"ui_cpu_arcade_level_{index + 1}", f"CPU Level {index + 1}"))
-        label.setFont(QFont("Segoe UI", 12))
-        label.setStyleSheet(ss_field_label())
-        layout.addWidget(label)
+        wrap, layout, _label, _hint = make_editor_field_shell(
+            self._tr(f"ui_cpu_arcade_level_{index + 1}", f"CPU Level {index + 1}")
+        )
 
         widget = QLineEdit(str(value))
+        widget.setMinimumWidth(0)
         widget.textEdited.connect(lambda text, target=entry, level_index=index: self._set_arcade_level(target, level_index, text))
         widget.setFixedHeight(30)
         widget.setFont(QFont("Consolas", 13))
         widget.setStyleSheet(ss_input())
+        widget.setCursorPosition(0)
         layout.addWidget(widget)
         self._fields[f"level_{index + 1}"] = widget
         return wrap
@@ -592,21 +577,15 @@ class CpuEditor(QWidget):
                 break
 
     def _make_field(self, element, key, value):
-        wrap = QWidget()
-        wrap.setStyleSheet(ss_transparent())
-        layout = QVBoxLayout(wrap)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-
-        label = QLabel(self._field_title(key))
-        label.setFont(QFont("Segoe UI", 12))
-        label.setStyleSheet(ss_field_label())
-        layout.addWidget(label)
+        wrap, layout, _label, _hint = make_editor_field_shell(self._field_title(key))
 
         suggestions = self._catalog.get(key, [])
         if key in _COMBO_FIELDS and suggestions:
             widget = QComboBox()
             widget.setEditable(True)
+            widget.setMinimumWidth(0)
+            widget.setMinimumContentsLength(1)
+            widget.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             for item in suggestions:
                 widget.addItem(item)
             if value not in suggestions:
@@ -615,11 +594,14 @@ class CpuEditor(QWidget):
             widget.currentTextChanged.connect(lambda text, elem=element, attr=key: self._set_attr(elem, attr, text))
         else:
             widget = QLineEdit(value)
+            widget.setMinimumWidth(0)
             widget.textEdited.connect(lambda text, elem=element, attr=key: self._set_attr(elem, attr, text))
 
         widget.setFixedHeight(30)
         widget.setFont(QFont("Consolas", 13))
         widget.setStyleSheet(ss_input())
+        if hasattr(widget, "setCursorPosition"):
+            widget.setCursorPosition(0)
         layout.addWidget(widget)
         self._fields[key] = widget
 
@@ -802,11 +784,3 @@ class CpuEditor(QWidget):
 
     def _field_title(self, key):
         return self._tr(f"ui_cpu_field_{key}", key)
-
-    def _sidebar_item_style(self, selected=False):
-        bg = P["bg_card"] if selected else "transparent"
-        return (
-            f"QPushButton {{ background-color: {bg}; border-radius: 6px; "
-            f"text-align: left; padding: 0px; border: none; }} "
-            f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
-        )

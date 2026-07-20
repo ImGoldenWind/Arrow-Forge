@@ -23,7 +23,9 @@ from core.settings import create_backup_on_open, game_files_dialog_dir
 from core.style_helpers import (
     TOOLBAR_BTN_H,
     TOOLBAR_H,
-    ss_accent_label,
+    make_empty_state,
+    make_editor_grid_card,
+    make_editor_field_shell,
     ss_accent_sep,
     ss_bg_dark,
     ss_bg_panel,
@@ -38,13 +40,11 @@ from core.style_helpers import (
     ss_scrollarea,
     ss_scrollarea_transparent,
     ss_search,
-    ss_section_label,
     ss_sep,
     ss_sidebar_btn,
     ss_sidebar_frame,
     ss_transparent,
 )
-from core.utils.ui_helpers import _add_card_section_title
 from core.translations import ui_text
 from parsers.arcaderewardparam_parser import (
     TYPE_ARCADE,
@@ -73,7 +73,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -240,12 +243,14 @@ class ArcadeRewardParamEditor(QWidget):
         _clear_layout(self._editor_layout)
         self._fields = {}
         self._entry_count_label = None
-        label = QLabel(text)
-        label.setFont(QFont("Segoe UI", 16))
-        label.setStyleSheet(ss_placeholder())
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = make_empty_state(
+            self._editor_widget,
+            title=ui_text("no_file_loaded"),
+            text=text,
+            icon_name="fa6s.folder-open",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(label)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     def _do_open(self):
@@ -416,17 +421,13 @@ class ArcadeRewardParamEditor(QWidget):
         self._loading_detail = True
         entry = self._entries[idx]
 
-        header = QFrame()
-        header.setStyleSheet(ss_panel())
-        header_layout = QGridLayout(header)
-        header_layout.setContentsMargins(16, 14, 16, 14)
-        header_layout.setHorizontalSpacing(16)
-        header_layout.setVerticalSpacing(8)
-
-        title = QLabel(self._entry_title(idx, entry))
-        title.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
-        title.setStyleSheet(ss_accent_label())
-        header_layout.addWidget(title, 0, 0, 1, 2)
+        header, header_layout = make_editor_grid_card(
+            title=self._entry_title(idx, entry),
+            icon_name="fa6s.gift",
+            subtitle=ui_text("ui_arcaderewardparam_reward_id"),
+            grid_margins=(0, 2, 0, 0),
+            vertical_spacing=8,
+        )
 
         self._add_text_field(
             header_layout,
@@ -569,49 +570,21 @@ class ArcadeRewardParamEditor(QWidget):
         self._pending_section_title = title
 
     def _make_card(self) -> QFrame:
-        card = QFrame()
-        card.setStyleSheet(ss_panel())
+        section_title = getattr(self, "_pending_section_title", None)
+        self._pending_section_title = None
+        card, grid = make_editor_grid_card(
+            title=section_title,
+            icon_name="fa6s.sliders",
+            vertical_spacing=10,
+        )
+        card._editor_grid = grid
         return card
 
     def _card_grid(self, card: QFrame) -> QGridLayout:
-        inner = QWidget(card)
-        inner.setStyleSheet(ss_transparent())
-        grid = QGridLayout(inner)
-        grid.setContentsMargins(12, 12, 12, 12)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(8)
-        layout = QVBoxLayout(card)
-        section_title = getattr(self, "_pending_section_title", None)
-        self._pending_section_title = None
-        if section_title:
-            layout.setContentsMargins(12, 12, 12, 12)
-            layout.setSpacing(8)
-            grid.setContentsMargins(0, 4, 0, 0)
-            _add_card_section_title(layout, section_title)
-        else:
-            layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(inner)
-        return grid
+        return card._editor_grid
 
     def _field_shell(self, label: str, hint: str = "") -> tuple[QWidget, QVBoxLayout]:
-        frame = QWidget()
-        frame.setStyleSheet(ss_transparent())
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-
-        label_widget = QLabel(label)
-        label_widget.setFont(QFont("Segoe UI", 12))
-        label_widget.setStyleSheet(ss_field_label())
-        layout.addWidget(label_widget)
-
-        if hint:
-            hint_widget = QLabel(hint)
-            hint_widget.setWordWrap(True)
-            hint_widget.setFont(QFont("Segoe UI", 9))
-            hint_widget.setStyleSheet(ss_dim_label())
-            layout.addWidget(hint_widget)
-
+        frame, layout, _label, _hint = make_editor_field_shell(label, hint)
         return frame, layout
 
     def _add_text_field(self, grid, row, col, key, label, value, hint="", big=False):
@@ -623,6 +596,7 @@ class ArcadeRewardParamEditor(QWidget):
         edit.setFixedHeight(36 if big else 30)
         edit.setFont(QFont("Consolas", 16 if big else 13))
         edit.setStyleSheet(ss_input())
+        edit.setMinimumWidth(0)
         edit.setText(str(value))
         edit.textChanged.connect(lambda _text, k=key: self._on_text_changed(k))
         layout.addWidget(edit)
@@ -635,6 +609,9 @@ class ArcadeRewardParamEditor(QWidget):
         combo.setFixedHeight(36 if big else 30)
         combo.setFont(QFont("Consolas", 16 if big else 13))
         combo.setStyleSheet(ss_input())
+        combo.setMinimumWidth(0)
+        combo.setMinimumContentsLength(1)
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
 
         selected = 0
         for idx, (data, text) in enumerate(options):
@@ -656,6 +633,7 @@ class ArcadeRewardParamEditor(QWidget):
         edit.setFixedHeight(36 if big else 30)
         edit.setFont(QFont("Consolas", 16 if big else 13))
         edit.setStyleSheet(ss_input())
+        edit.setMinimumWidth(0)
         edit.setText(str(int(value)))
         edit.editingFinished.connect(lambda k=key, lo=min_value, hi=max_value: self._on_uint_finished(k, lo, hi))
         layout.addWidget(edit)

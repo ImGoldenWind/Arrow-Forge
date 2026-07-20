@@ -13,14 +13,11 @@ Full-featured XFBIN texture editor with:
 """
 
 import os
-import io
-
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QScrollArea,
     QVBoxLayout, QHBoxLayout, QGridLayout, QSlider,
     QFileDialog, QMessageBox, QDialog, QListWidget, QListWidgetItem,
     QAbstractItemView, QCheckBox, QSizePolicy, QProgressDialog,
-    QToolButton, QSpacerItem,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize, QThread, QObject
 from PyQt6.QtGui import QFont, QPixmap, QImage, QCursor, QColor, QPainter
@@ -30,12 +27,14 @@ from PIL import Image, ImageEnhance, ImageOps, ImageFilter
 from core.themes import P
 from core.style_helpers import (
     TOOLBAR_BTN_H, TOOLBAR_H,
-    ss_bg_dark, ss_bg_panel, ss_btn, ss_accent_sep, ss_dim_label,
+    add_editor_card_title, make_editor_card, make_editor_field_shell,
+    ss_accent_label, ss_bg_dark, ss_bg_panel, ss_btn, ss_accent_sep, ss_dim_label,
     ss_check, ss_field_label, ss_gradient_slider, ss_input,
-    ss_error_label, ss_file_label, ss_file_label_loaded, ss_main_label,
-    ss_scrollarea, ss_scrollarea_card, ss_scrollarea_panel_edge,
+    ss_dialog, ss_error_label, ss_file_label, ss_main_label,
+    ss_listwidget, ss_scrollarea, ss_scrollarea_card, ss_scrollarea_panel_edge,
     ss_scrollarea_transparent, ss_section_label, ss_slider,
-    ss_search, ss_sep, ss_sidebar_btn, ss_sidebar_frame, ss_toggle_btn, ss_transparent,
+    ss_search, ss_sep, ss_sidebar_btn, ss_sidebar_frame, ss_textedit,
+    ss_toggle_btn, ss_transparent,
 )
 from core.editor_file_state import set_file_label
 from core.icons import _pil_to_qpixmap
@@ -70,30 +69,19 @@ def _texture_open_dir() -> str:
     return game_files_dialog_dir(target_patterns="*.xfbin")
 
 
-# Shared style helpers
-def _ss_lineedit():
-    return (
-        f"QLineEdit {{background:{P['bg_card']}; border:1px solid {P['border']}; "
-        f"color:{P['text_main']}; padding:3px 7px; border-radius:4px;}}"
-        f"QLineEdit:focus {{border:1px solid {P['accent']};}}"
-    )
-
-
-def _ss_slider():
-    return (
-        f"QSlider::groove:horizontal {{height:4px; background:{P['mid']}; border-radius:2px;}}"
-        f"QSlider::handle:horizontal {{background:{P['accent']}; width:12px; height:12px; "
-        f"margin:-4px 0; border-radius:6px;}}"
-        f"QSlider::sub-page:horizontal {{background:{P['accent']}; border-radius:2px;}}"
-    )
-
-
 def _make_sep():
     sep = QFrame()
     sep.setFrameShape(QFrame.Shape.HLine)
     sep.setFixedHeight(1)
     sep.setStyleSheet(ss_sep())
     return sep
+
+
+def _swatch_style(color: tuple[int, int, int]) -> str:
+    return (
+        f"QPushButton {{background: rgb{color}; border:1px solid {P['border']}; "
+        f"border-radius:3px;}} QPushButton:hover {{border:1px solid {P['accent']};}}"
+    )
 
 
 # Thumbnail widget
@@ -137,7 +125,7 @@ class _Thumb(QFrame):
         self._name_lbl = QLabel(_truncate(entry.name, 14))
         self._name_lbl.setFont(QFont("Consolas", 8))
         self._name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._name_lbl.setStyleSheet(f"color:{P['text_main']}; background:transparent; border:none;")
+        self._name_lbl.setStyleSheet(ss_main_label() + "border:none;")
         self._name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         lay.addWidget(self._name_lbl)
 
@@ -147,7 +135,7 @@ class _Thumb(QFrame):
         else:
             self._img_lbl.setText("?")
             self._img_lbl.setStyleSheet(
-                f"color:{P['text_dim']}; font-size:24px; background:transparent; border:none;"
+                ss_dim_label() + "font-size:24px; border:none;"
             )
 
     def _set_thumb(self):
@@ -205,13 +193,13 @@ class _ThumbnailGrid(QWidget):
         # Filter bar
         fbar = QWidget()
         fbar.setFixedHeight(38)
-        fbar.setStyleSheet(f"background:{P['bg_panel']};")
+        fbar.setStyleSheet(ss_bg_panel())
         fl   = QHBoxLayout(fbar)
         fl.setContentsMargins(8, 4, 8, 4)
         self._filter_edit = QLineEdit()
         self._filter_edit.setPlaceholderText(ui_text("ui_texture_filter_textures"))
         self._filter_edit.setFont(QFont("Consolas", 10))
-        self._filter_edit.setStyleSheet(_ss_lineedit())
+        self._filter_edit.setStyleSheet(ss_search())
         self._filter_edit.textChanged.connect(self._on_filter)
         fl.addWidget(self._filter_edit)
         root.addWidget(fbar)
@@ -225,7 +213,7 @@ class _ThumbnailGrid(QWidget):
         self._scroll.setStyleSheet(ss_scrollarea())
 
         self._container = QWidget()
-        self._container.setStyleSheet(f"background:{P['bg_dark']};")
+        self._container.setStyleSheet(ss_bg_dark())
         self._grid_lay  = QGridLayout(self._container)
         self._grid_lay.setContentsMargins(8, 8, 8, 8)
         self._grid_lay.setSpacing(6)
@@ -236,7 +224,7 @@ class _ThumbnailGrid(QWidget):
         self._count_lbl.setFont(QFont("Segoe UI", 9))
         self._count_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._count_lbl.setStyleSheet(
-            f"color:{P['text_dim']}; padding:3px; background:{P['bg_panel']};"
+            ss_dim_label() + "padding:3px;"
         )
         root.addWidget(self._count_lbl)
 
@@ -410,9 +398,10 @@ class _TextureList(QWidget):
         lay.setContentsMargins(10, 3, 10, 3)
         lay.setSpacing(0)
 
-        name_lbl = QLabel(entry.name or "<unnamed>")
+        name_lbl = QLabel(_truncate(entry.name or "<unnamed>", 16))
         name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         name_lbl.setStyleSheet(ss_main_label())
+        name_lbl.setToolTip(entry.name or "<unnamed>")
         name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         btn._name_lbl = name_lbl
         lay.addWidget(name_lbl)
@@ -447,7 +436,8 @@ class _TextureList(QWidget):
     def _refresh_row(self, entry: TextureEntry):
         for row in self._thumbs:
             if row._entry is entry:
-                row._name_lbl.setText(entry.name or "<unnamed>")
+                row._name_lbl.setText(_truncate(entry.name or "<unnamed>", 16))
+                row._name_lbl.setToolTip(entry.name or "<unnamed>")
                 row._meta_lbl.setText(self._meta(entry))
                 break
         self._filter_list()
@@ -600,8 +590,13 @@ class _SliderRow(QWidget):
 
         lbl = QLabel(label)
         lbl.setFont(QFont("Segoe UI", 12))
-        lbl.setFixedWidth(88)
+        lbl.setMinimumWidth(0)
+        lbl.setMaximumWidth(118)
+        lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         lbl.setStyleSheet(ss_field_label())
+        if not label:
+            lbl.setVisible(False)
+            lbl.setMaximumWidth(0)
         lay.addWidget(lbl)
 
         self._slider = QSlider(Qt.Orientation.Horizontal)
@@ -663,8 +658,13 @@ class _GradSliderRow(QWidget):
 
         lbl = QLabel(label)
         lbl.setFont(QFont("Segoe UI", 12))
-        lbl.setFixedWidth(88)
+        lbl.setMinimumWidth(0)
+        lbl.setMaximumWidth(118)
+        lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         lbl.setStyleSheet(ss_field_label())
+        if not label:
+            lbl.setVisible(False)
+            lbl.setMaximumWidth(0)
         lay.addWidget(lbl)
 
         self._slider = QSlider(Qt.Orientation.Horizontal)
@@ -703,6 +703,8 @@ class _GradSliderRow(QWidget):
 
 # Right panel: info + quick-edit + operations
 class _RightPanel(QWidget):
+    WIDTH = 370
+
     sig_export_dds  = pyqtSignal()
     sig_export_png  = pyqtSignal()
     sig_export_all  = pyqtSignal()
@@ -719,7 +721,9 @@ class _RightPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(290)
+        self.setMinimumWidth(330)
+        self.setMaximumWidth(self.WIDTH)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self.setStyleSheet(ss_bg_dark())
 
         scroll = QScrollArea()
@@ -730,45 +734,37 @@ class _RightPanel(QWidget):
         inner = QWidget()
         inner.setStyleSheet(ss_bg_dark())
         lay = QVBoxLayout(inner)
-        lay.setContentsMargins(12, 0, 12, 12)
-        lay.setSpacing(8)
+        lay.setContentsMargins(12, 10, 12, 12)
+        lay.setSpacing(10)
 
         # Texture Info
-        lay.addWidget(self._section_label(ui_text("ui_texture_texture_info")))
+        info_card, info_lay = self._card(inner, ui_text("ui_texture_texture_info"), "fa6s.circle-info")
 
         # Name (editable)
-        name_row = QHBoxLayout(); name_row.setSpacing(4); name_row.setContentsMargins(0,0,0,0)
-        name_key = QLabel(ui_text("ui_texture_name")); name_key.setFixedWidth(42)
-        name_key.setFont(QFont("Segoe UI", 12))
-        name_key.setStyleSheet(ss_dim_label())
+        name_field, name_lay, _, _ = make_editor_field_shell(ui_text("ui_texture_name"))
         self._name_edit = QLineEdit()
         self._name_edit.setPlaceholderText(ui_text("ui_texture_texture_name"))
         self._name_edit.setFont(QFont("Consolas", 13))
         self._name_edit.setStyleSheet(ss_input())
         self._name_edit.setFixedHeight(30)
-        name_row.addWidget(name_key)
-        name_row.addWidget(self._name_edit, 1)
-        lay.addLayout(name_row)
+        name_lay.addWidget(self._name_edit)
+        info_lay.addWidget(name_field)
 
         # Path (editable)
-        path_row = QHBoxLayout(); path_row.setSpacing(4); path_row.setContentsMargins(0,0,0,0)
-        path_key = QLabel(ui_text("ui_texture_path")); path_key.setFixedWidth(42)
-        path_key.setFont(QFont("Segoe UI", 12))
-        path_key.setStyleSheet(ss_dim_label())
+        path_field, path_lay, _, _ = make_editor_field_shell(ui_text("ui_texture_path"))
         self._path_edit = QLineEdit()
         self._path_edit.setPlaceholderText(ui_text("ui_texture_file_path"))
         self._path_edit.setFont(QFont("Consolas", 13))
         self._path_edit.setStyleSheet(ss_input())
         self._path_edit.setFixedHeight(30)
-        path_row.addWidget(path_key)
-        path_row.addWidget(self._path_edit, 1)
-        lay.addLayout(path_row)
+        path_lay.addWidget(self._path_edit)
+        info_lay.addWidget(path_field)
 
         self._size_lbl   = self._info_row(ui_text("sound_field_size"),   "—")
         self._fmt_lbl    = self._info_row(ui_text("ui_texture_format"), "—")
         self._mip_lbl    = self._info_row(ui_text("ui_texture_mipmaps"),"—")
         for w in (self._size_lbl, self._fmt_lbl, self._mip_lbl):
-            lay.addWidget(w)
+            info_lay.addWidget(w)
 
         # Copy + Rename buttons
         cr_row = QHBoxLayout(); cr_row.setSpacing(6)
@@ -786,12 +782,11 @@ class _RightPanel(QWidget):
         self._rename_btn.setEnabled(False)
         self._rename_btn.clicked.connect(self._emit_rename)
         cr_row.addWidget(self._rename_btn)
-        lay.addLayout(cr_row)
-
-        lay.addWidget(_make_sep())
+        info_lay.addLayout(cr_row)
+        lay.addWidget(info_card)
 
         # Quick Edits
-        lay.addWidget(self._section_label(ui_text("ui_texture_quick_edits")))
+        edit_card, edit_lay = self._card(inner, ui_text("ui_texture_quick_edits"), "fa6s.sliders")
 
         self._brightness = _SliderRow(ui_text("ui_texture_brightness"), -100, 100, 0)
         self._contrast   = _SliderRow(ui_text("ui_texture_contrast"),   -100, 100, 0)
@@ -799,10 +794,10 @@ class _RightPanel(QWidget):
 
         for sl in (self._brightness, self._contrast, self._sharpness):
             sl.value_changed.connect(self._on_slider_changed)
-            lay.addWidget(sl)
+            edit_lay.addWidget(sl)
 
         # Hue / Saturation sub-group
-        lay.addWidget(self._section_label(ui_text("ui_texture_hue_saturation")))
+        edit_lay.addWidget(self._section_label(ui_text("ui_texture_hue_saturation")))
 
         self._hue        = _GradSliderRow(ui_text("ui_texture_hue"),        -180, 180, 0, _GradSliderRow.HUE_CSS)
         self._saturation = _GradSliderRow(ui_text("ui_texture_saturation"),  -100, 100, 0, _sat_gradient_css(0))
@@ -810,7 +805,7 @@ class _RightPanel(QWidget):
 
         for sl in (self._hue, self._saturation, self._lightness):
             sl.value_changed.connect(self._on_slider_changed)
-            lay.addWidget(sl)
+            edit_lay.addWidget(sl)
 
         # Colorize checkbox
         colorize_row = QHBoxLayout()
@@ -821,7 +816,7 @@ class _RightPanel(QWidget):
         self._colorize_chk.stateChanged.connect(self._on_slider_changed)
         colorize_row.addWidget(self._colorize_chk)
         colorize_row.addStretch()
-        lay.addLayout(colorize_row)
+        edit_lay.addLayout(colorize_row)
 
         # Flip / Rotate row
         frow = QHBoxLayout()
@@ -834,7 +829,7 @@ class _RightPanel(QWidget):
             b.setStyleSheet(ss_btn())
             b.clicked.connect(sig)
             frow.addWidget(b)
-        lay.addLayout(frow)
+        edit_lay.addLayout(frow)
 
         rrow = QHBoxLayout()
         rrow.setSpacing(4)
@@ -845,7 +840,7 @@ class _RightPanel(QWidget):
             b.setStyleSheet(ss_btn())
             b.clicked.connect(lambda _, d=deg: self.sig_rotate.emit(d))
             rrow.addWidget(b)
-        lay.addLayout(rrow)
+        edit_lay.addLayout(rrow)
 
         # Add Text (Quick Edits shortcut)
         add_text_btn = QPushButton(ui_text("ui_texture_add_text"))
@@ -853,7 +848,7 @@ class _RightPanel(QWidget):
         add_text_btn.setFont(QFont("Segoe UI", 10))
         add_text_btn.setStyleSheet(ss_btn())
         add_text_btn.clicked.connect(self.sig_add_text)
-        lay.addWidget(add_text_btn)
+        edit_lay.addWidget(add_text_btn)
 
         # Apply / Reset
         ar_row = QHBoxLayout()
@@ -872,12 +867,11 @@ class _RightPanel(QWidget):
         reset_btn.setStyleSheet(ss_btn())
         reset_btn.clicked.connect(self._reset_sliders)
         ar_row.addWidget(reset_btn)
-        lay.addLayout(ar_row)
-
-        lay.addWidget(_make_sep())
+        edit_lay.addLayout(ar_row)
+        lay.addWidget(edit_card)
 
         # Operations
-        lay.addWidget(self._section_label(ui_text("ui_texture_operations")))
+        ops_card, ops_lay = self._card(inner, ui_text("ui_texture_operations"), "fa6s.file-export")
 
         for lbl, sig, acc in (
             (ui_text("ui_texture_export_dds"),       self.sig_export_dds,  False),
@@ -891,7 +885,8 @@ class _RightPanel(QWidget):
             b.setFont(QFont("Segoe UI", 10))
             b.setStyleSheet(ss_btn(accent=acc))
             b.clicked.connect(sig)
-            lay.addWidget(b)
+            ops_lay.addWidget(b)
+        lay.addWidget(ops_card)
 
         lay.addStretch()
         scroll.setWidget(inner)
@@ -908,11 +903,16 @@ class _RightPanel(QWidget):
         self._pending_entry: TextureEntry | None = None
 
     # Helpers
+    def _card(self, parent, title: str, icon_name: str):
+        card, layout = make_editor_card(parent, margins=(14, 12, 14, 12), spacing=8)
+        add_editor_card_title(layout, title, icon_name)
+        return card, layout
+
     def _section_label(self, text: str) -> QLabel:
         lbl = QLabel(text)
-        lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
+        lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         lbl.setStyleSheet(ss_section_label())
-        lbl.setContentsMargins(8, 10, 0, 2)
+        lbl.setContentsMargins(0, 6, 0, 0)
         return lbl
 
     def _info_row(self, key: str, val: str) -> QWidget:
@@ -923,7 +923,7 @@ class _RightPanel(QWidget):
         row.setSpacing(6)
         klbl = QLabel(key + ":")
         klbl.setFont(QFont("Segoe UI", 12))
-        klbl.setFixedWidth(58)
+        klbl.setFixedWidth(76)
         klbl.setStyleSheet(ss_dim_label())
         vlbl = QLabel(val)
         vlbl.setFont(QFont("Consolas", 12))
@@ -997,9 +997,7 @@ class _PortDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(ui_text("ui_texture_port_textures"))
         self.setMinimumSize(480, 500)
-        self.setStyleSheet(
-            f"QDialog {{background:{P['bg_dark']}; color:{P['text_main']};}}"
-        )
+        self.setStyleSheet(ss_dialog())
         self._entries = entries
         self._selected: list[TextureEntry] = []
 
@@ -1009,24 +1007,20 @@ class _PortDialog(QDialog):
 
         hdr = QLabel(ui_text("ui_texture_select_textures_to_port_into_the_current_xfbin"))
         hdr.setFont(QFont("Segoe UI", 11))
-        hdr.setStyleSheet(f"color:{P['text_sec']};")
+        hdr.setStyleSheet(ss_field_label())
         lay.addWidget(hdr)
 
         filt = QLineEdit()
         filt.setPlaceholderText(ui_text("ui_texture_filter"))
         filt.setFont(QFont("Consolas", 10))
-        filt.setStyleSheet(_ss_lineedit())
+        filt.setStyleSheet(ss_search())
         filt.textChanged.connect(self._filter)
         lay.addWidget(filt)
 
         self._list = QListWidget()
         self._list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._list.setFont(QFont("Consolas", 10))
-        self._list.setStyleSheet(
-            f"QListWidget {{background:{P['bg_card']}; color:{P['text_main']}; border:none;}}"
-            f"QListWidget::item:selected {{background:{P['accent']}; color:{P['bg_dark']};}}"
-            f"QListWidget::item:hover {{background:{P['bg_card_hov']};}}"
-        )
+        self._list.setStyleSheet(ss_listwidget())
         self._populate(entries)
         lay.addWidget(self._list, 1)
 
@@ -1136,14 +1130,12 @@ class TextureEditor(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        self.setStyleSheet(f"background:{P['bg_dark']};")
+        self.setStyleSheet(ss_bg_dark())
 
         # Top bar
         bar = QFrame()
         bar.setFixedHeight(46)
-        bar.setStyleSheet(
-            f"background:{P['bg_panel']}; border-bottom:1px solid {P['border']};"
-        )
+        bar.setStyleSheet(ss_bg_panel() + f"border-bottom:1px solid {P['border']};")
         bl = QHBoxLayout(bar)
         bl.setContentsMargins(12, 6, 12, 6)
         bl.setSpacing(8)
@@ -1175,7 +1167,7 @@ class TextureEditor(QWidget):
 
         self._status_lbl = QLabel(ui_text("ui_texture_open_an_xfbin_file_to_get_started"))
         self._status_lbl.setFont(QFont("Segoe UI", 10))
-        self._status_lbl.setStyleSheet(f"color:{P['text_dim']};")
+        self._status_lbl.setStyleSheet(ss_dim_label())
         bl.addWidget(self._status_lbl, 1)
 
         root.addWidget(bar)
@@ -1215,7 +1207,7 @@ class TextureEditor(QWidget):
         self._right.sig_copy_name.connect(self._copy_name)
         splitter.addWidget(self._right)
 
-        splitter.setSizes([240, 500, 290])
+        splitter.setSizes([240, 470, _RightPanel.WIDTH])
         root.addWidget(splitter, 1)
 
     def _build_ui(self):
@@ -1545,12 +1537,12 @@ class TextureEditor(QWidget):
         dlg = QDialog(self)
         dlg.setWindowTitle(ui_text("ui_texture_export_all"))
         dlg.setFixedSize(300, 120)
-        dlg.setStyleSheet(f"QDialog {{background:{P['bg_dark']}; color:{P['text_main']};}}")
+        dlg.setStyleSheet(ss_dialog())
         lay = QVBoxLayout(dlg)
         lay.setSpacing(10)
         lbl = QLabel(ui_text("ui_texture_export_format"))
         lbl.setFont(QFont("Segoe UI", 11))
-        lbl.setStyleSheet(f"color:{P['text_sec']};")
+        lbl.setStyleSheet(ss_field_label())
         lay.addWidget(lbl)
         btn_row = QHBoxLayout()
         for fmt in ('png', 'dds'):
@@ -1742,7 +1734,8 @@ class TextureEditor(QWidget):
         # Refresh the thumbnail label in the grid
         for thumb in self._grid._thumbs:
             if thumb._entry is self._cur_entry:
-                thumb._name_lbl.setText(_truncate(name, 14))
+                thumb._name_lbl.setText(_truncate(name, 16))
+                thumb._name_lbl.setToolTip(name)
                 break
         self._right.set_entry(self._cur_entry)
         self._mark_dirty()
@@ -2072,9 +2065,7 @@ class _TextOverlayDialog(QDialog):
         self.setWindowTitle(ui_text("ui_texture_add_text_overlay"))
         self.setMinimumSize(900, 620)
         self.resize(1050, 680)
-        self.setStyleSheet(
-            f"QDialog {{background:{P['bg_dark']}; color:{P['text_main']};}}"
-        )
+        self.setStyleSheet(ss_dialog())
         self._base    = base_img.convert('RGBA')
         self._result  = None
         self._color         = (255, 255, 255)
@@ -2096,7 +2087,7 @@ class _TextOverlayDialog(QDialog):
 
         # Left: preview
         preview_wrap = QWidget()
-        preview_wrap.setStyleSheet(f"background:{P['bg_dark']};")
+        preview_wrap.setStyleSheet(ss_bg_dark())
         pl = QVBoxLayout(preview_wrap)
         pl.setContentsMargins(8, 8, 8, 8)
         pl.setSpacing(4)
@@ -2104,11 +2095,11 @@ class _TextOverlayDialog(QDialog):
         pv_hdr = QHBoxLayout(); pv_hdr.setSpacing(8)
         pv_lbl = QLabel(ui_text("ui_texture_preview"))
         pv_lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        pv_lbl.setStyleSheet(f"color:{P['accent']};")
+        pv_lbl.setStyleSheet(ss_accent_label())
         pv_hdr.addWidget(pv_lbl)
         drag_hint = QLabel(ui_text("ui_texture_drag_to_reposition_text"))
         drag_hint.setFont(QFont("Segoe UI", 9))
-        drag_hint.setStyleSheet(f"color:{P['text_dim']};")
+        drag_hint.setStyleSheet(ss_dim_label())
         pv_hdr.addWidget(drag_hint)
         pv_hdr.addStretch()
         pl.addLayout(pv_hdr)
@@ -2134,7 +2125,7 @@ class _TextOverlayDialog(QDialog):
         ctrl_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         ctrl_scroll.setStyleSheet(ss_scrollarea_panel_edge())
         ctrl = QWidget()
-        ctrl.setStyleSheet(f"background:{P['bg_panel']};")
+        ctrl.setStyleSheet(ss_bg_panel())
         cl = QVBoxLayout(ctrl)
         cl.setContentsMargins(12, 12, 12, 12)
         cl.setSpacing(8)
@@ -2146,11 +2137,7 @@ class _TextOverlayDialog(QDialog):
         self._text_edit.setPlaceholderText(ui_text("ui_texture_enter_text_ctrl_enter_new_line"))
         self._text_edit.setFixedHeight(80)
         self._text_edit.setFont(QFont("Segoe UI", 11))
-        self._text_edit.setStyleSheet(
-            f"QPlainTextEdit {{background:{P['bg_card']}; border:1px solid {P['border']}; "
-            f"color:{P['text_main']}; padding:4px 6px; border-radius:4px;}}"
-            f"QPlainTextEdit:focus {{border:1px solid {P['accent']};}}"
-        )
+        self._text_edit.setStyleSheet(ss_textedit())
         self._text_edit.textChanged.connect(self._kick)
         cl.addWidget(self._text_edit)
 
@@ -2160,13 +2147,7 @@ class _TextOverlayDialog(QDialog):
         from PyQt6.QtWidgets import QFontComboBox
         self._font_combo = QFontComboBox()
         self._font_combo.setCurrentFont(QFont("Arial"))
-        self._font_combo.setStyleSheet(
-            f"QFontComboBox {{background:{P['bg_card']}; border:1px solid {P['border']}; "
-            f"color:{P['text_main']}; padding:2px 6px; border-radius:4px;}}"
-            f"QFontComboBox::drop-down {{border:none; width:22px;}}"
-            f"QFontComboBox QAbstractItemView {{background:{P['bg_card']}; "
-            f"color:{P['text_main']}; selection-background-color:{P['accent']};}}"
-        )
+        self._font_combo.setStyleSheet(ss_input())
         self._font_combo.currentFontChanged.connect(self._kick)
         cl.addWidget(self._font_combo)
 
@@ -2175,7 +2156,7 @@ class _TextOverlayDialog(QDialog):
         from PyQt6.QtWidgets import QSpinBox
         size_lbl = QLabel(ui_text("ui_texture_size"))
         size_lbl.setFont(QFont("Segoe UI", 10))
-        size_lbl.setStyleSheet(f"color:{P['text_dim']};")
+        size_lbl.setStyleSheet(ss_dim_label())
         srow.addWidget(size_lbl)
 
         self._size_spin = QSpinBox()
@@ -2183,11 +2164,7 @@ class _TextOverlayDialog(QDialog):
         self._size_spin.setValue(36)
         self._size_spin.setFixedWidth(64)
         self._size_spin.setFont(QFont("Consolas", 11))
-        self._size_spin.setStyleSheet(
-            f"QSpinBox {{background:{P['bg_card']}; border:1px solid {P['border']}; "
-            f"color:{P['text_main']}; padding:2px 4px; border-radius:4px;}}"
-            f"QSpinBox::up-button, QSpinBox::down-button {{width:18px;}}"
-        )
+        self._size_spin.setStyleSheet(ss_input())
         self._size_spin.valueChanged.connect(self._kick)
         srow.addWidget(self._size_spin)
 
@@ -2221,20 +2198,14 @@ class _TextOverlayDialog(QDialog):
         # Shadow
         cl.addWidget(self._sec(ui_text("ui_texture_shadow_2")))
 
-        sh_row = QHBoxLayout(); sh_row.setSpacing(6)
         for lbl, attr, lo, hi, default in (
             ("X",  '_shadow_x', -30, 30, 3),
             ("Y",  '_shadow_y', -30, 30, 3),
         ):
-            ql = QLabel(lbl + ":")
-            ql.setFont(QFont("Segoe UI", 10))
-            ql.setStyleSheet(f"color:{P['text_dim']};")
-            sh_row.addWidget(ql)
-            sl = _SliderRow("", lo, hi, default)
+            sl = _SliderRow(lbl, lo, hi, default)
             sl.value_changed.connect(self._kick)
             setattr(self, attr + '_slider', sl)
-            sh_row.addWidget(sl, 1)
-        cl.addLayout(sh_row)
+            cl.addWidget(sl)
 
         self._shadow_op_row = _SliderRow(ui_text("ui_texture_shadow"), 0, 255, 0)
         self._shadow_op_row.value_changed.connect(self._kick)
@@ -2257,9 +2228,11 @@ class _TextOverlayDialog(QDialog):
 
         # Anchor grid (3×3)
         from PyQt6.QtWidgets import QButtonGroup
-        cl.addWidget(QLabel(ui_text("ui_texture_anchor")))
+        anchor_lbl = QLabel(ui_text("ui_texture_anchor"))
+        anchor_lbl.setStyleSheet(ss_field_label())
+        cl.addWidget(anchor_lbl)
         ag_widget = QWidget()
-        ag_widget.setStyleSheet(ui_text("ui_texture_background_transparent"))
+        ag_widget.setStyleSheet(ss_transparent())
         ag_layout = QGridLayout(ag_widget)
         ag_layout.setContentsMargins(0, 0, 0, 0)
         ag_layout.setSpacing(3)
@@ -2326,7 +2299,7 @@ class _TextOverlayDialog(QDialog):
     def _sec(text: str) -> QLabel:
         lbl = QLabel(text)
         lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        lbl.setStyleSheet(f"color:{P['accent']}; padding-top:4px;")
+        lbl.setStyleSheet(ss_accent_label() + "padding-top:4px;")
         return lbl
 
     @staticmethod
@@ -2342,22 +2315,19 @@ class _TextOverlayDialog(QDialog):
 
     def _color_picker_btn(self, label: str, default: tuple, callback) -> tuple:
         """Returns (QWidget, setter_fn) where the widget shows a color swatch + label."""
-        w   = QWidget(); w.setStyleSheet(ui_text("ui_texture_background_transparent"))
+        w   = QWidget(); w.setStyleSheet(ss_transparent())
         row = QHBoxLayout(w)
         row.setContentsMargins(0, 0, 0, 0); row.setSpacing(6)
 
         lbl = QLabel(label + ":")
         lbl.setFont(QFont("Segoe UI", 10))
-        lbl.setStyleSheet(f"color:{P['text_dim']};")
+        lbl.setStyleSheet(ss_dim_label())
         row.addWidget(lbl)
 
         swatch = QPushButton()
         swatch.setFixedSize(56, 22)
         swatch.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        swatch.setStyleSheet(
-            f"QPushButton {{background: rgb{default}; border:1px solid {P['border']}; "
-            f"border-radius:3px;}} QPushButton:hover {{border:1px solid {P['accent']};}}"
-        )
+        swatch.setStyleSheet(_swatch_style(default))
         swatch.clicked.connect(callback)
         row.addWidget(swatch)
         row.addStretch()
@@ -2374,10 +2344,7 @@ class _TextOverlayDialog(QDialog):
             QColorDialog.ColorDialogOption.ShowAlphaChannel)
         if c.isValid():
             self._color = (c.red(), c.green(), c.blue())
-            self._color_btn[0]._swatch.setStyleSheet(
-                f"QPushButton {{background:rgb{self._color}; border:1px solid {P['border']}; border-radius:3px;}}"
-                f"QPushButton:hover {{border:1px solid {P['accent']};}}"
-            )
+            self._color_btn[0]._swatch.setStyleSheet(_swatch_style(self._color))
             self._kick()
 
     def _pick_outline_color(self):
@@ -2385,10 +2352,7 @@ class _TextOverlayDialog(QDialog):
         c = QColorDialog.getColor(QColor(*self._outline_color), self, ui_text("ui_texture_outline_color"))
         if c.isValid():
             self._outline_color = (c.red(), c.green(), c.blue())
-            self._outline_btn[0]._swatch.setStyleSheet(
-                f"QPushButton {{background:rgb{self._outline_color}; border:1px solid {P['border']}; border-radius:3px;}}"
-                f"QPushButton:hover {{border:1px solid {P['accent']};}}"
-            )
+            self._outline_btn[0]._swatch.setStyleSheet(_swatch_style(self._outline_color))
             self._kick()
 
     def _pick_shadow_color(self):
@@ -2396,10 +2360,7 @@ class _TextOverlayDialog(QDialog):
         c = QColorDialog.getColor(QColor(*self._shadow_color), self, ui_text("ui_texture_shadow_color"))
         if c.isValid():
             self._shadow_color = (c.red(), c.green(), c.blue())
-            self._shadow_btn[0]._swatch.setStyleSheet(
-                f"QPushButton {{background:rgb{self._shadow_color}; border:1px solid {P['border']}; border-radius:3px;}}"
-                f"QPushButton:hover {{border:1px solid {P['accent']};}}"
-            )
+            self._shadow_btn[0]._swatch.setStyleSheet(_swatch_style(self._shadow_color))
             self._kick()
 
     # Anchor / alignment

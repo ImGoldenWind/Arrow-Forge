@@ -3,18 +3,21 @@ import copy
 
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QVBoxLayout, QHBoxLayout,
-    QGridLayout, QFileDialog, QMessageBox, QScrollArea,
+    QFileDialog, QMessageBox, QScrollArea,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
 from core.themes import P
 from core.style_helpers import (
+    make_empty_state,
+    make_editor_field_shell,
+    make_editor_grid_card,
     ss_btn, ss_sep, ss_accent_sep, ss_input, ss_search, ss_file_label, ss_sidebar_btn,
-    ss_scrollarea, ss_scrollarea_transparent, ss_panel, ss_section_label,
-    ss_field_label, ss_dim_label, ss_placeholder, TOOLBAR_H, TOOLBAR_BTN_H,
+    ss_scrollarea, ss_scrollarea_transparent, ss_panel,
+    ss_bg_dark, ss_bg_panel, ss_dim_label,
+    ss_placeholder, ss_sidebar_frame, ss_transparent, TOOLBAR_H, TOOLBAR_BTN_H,
 )
-from core.utils.ui_helpers import _add_card_section_title
 from core.editor_file_state import set_file_label
 from parsers.customizedefaultparam_parser import (
     parse_customizedefaultparam_xfbin,
@@ -32,7 +35,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -69,7 +75,7 @@ class CustomizeDefaultParamEditor(QWidget):
 
         top = QFrame()
         top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(f"background-color: {P['bg_panel']};")
+        top.setStyleSheet(ss_bg_panel())
         tl = QHBoxLayout(top)
         tl.setContentsMargins(12, 8, 12, 8)
         tl.setSpacing(4)
@@ -109,7 +115,7 @@ class CustomizeDefaultParamEditor(QWidget):
 
         sidebar = QFrame()
         sidebar.setFixedWidth(260)
-        sidebar.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; }}")
+        sidebar.setStyleSheet(ss_sidebar_frame())
         sl = QVBoxLayout(sidebar)
         sl.setContentsMargins(8, 8, 8, 4)
         sl.setSpacing(4)
@@ -123,7 +129,7 @@ class CustomizeDefaultParamEditor(QWidget):
         sl.addWidget(self._search)
 
         actions = QWidget()
-        actions.setStyleSheet("background: transparent;")
+        actions.setStyleSheet(ss_transparent())
         al = QHBoxLayout(actions)
         al.setContentsMargins(0, 2, 0, 4)
         al.setSpacing(4)
@@ -160,7 +166,7 @@ class CustomizeDefaultParamEditor(QWidget):
         self._list_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._list_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._list_widget = QWidget()
-        self._list_widget.setStyleSheet("background: transparent;")
+        self._list_widget.setStyleSheet(ss_transparent())
         self._list_layout = QVBoxLayout(self._list_widget)
         self._list_layout.setContentsMargins(0, 0, 0, 0)
         self._list_layout.setSpacing(1)
@@ -179,7 +185,7 @@ class CustomizeDefaultParamEditor(QWidget):
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
-        self._editor_widget.setStyleSheet(f"background-color: {P['bg_dark']};")
+        self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
         self._editor_layout.setContentsMargins(0, 0, 0, 0)
         self._editor_layout.setSpacing(0)
@@ -191,12 +197,14 @@ class CustomizeDefaultParamEditor(QWidget):
 
     def _show_placeholder(self, text):
         _clear_layout(self._editor_layout)
-        lbl = QLabel(text)
-        lbl.setFont(QFont("Segoe UI", 16))
-        lbl.setStyleSheet(ss_placeholder())
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = make_empty_state(
+            self._editor_widget,
+            title=ui_text("no_file_loaded"),
+            text=text,
+            icon_name="fa6s.folder-open",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(lbl)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     def _clear_entry_list(self):
@@ -281,28 +289,20 @@ class CustomizeDefaultParamEditor(QWidget):
         self._fields = {}
         e = self._entries[idx]
 
-        hdr = QFrame()
-        hdr.setStyleSheet(ss_panel())
-        hl = QVBoxLayout(hdr)
-        hl.setContentsMargins(16, 14, 16, 14)
-        hl.setSpacing(8)
-
-        title = QLabel(ui_text("ui_customcardparam_entry_value", p0=idx))
-        title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
-        title.setStyleSheet(f"color: {P['accent']}; background: transparent;")
-        hl.addWidget(title)
-
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(8)
+        slot_name = SLOT_NAMES.get(e.get("slot", 0), str(e.get("slot", 0)))
+        hdr, grid = make_editor_grid_card(
+            title=ui_text("ui_customcardparam_entry_value", p0=idx),
+            icon_name="fa6s.user-gear",
+            subtitle=ui_text("ui_customcardparam_value_value", p0=e.get("char_code", ""), p1=slot_name),
+            grid_margins=(0, 2, 0, 0),
+            vertical_spacing=8,
+        )
         self._add_field(grid, 0, 0, "char_code", ui_text("ui_customizedefaultparam_char_code"), e["char_code"], wide=True)
         self._add_field(
             grid, 0, 1, "slot",
             self._label_with_hint(ui_text("ui_customizedefaultparam_slot"), SLOT_NAMES, e["slot"]),
             e["slot"],
         )
-        hl.addLayout(grid)
         self._editor_layout.addWidget(hdr)
 
         self._add_section(ui_text("ui_customizedefaultparam_position_scale"))
@@ -339,46 +339,27 @@ class CustomizeDefaultParamEditor(QWidget):
         self._pending_section_title = title
 
     def _add_card_grid(self, fields, columns=3):
-        card = QFrame()
-        card.setStyleSheet(ss_panel())
-        inner = QWidget(card)
-        inner.setStyleSheet("background: transparent;")
-        grid = QGridLayout(inner)
-        grid.setContentsMargins(12, 12, 12, 12)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(8)
+        section_title = getattr(self, "_pending_section_title", None)
+        self._pending_section_title = None
+        card, grid = make_editor_grid_card(
+            title=section_title,
+            icon_name="fa6s.sliders",
+            vertical_spacing=10,
+        )
 
         for i, (key, label, value) in enumerate(fields):
             row, col = divmod(i, columns)
             self._add_field(grid, row, col, key, label, value)
 
-        main = QVBoxLayout(card)
-        section_title = getattr(self, "_pending_section_title", None)
-        self._pending_section_title = None
-        if section_title:
-            main.setContentsMargins(12, 12, 12, 12)
-            main.setSpacing(8)
-            grid.setContentsMargins(0, 4, 0, 0)
-            _add_card_section_title(main, section_title)
-        else:
-            main.setContentsMargins(0, 0, 0, 0)
-        main.addWidget(inner)
         self._editor_layout.addWidget(card)
 
     def _add_field(self, grid, row, col, key, label, value, wide=False):
-        f = QWidget()
-        f.setStyleSheet("background: transparent;")
-        fl = QVBoxLayout(f)
-        fl.setContentsMargins(0, 0, 0, 0)
-        fl.setSpacing(2)
-
-        lbl = QLabel(label)
-        lbl.setFont(QFont("Segoe UI", 12))
-        lbl.setStyleSheet(ss_field_label())
-        fl.addWidget(lbl)
+        f, fl, _label, _hint = make_editor_field_shell(label)
 
         le = QLineEdit()
-        le.setText(str(value))
+        text = str(value)
+        le.setText(text)
+        le.setCursorPosition(next((i for i, ch in enumerate(text) if ch.isprintable() and ord(ch) >= 32 and ch not in {"\u25a1", "\ufffd"}), 0))
         le.setFixedHeight(30 if not wide else 36)
         le.setFont(QFont("Consolas", 13 if not wide else 16))
         le.setStyleSheet(ss_input())

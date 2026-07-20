@@ -1,10 +1,9 @@
 """editors/speaking_editor.py  –  Editor for SpeakingLineParam.bin.xfbin."""
 
-import os
-
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QScrollArea,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QMessageBox,
+    QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox,
+    QSizePolicy,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
@@ -12,6 +11,9 @@ from PyQt6.QtGui import QFont
 from core.themes import P
 from core.style_helpers import (
     ss_btn, ss_sep, ss_accent_sep, ss_scrollarea, ss_scrollarea_transparent,
+    ss_search, ss_sidebar_btn, ss_input, ss_file_label, ss_transparent,
+    ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
+    make_empty_state, make_editor_field_shell, make_editor_grid_card,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
 from parsers.speaking_parser import (
@@ -19,6 +21,7 @@ from parsers.speaking_parser import (
     INTERACTION_NAMES,
 )
 from core.translations import ui_text
+from core.editor_file_state import set_file_label
 from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
@@ -28,7 +31,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            w = item.widget()
+            w.hide()
+            w.setParent(None)
+            w.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -97,7 +103,7 @@ class SpeakingEditor(QWidget):
         # Toolbar
         top = QFrame()
         top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(f"background-color: {P['bg_panel']};")
+        top.setStyleSheet(ss_bg_panel())
         top_layout = QHBoxLayout(top)
         top_layout.setContentsMargins(12, 8, 12, 8)
         top_layout.setSpacing(4)
@@ -119,7 +125,7 @@ class SpeakingEditor(QWidget):
 
         self._file_lbl = QLabel(ui_text("xfa_no_file"))
         self._file_lbl.setFont(QFont("Consolas", 12))
-        self._file_lbl.setStyleSheet(f"color: {P['text_dim']};")
+        self._file_lbl.setStyleSheet(ss_file_label())
         top_layout.addWidget(self._file_lbl)
         top_layout.addStretch()
 
@@ -140,7 +146,7 @@ class SpeakingEditor(QWidget):
         # Left sidebar
         list_frame = QFrame()
         list_frame.setFixedWidth(260)
-        list_frame.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; }}")
+        list_frame.setStyleSheet(ss_sidebar_frame())
         list_vlayout = QVBoxLayout(list_frame)
         list_vlayout.setContentsMargins(8, 8, 8, 4)
         list_vlayout.setSpacing(4)
@@ -149,15 +155,12 @@ class SpeakingEditor(QWidget):
         self._search.setPlaceholderText(ui_text("ui_speaking_search_characters"))
         self._search.setFixedHeight(32)
         self._search.setFont(QFont("Segoe UI", 13))
-        self._search.setStyleSheet(
-            f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-            f"color: {P['text_main']}; padding: 2px 6px; border-radius: 4px; }}"
-        )
+        self._search.setStyleSheet(ss_search())
         self._search.textChanged.connect(self._filter_list)
         list_vlayout.addWidget(self._search)
 
         actions_frame = QWidget()
-        actions_frame.setStyleSheet("background: transparent;")
+        actions_frame.setStyleSheet(ss_transparent())
         actions_layout = QHBoxLayout(actions_frame)
         actions_layout.setContentsMargins(0, 2, 0, 4)
         actions_layout.setSpacing(4)
@@ -194,8 +197,10 @@ class SpeakingEditor(QWidget):
         self._pair_scroll.setWidgetResizable(True)
         self._pair_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._pair_scroll.setStyleSheet(ss_scrollarea_transparent())
+        self._pair_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._pair_list_widget = QWidget()
-        self._pair_list_widget.setStyleSheet("background-color: transparent;")
+        self._pair_list_widget.setMinimumWidth(0)
+        self._pair_list_widget.setStyleSheet(ss_transparent())
         self._pair_list_layout = QVBoxLayout(self._pair_list_widget)
         self._pair_list_layout.setContentsMargins(0, 0, 0, 0)
         self._pair_list_layout.setSpacing(1)
@@ -208,7 +213,7 @@ class SpeakingEditor(QWidget):
         # Thin vertical divider
         divider = QFrame()
         divider.setFixedWidth(1)
-        divider.setStyleSheet(f"background-color: {P['mid']};")
+        divider.setStyleSheet(ss_sep())
         main_layout.addWidget(divider)
 
         # Right editor panel
@@ -217,10 +222,10 @@ class SpeakingEditor(QWidget):
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
-        self._editor_widget.setStyleSheet(f"background-color: {P['bg_dark']};")
+        self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(10)
         self._editor_scroll.setWidget(self._editor_widget)
 
         self._show_placeholder(ui_text("ui_speaking_open_a_file_to_get_started"))
@@ -232,12 +237,15 @@ class SpeakingEditor(QWidget):
 
     def _show_placeholder(self, text: str):
         _clear_layout(self._editor_layout)
-        lbl = QLabel(text)
-        lbl.setFont(QFont("Segoe UI", 16))
-        lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title = ui_text("no_file_loaded") if self._filepath is None else ui_text("ui_model_viewer_select_item")
+        card = make_empty_state(
+            self._editor_widget,
+            title=title,
+            text=text,
+            icon_name="fa6s.comments",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(lbl)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     # Pair list
@@ -283,11 +291,7 @@ class SpeakingEditor(QWidget):
         btn = QPushButton()
         btn.setFixedHeight(44)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet(
-            f"QPushButton {{ background-color: transparent; border-radius: 6px; "
-            f"text-align: left; padding: 0px; border: none; }} "
-            f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
-        )
+        btn.setStyleSheet(ss_sidebar_btn())
         layout = QVBoxLayout(btn)
         layout.setContentsMargins(10, 3, 10, 3)
         layout.setSpacing(0)
@@ -298,12 +302,16 @@ class SpeakingEditor(QWidget):
         pair_lbl = QLabel(ui_text("ui_speaking_value_vs_value", p0=n1, p1=n2))
         pair_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         pair_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        pair_lbl.setMinimumWidth(0)
+        pair_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         pair_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(pair_lbl)
 
         id_lbl = QLabel(ui_text("ui_sound_value_value_2", p0=c1, p1=c2))
         id_lbl.setFont(QFont("Consolas", 10))
         id_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        id_lbl.setMinimumWidth(0)
+        id_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         id_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(id_lbl)
 
@@ -325,17 +333,26 @@ class SpeakingEditor(QWidget):
         self._selected_pair = (c1, c2)
         for btn, bc1, bc2 in self._pair_buttons:
             selected = (bc1 == c1 and bc2 == c2)
-            bg = P['bg_card'] if selected else "transparent"
-            btn.setStyleSheet(
-                f"QPushButton {{ background-color: {bg}; border-radius: 6px; "
-                f"text-align: left; padding: 0px; border: none; }} "
-                f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
-            )
+            btn.setStyleSheet(ss_sidebar_btn(selected=selected))
         self._btn_dup.setEnabled(True)
         self._btn_del.setEnabled(True)
         self._build_editor(c1, c2)
 
     # Editor
+
+    def _make_text_field(self, label_text: str, value: str, *, font=None, color=None, height=30):
+        frame, layout, _label, _hint = make_editor_field_shell(label_text)
+        edit = QLineEdit(value)
+        edit.setFixedHeight(height)
+        edit.setFont(font or QFont("Consolas", 13))
+        edit.setStyleSheet(
+            ss_input()
+            + (f"QLineEdit {{ color: {color}; font-weight: bold; }}" if color else "")
+        )
+        edit.setMinimumWidth(0)
+        edit.setCursorPosition(0)
+        layout.addWidget(edit)
+        return frame, edit
 
     def _build_editor(self, c1: str, c2: str):
         _clear_layout(self._editor_layout)
@@ -343,41 +360,24 @@ class SpeakingEditor(QWidget):
         pair_entries = self._entries_for_pair(c1, c2)
 
         # Character header
-        hdr = QFrame()
-        hdr.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
-        hdr_inner = QWidget(hdr)
-        hdr_inner.setStyleSheet("background: transparent;")
-        hdr_grid = QGridLayout(hdr_inner)
-        hdr_grid.setContentsMargins(16, 12, 16, 12)
-        hdr_grid.setHorizontalSpacing(16)
-
-        hdr_main = QVBoxLayout(hdr)
-        hdr_main.setContentsMargins(0, 0, 0, 0)
-        hdr_main.addWidget(hdr_inner)
+        hdr, hdr_grid = make_editor_grid_card(
+            title=ui_text("ui_speaking_value_vs_value", p0=c1, p1=c2),
+            icon_name="fa6s.comments",
+            subtitle=ui_text("ui_sound_value_value_2", p0=c1, p1=c2),
+            grid_margins=(0, 2, 0, 0),
+            vertical_spacing=8,
+        )
 
         for col, (field, code, label_text) in enumerate([
             ("char1", c1, ui_text("ui_speaking_character_1")),
             ("char2", c2, ui_text("ui_speaking_character_2")),
         ]):
-            frame = QWidget()
-            frame.setStyleSheet("background: transparent;")
-            fl = QVBoxLayout(frame)
-            fl.setContentsMargins(0, 0, 0, 0)
-            fl.setSpacing(2)
-
-            lbl = QLabel(label_text)
-            lbl.setFont(QFont("Segoe UI", 12))
-            lbl.setStyleSheet(f"color: {P['text_dim']};")
-            fl.addWidget(lbl)
-
-            edit = QLineEdit(code)
-            edit.setFixedHeight(36)
-            edit.setFont(QFont("Consolas", 16))
-            edit.setStyleSheet(
-                f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-                f"color: {P['accent']}; padding: 2px 6px; border-radius: 4px; }}"
+            frame, edit = self._make_text_field(
+                label_text, code,
+                font=QFont("Consolas", 16),
+                color=P['accent'],
+                height=36,
             )
-            fl.addWidget(edit)
 
             edit.editingFinished.connect(
                 lambda _field=field, _edit=edit, _c1=c1, _c2=c2:
@@ -393,28 +393,14 @@ class SpeakingEditor(QWidget):
         for itype in _TYPE_ORDER:
             type_name = INTERACTION_NAMES[itype]
 
-            section_lbl = QLabel(type_name)
-            section_lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
-            section_lbl.setStyleSheet(f"color: {P['secondary']}; background: transparent;")
-            section_lbl.setContentsMargins(20, 10, 0, 2)
-            self._editor_layout.addWidget(section_lbl)
-
             typed = [(i, e) for i, e in pair_entries if e["interaction_type"] == itype]
 
-            card = QFrame()
-            card.setStyleSheet(
-                f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}"
+            card, card_grid = make_editor_grid_card(
+                title=type_name,
+                icon_name="fa6s.quote-left",
+                grid_margins=(0, 2, 0, 0),
+                vertical_spacing=8,
             )
-            card_inner = QWidget(card)
-            card_inner.setStyleSheet("background: transparent;")
-            card_grid = QGridLayout(card_inner)
-            card_grid.setContentsMargins(12, 12, 12, 12)
-            card_grid.setHorizontalSpacing(16)
-            card_grid.setVerticalSpacing(8)
-
-            card_main = QVBoxLayout(card)
-            card_main.setContentsMargins(0, 0, 0, 0)
-            card_main.addWidget(card_inner)
 
             if not typed:
                 empty_lbl = QLabel(ui_text("ui_speaking_no_entry_for_this_interaction_type"))
@@ -437,30 +423,11 @@ class SpeakingEditor(QWidget):
                         ("dialogue1", ui_text("ui_speaking_dialogue_1")),
                         ("dialogue2", ui_text("ui_speaking_dialogue_2")),
                     ]):
-                        f = QWidget()
-                        f.setStyleSheet("background: transparent;")
-                        fl = QVBoxLayout(f)
-                        fl.setContentsMargins(0, 0, 0, 0)
-                        fl.setSpacing(2)
-
-                        lbl = QLabel(dlabel)
-                        lbl.setFont(QFont("Segoe UI", 12))
-                        lbl.setStyleSheet(f"color: {P['text_sec']};")
-                        fl.addWidget(lbl)
-
-                        edit = QLineEdit(entry[dkey])
-                        edit.setFixedHeight(30)
-                        edit.setFont(QFont("Consolas", 13))
-                        edit.setStyleSheet(
-                            f"QLineEdit {{ background-color: {P['bg_card']}; "
-                            f"border: 1px solid {P['border']}; "
-                            f"color: {P['text_main']}; padding: 2px 6px; border-radius: 4px; }}"
-                        )
+                        f, edit = self._make_text_field(dlabel, entry[dkey])
                         edit.textChanged.connect(
                             lambda text, _idx=entry_idx, _key=dkey:
                                 self._update_entry_field(_idx, _key, text)
                         )
-                        fl.addWidget(edit)
 
                         card_grid.addWidget(f, row_idx, col_idx)
                         card_grid.setColumnStretch(col_idx, 1)
@@ -469,17 +436,22 @@ class SpeakingEditor(QWidget):
 
         spacer = QWidget()
         spacer.setFixedHeight(20)
-        spacer.setStyleSheet("background: transparent;")
+        spacer.setStyleSheet(ss_transparent())
         self._editor_layout.addWidget(spacer)
         self._editor_layout.addStretch()
 
     # Field update helpers
 
+    def _mark_dirty(self):
+        self._dirty = True
+        self._btn_save.setEnabled(True)
+        if self._filepath:
+            set_file_label(self._file_lbl, self._filepath, dirty=True)
+
     def _update_entry_field(self, idx: int, key: str, value: str):
         if 0 <= idx < len(self._entries):
             self._entries[idx][key] = value
-            self._dirty = True
-            self._btn_save.setEnabled(True)
+            self._mark_dirty()
 
     def _add_type_entry(self, c1: str, c2: str, itype: int):
         """Add a new entry for the given interaction type to the current pair."""
@@ -491,8 +463,7 @@ class SpeakingEditor(QWidget):
         }
         self._entries.append(new_e)
         self._orig_entries.append(dict(new_e))
-        self._dirty = True
-        self._btn_save.setEnabled(True)
+        self._mark_dirty()
         self._build_editor(c1, c2)
 
     def _on_char_changed(self, old_c1: str, old_c2: str, field: str, new_val: str):
@@ -505,8 +476,7 @@ class SpeakingEditor(QWidget):
                 changed = True
         if not changed:
             return
-        self._dirty = True
-        self._btn_save.setEnabled(True)
+        self._mark_dirty()
         new_c1 = new_val if field == "char1" else old_c1
         new_c2 = new_val if field == "char2" else old_c2
         self._selected_pair = (new_c1, new_c2)
@@ -525,8 +495,7 @@ class SpeakingEditor(QWidget):
             }
             self._entries.append(e)
             self._orig_entries.append(dict(e))
-        self._dirty = True
-        self._btn_save.setEnabled(True)
+        self._mark_dirty()
         self._populate_list(select=(new_c1, new_c2))
 
     def _on_dup(self):
@@ -543,8 +512,7 @@ class SpeakingEditor(QWidget):
             new_e["char2"] = new_c2
             self._entries.append(new_e)
             self._orig_entries.append(dict(new_e))
-        self._dirty = True
-        self._btn_save.setEnabled(True)
+        self._mark_dirty()
         self._populate_list(select=(new_c1, new_c2))
 
     def _on_delete(self):
@@ -569,8 +537,7 @@ class SpeakingEditor(QWidget):
             del self._entries[i]
             if i < len(self._orig_entries):
                 del self._orig_entries[i]
-        self._dirty = True
-        self._btn_save.setEnabled(True)
+        self._mark_dirty()
         self._selected_pair = None
         self._populate_list()
 
@@ -591,8 +558,7 @@ class SpeakingEditor(QWidget):
         self._orig_entries  = [dict(e) for e in entries]
         self._dirty         = False
 
-        self._file_lbl.setText(os.path.basename(filepath))
-        self._file_lbl.setStyleSheet(f"color: {P['text_file']};")
+        set_file_label(self._file_lbl, filepath)
         self._btn_save.setEnabled(True)
         self._btn_add.setEnabled(True)
 
@@ -625,6 +591,5 @@ class SpeakingEditor(QWidget):
         except Exception:
             self._orig_entries = [dict(e) for e in self._entries]
 
-        self._file_lbl.setText(os.path.basename(self._filepath))
-        self._file_lbl.setStyleSheet(f"color: {P['text_file']};")
+        set_file_label(self._file_lbl, self._filepath)
         QMessageBox.information(self, ui_text("ui_assist_saved"), ui_text("ui_assist_file_saved_value", p0=self._filepath))

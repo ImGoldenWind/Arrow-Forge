@@ -5,19 +5,19 @@ import threading
 
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QScrollArea,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QMessageBox,
+    QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_accent_sep, ss_panel, ss_sidebar_btn,
-    ss_scrollarea, ss_scrollarea_transparent,
-    ss_section_label, ss_field_label,
+    make_empty_state, make_editor_field_shell, make_editor_grid_card,
+    ss_btn, ss_accent_sep, ss_input, ss_search, ss_sidebar_btn,
+    ss_scrollarea, ss_scrollarea_transparent, ss_file_label,
+    ss_sep, ss_transparent, ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
-from core.utils.ui_helpers import _add_card_section_title
 from core.editor_file_state import set_file_label
 from parsers.effectprm_parser import parse_effectprm_xfbin, save_effectprm_xfbin
 from core.translations import ui_text
@@ -30,9 +30,19 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
+
+
+def _effect_title(entry):
+    name = str(entry.get('effect_name') or '').strip()
+    if name:
+        return name
+    return ui_text("ui_effect_slot_value", p0=entry.get('slot_id', 0))
 
 
 class EffectEditor(QWidget):
@@ -67,7 +77,7 @@ class EffectEditor(QWidget):
         # Top toolbar
         top = QFrame()
         top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(f"background-color: {P['bg_panel']};")
+        top.setStyleSheet(ss_bg_panel())
         tl = QHBoxLayout(top)
         tl.setContentsMargins(12, 8, 12, 8)
         tl.setSpacing(4)
@@ -89,7 +99,7 @@ class EffectEditor(QWidget):
 
         self._file_lbl = QLabel(self.t("no_file_loaded"))
         self._file_lbl.setFont(QFont("Consolas", 12))
-        self._file_lbl.setStyleSheet(f"color: {P['text_dim']};")
+        self._file_lbl.setStyleSheet(ss_file_label())
         tl.addWidget(self._file_lbl)
         tl.addStretch()
 
@@ -109,7 +119,7 @@ class EffectEditor(QWidget):
         # Left sidebar
         list_frame = QFrame()
         list_frame.setFixedWidth(260)
-        list_frame.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; }}")
+        list_frame.setStyleSheet(ss_sidebar_frame())
         list_vlayout = QVBoxLayout(list_frame)
         list_vlayout.setContentsMargins(8, 8, 8, 4)
         list_vlayout.setSpacing(4)
@@ -118,15 +128,12 @@ class EffectEditor(QWidget):
         self._search_entry.setPlaceholderText(self.t("search_placeholder"))
         self._search_entry.setFixedHeight(32)
         self._search_entry.setFont(QFont("Segoe UI", 13))
-        self._search_entry.setStyleSheet(
-            f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-            f"color: {P['text_main']}; padding: 2px 6px; border-radius: 4px; }}"
-        )
+        self._search_entry.setStyleSheet(ss_search())
         self._search_entry.textChanged.connect(self._filter_list)
         list_vlayout.addWidget(self._search_entry)
 
         actions_frame = QWidget()
-        actions_frame.setStyleSheet("background: transparent;")
+        actions_frame.setStyleSheet(ss_transparent())
         actions_layout = QHBoxLayout(actions_frame)
         actions_layout.setContentsMargins(0, 2, 0, 4)
         actions_layout.setSpacing(4)
@@ -163,8 +170,10 @@ class EffectEditor(QWidget):
         self._list_scroll.setWidgetResizable(True)
         self._list_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._list_scroll.setStyleSheet(ss_scrollarea_transparent())
+        self._list_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._list_widget = QWidget()
-        self._list_widget.setStyleSheet("background-color: transparent;")
+        self._list_widget.setMinimumWidth(0)
+        self._list_widget.setStyleSheet(ss_transparent())
         self._list_layout = QVBoxLayout(self._list_widget)
         self._list_layout.setContentsMargins(0, 0, 0, 0)
         self._list_layout.setSpacing(1)
@@ -176,7 +185,7 @@ class EffectEditor(QWidget):
 
         divider = QFrame()
         divider.setFixedWidth(1)
-        divider.setStyleSheet(f"background-color: {P['mid']};")
+        divider.setStyleSheet(ss_sep())
         main_layout.addWidget(divider)
 
         # Right editor panel
@@ -185,18 +194,20 @@ class EffectEditor(QWidget):
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
-        self._editor_widget.setStyleSheet(f"background-color: {P['bg_dark']};")
+        self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
         self._editor_layout.setContentsMargins(0, 0, 0, 0)
         self._editor_layout.setSpacing(0)
         self._editor_scroll.setWidget(self._editor_widget)
 
-        self._placeholder = QLabel(ui_text("ui_effect_open_effectprm_bin_xfbin_to_begin_editing"))
-        self._placeholder.setFont(QFont("Segoe UI", 16))
-        self._placeholder.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._placeholder = make_empty_state(
+            self._editor_widget,
+            title=self.t("no_file_loaded"),
+            text=ui_text("ui_effect_open_effectprm_bin_xfbin_to_begin_editing"),
+            icon_name="fa6s.wand-magic-sparkles",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(self._placeholder)
+        self._editor_layout.addWidget(self._placeholder, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
         main_layout.addWidget(self._editor_scroll, 1)
@@ -219,15 +230,18 @@ class EffectEditor(QWidget):
         btn_layout.setContentsMargins(10, 3, 10, 3)
         btn_layout.setSpacing(0)
 
-        name_lbl = QLabel(entry['effect_name'])
+        name_lbl = QLabel(_effect_title(entry))
         name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        name_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        name_color = P['text_main'] if str(entry.get('effect_name') or '').strip() else P['text_dim']
+        name_lbl.setStyleSheet(f"color: {name_color}; background: transparent;")
+        name_lbl.setMinimumWidth(0)
         name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         btn_layout.addWidget(name_lbl)
 
         id_lbl = QLabel(ui_text("ui_effect_slot_value", p0=entry['slot_id']))
         id_lbl.setFont(QFont("Consolas", 11))
         id_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        id_lbl.setMinimumWidth(0)
         id_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         btn_layout.addWidget(id_lbl)
 
@@ -270,27 +284,27 @@ class EffectEditor(QWidget):
     def _add_section(self, title):
         self._pending_section_title = title
 
-    def _make_field(self, label_text, value, font=None, color=None, height=30):
-        frame = QWidget()
-        frame.setStyleSheet("background: transparent;")
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-
-        lbl = QLabel(label_text)
-        lbl.setFont(QFont("Segoe UI", 12))
-        lbl.setStyleSheet(ss_field_label())
-        layout.addWidget(lbl)
+    def _make_field(self, label_text, value, font=None, color=None, height=30, placeholder=None):
+        frame, layout, _label, _hint = make_editor_field_shell(label_text)
 
         e = QLineEdit()
         e.setFixedHeight(height)
+        e.setMinimumWidth(0)
         e.setFont(font or QFont("Consolas", 13))
         c = color or P['text_main']
-        e.setStyleSheet(
-            f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-            f"color: {c}; padding: 2px 6px; border-radius: 4px; }}"
-        )
+
+        def _sync_text_color(text):
+            fg = P['text_dim'] if placeholder and not str(text) else c
+            e.setStyleSheet(
+                ss_input()
+                + f"QLineEdit {{ color: {fg}; placeholder-text-color: {P['text_dim']}; }}"
+            )
+
+        if placeholder and str(value) == "":
+            e.setPlaceholderText(placeholder)
+        _sync_text_color(value)
         e.setText(str(value))
+        e.textChanged.connect(_sync_text_color)
         layout.addWidget(e)
         return frame, e
 
@@ -299,22 +313,19 @@ class EffectEditor(QWidget):
         self._fields = {}
 
         # Header card: Effect Name + Slot ID + Xfbins Count
-        hdr = QFrame()
-        hdr.setStyleSheet(ss_panel())
-        hdr_inner = QWidget(hdr)
-        hdr_inner.setStyleSheet("background: transparent;")
-        hdr_grid = QGridLayout(hdr_inner)
-        hdr_grid.setContentsMargins(16, 12, 16, 12)
-        hdr_grid.setHorizontalSpacing(16)
-        hdr_grid.setVerticalSpacing(8)
-        hdr_main = QVBoxLayout(hdr)
-        hdr_main.setContentsMargins(0, 0, 0, 0)
-        hdr_main.addWidget(hdr_inner)
+        hdr, hdr_grid = make_editor_grid_card(
+            title=_effect_title(entry),
+            icon_name="fa6s.wand-magic-sparkles",
+            subtitle=ui_text("ui_effect_slot_value", p0=entry['slot_id']),
+            grid_margins=(0, 2, 0, 0),
+            vertical_spacing=8,
+        )
 
         name_frame, e_name = self._make_field(
             ui_text("ui_effect_effect_name"), entry['effect_name'],
             font=QFont("Segoe UI", 18, QFont.Weight.Bold),
             color=P['accent'], height=36,
+            placeholder=_effect_title(entry),
         )
         hdr_grid.addWidget(name_frame, 0, 0)
         hdr_grid.setColumnStretch(0, 2)
@@ -340,27 +351,19 @@ class EffectEditor(QWidget):
 
         # XFBIN Path section
         self._add_section(ui_text("ui_effect_xfbin_path"))
-        path_card = QFrame()
-        path_card.setStyleSheet(ss_panel())
-        path_inner = QWidget(path_card)
-        path_inner.setStyleSheet("background: transparent;")
-        path_grid = QGridLayout(path_inner)
-        path_grid.setContentsMargins(12, 12, 12, 12)
-        path_grid.setHorizontalSpacing(16)
-        path_grid.setVerticalSpacing(8)
-        path_main = QVBoxLayout(path_card)
         section_title = getattr(self, "_pending_section_title", None)
         self._pending_section_title = None
-        if section_title:
-            path_main.setContentsMargins(12, 12, 12, 12)
-            path_main.setSpacing(8)
-            path_grid.setContentsMargins(0, 4, 0, 0)
-            _add_card_section_title(path_main, section_title)
-        else:
-            path_main.setContentsMargins(0, 0, 0, 0)
-        path_main.addWidget(path_inner)
+        path_card, path_grid = make_editor_grid_card(
+            title=section_title,
+            icon_name="fa6s.folder-open",
+            grid_margins=(0, 4, 0, 0),
+            vertical_spacing=10,
+        )
 
-        path_frame, e_path = self._make_field(ui_text("ui_effect_xfbin_path"), entry['xfbin_path'])
+        path_frame, e_path = self._make_field(
+            ui_text("ui_effect_xfbin_path"), entry['xfbin_path'],
+            placeholder=ui_text("xfa_no_file"),
+        )
         path_grid.addWidget(path_frame, 0, 0)
         path_grid.setColumnStretch(0, 1)
         self._fields['xfbin_path'] = e_path
@@ -375,7 +378,7 @@ class EffectEditor(QWidget):
 
         spacer = QWidget()
         spacer.setFixedHeight(20)
-        spacer.setStyleSheet("background: transparent;")
+        spacer.setStyleSheet(ss_transparent())
         self._editor_layout.addWidget(spacer)
         self._editor_layout.addStretch()
 
@@ -403,7 +406,10 @@ class EffectEditor(QWidget):
             if e is entry:
                 labels = btn.findChildren(QLabel)
                 if len(labels) >= 2:
-                    labels[0].setText(entry['effect_name'])
+                    labels[0].setText(_effect_title(entry))
+                    labels[0].setStyleSheet(
+                        f"color: {P['text_main'] if entry['effect_name'] else P['text_dim']}; background: transparent;"
+                    )
                     labels[1].setText(ui_text("ui_effect_slot_value", p0=entry['slot_id']))
                 break
 
@@ -451,7 +457,7 @@ class EffectEditor(QWidget):
             return
         result = QMessageBox.question(
             self, ui_text("dlg_title_confirm_delete"),
-            ui_text("ui_effect_delete_value", p0=self._current_entry['effect_name'])
+            ui_text("ui_effect_delete_value", p0=_effect_title(self._current_entry))
         )
         if result != QMessageBox.StandardButton.Yes:
             return
@@ -482,18 +488,20 @@ class EffectEditor(QWidget):
         self._filepath = path
         name = os.path.basename(path)
         self._file_lbl.setText(ui_text("ui_effect_loading_value", p0=name))
-        self._file_lbl.setStyleSheet(f"color: {P['text_dim']};")
+        self._file_lbl.setStyleSheet(ss_file_label())
         self._current_entry = None
         self._entry_buttons = []
         self._fields = {}
         self._clear_list()
         self._clear_editor()
-        placeholder = QLabel(ui_text("ui_effect_loading"))
-        placeholder.setFont(QFont("Segoe UI", 16))
-        placeholder.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder = make_empty_state(
+            self._editor_widget,
+            title=ui_text("ui_effect_loading"),
+            text=name,
+            icon_name="fa6s.spinner",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(placeholder)
+        self._editor_layout.addWidget(placeholder, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
         def _worker():
@@ -527,12 +535,14 @@ class EffectEditor(QWidget):
 
     def _on_load_error(self, msg):
         self._clear_editor()
-        err_lbl = QLabel(ui_text("ui_effect_error_loading_file"))
-        err_lbl.setFont(QFont("Segoe UI", 16))
-        err_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        err_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        err_lbl = make_empty_state(
+            self._editor_widget,
+            title=ui_text("ui_effect_error_loading_file"),
+            text=msg,
+            icon_name="fa6s.triangle-exclamation",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(err_lbl)
+        self._editor_layout.addWidget(err_lbl, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
         self._file_lbl.setText(self.t("no_file_loaded"))
         QMessageBox.critical(self, ui_text("ui_charviewer_load_error"), msg)

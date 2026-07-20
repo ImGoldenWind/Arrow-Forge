@@ -5,13 +5,16 @@ import qtawesome as qta
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QScrollArea,
     QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QMessageBox,
+    QSizePolicy,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_toolbar, ss_accent_sep, ss_sep, ss_input, ss_scrollarea,
-    ss_scrollarea_transparent, ss_file_label,
+    add_editor_card_title, make_editor_card, make_editor_field, make_empty_state,
+    ss_accent_label, ss_accent_sep, ss_bg_dark, ss_bg_panel, ss_btn, ss_dim_label,
+    ss_file_label, ss_input, ss_scrollarea, ss_scrollarea_transparent,
+    ss_main_label, ss_search, ss_sep, ss_sidebar_btn, ss_sidebar_frame, ss_transparent,
 )
 from core.editor_file_state import set_file_label, set_file_label_empty
 from core.skeleton import SkeletonListRow, SkeletonBar
@@ -29,9 +32,17 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
+
+
+def _truncate(text, limit):
+    text = str(text)
+    return text if len(text) <= limit else text[:max(1, limit - 3)] + "..."
 
 
 class CharacodeEditor(QWidget):
@@ -42,7 +53,7 @@ class CharacodeEditor(QWidget):
 
     def __init__(self, parent, lang_func, embedded=False):
         super().__init__(parent)
-        self.setStyleSheet(f"background-color: {P['bg_dark']};")
+        self.setStyleSheet(ss_bg_dark())
         self.t = lang_func
 
         self._raw_data = None
@@ -69,7 +80,7 @@ class CharacodeEditor(QWidget):
         # Top bar
         top = QFrame(self)
         top.setFixedHeight(46)
-        top.setStyleSheet(f"background-color: {P['bg_panel']};")
+        top.setStyleSheet(ss_bg_panel())
         top_layout = QHBoxLayout(top)
         top_layout.setContentsMargins(12, 8, 12, 8)
         top_layout.setSpacing(4)
@@ -92,7 +103,7 @@ class CharacodeEditor(QWidget):
         sep_v = QFrame(top)
         sep_v.setFixedWidth(1)
         sep_v.setFixedHeight(26)
-        sep_v.setStyleSheet(f"background-color: {P['border']};")
+        sep_v.setStyleSheet(ss_sep())
         top_layout.addWidget(sep_v)
 
         self._file_label = QLabel(self.t("no_file_loaded"), top)
@@ -104,7 +115,7 @@ class CharacodeEditor(QWidget):
 
         self._count_label = QLabel("", top)
         self._count_label.setFont(QFont("Consolas", 12))
-        self._count_label.setStyleSheet(f"color: {P['secondary']}; background-color: transparent;")
+        self._count_label.setStyleSheet(ss_accent_label())
         top_layout.addWidget(self._count_label)
 
         root_layout.addWidget(top)
@@ -124,7 +135,7 @@ class CharacodeEditor(QWidget):
         # Left sidebar: entry list
         list_frame = QFrame(main)
         list_frame.setFixedWidth(260)
-        list_frame.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; }}")
+        list_frame.setStyleSheet(ss_sidebar_frame())
         list_layout = QVBoxLayout(list_frame)
         list_layout.setContentsMargins(8, 8, 8, 4)
         list_layout.setSpacing(4)
@@ -134,16 +145,13 @@ class CharacodeEditor(QWidget):
         self._search_entry.setPlaceholderText(self.t("search_placeholder"))
         self._search_entry.setFixedHeight(32)
         self._search_entry.setFont(QFont("Segoe UI", 13))
-        self._search_entry.setStyleSheet(
-            f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-            f"color: {P['text_main']}; border-radius: 4px; padding: 2px 6px; }}"
-        )
+        self._search_entry.setStyleSheet(ss_search())
         self._search_entry.textChanged.connect(self._filter_list)
         list_layout.addWidget(self._search_entry)
 
         # Action buttons row
         actions_frame = QWidget(list_frame)
-        actions_frame.setStyleSheet("background-color: transparent;")
+        actions_frame.setStyleSheet(ss_transparent())
         actions_layout = QHBoxLayout(actions_frame)
         actions_layout.setContentsMargins(0, 2, 0, 4)
         actions_layout.setSpacing(4)
@@ -180,8 +188,9 @@ class CharacodeEditor(QWidget):
         self._entry_scroll.setWidgetResizable(True)
         self._entry_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._entry_scroll.setStyleSheet(ss_scrollarea_transparent())
+        self._entry_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._entry_list_widget = QWidget()
-        self._entry_list_widget.setStyleSheet("background-color: transparent;")
+        self._entry_list_widget.setStyleSheet(ss_transparent())
         self._entry_list_layout = QVBoxLayout(self._entry_list_widget)
         self._entry_list_layout.setContentsMargins(0, 0, 0, 0)
         self._entry_list_layout.setSpacing(1)
@@ -194,34 +203,43 @@ class CharacodeEditor(QWidget):
         # Thin separator between list and editor
         vsep = QFrame(main)
         vsep.setFixedWidth(1)
-        vsep.setStyleSheet(f"background-color: {P['mid']};")
+        vsep.setStyleSheet(ss_sep())
         main_layout.addWidget(vsep)
 
         # Right panel: editor
         self._editor_scroll = QScrollArea(main)
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
-        self._editor_widget.setStyleSheet(f"background-color: {P['bg_dark']};")
+        self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
         self._editor_layout.setContentsMargins(0, 0, 0, 0)
         self._editor_layout.setSpacing(0)
         self._editor_scroll.setWidget(self._editor_widget)
 
-        self._placeholder = QLabel(self.t("placeholder_characode"))
-        self._placeholder.setFont(QFont("Segoe UI", 16))
-        self._placeholder.setStyleSheet(f"color: {P['text_dim']};")
-        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._placeholder.setContentsMargins(0, 60, 0, 60)
-        self._editor_layout.addWidget(self._placeholder)
-        self._editor_layout.addStretch()
+        self._show_placeholder()
 
         main_layout.addWidget(self._editor_scroll, 1)
 
         root_layout.addWidget(main, 1)
 
     # File I/O
+
+    def _show_placeholder(self):
+        _clear_layout(self._editor_layout)
+        self._editor_layout.setContentsMargins(0, 0, 0, 0)
+        self._editor_layout.setSpacing(0)
+        card = make_empty_state(
+            self._editor_widget,
+            title=self.t("no_file_loaded"),
+            text=self.t("placeholder_characode"),
+            icon_name="fa6s.id-card",
+        )
+        self._editor_layout.addStretch()
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
+        self._editor_layout.addStretch()
 
     def _load_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -258,24 +276,18 @@ class CharacodeEditor(QWidget):
         self._editor_layout.setContentsMargins(12, 12, 12, 12)
         self._editor_layout.setSpacing(8)
 
-        hdr = QFrame(self._editor_widget)
-        hdr.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
-        hdr_inner = QVBoxLayout(hdr)
-        hdr_inner.setContentsMargins(16, 14, 16, 14)
+        hdr, hdr_inner = make_editor_card(self._editor_widget, margins=(16, 14, 16, 14), spacing=10)
         hdr_inner.addWidget(SkeletonBar(hdr, height=36, corner_radius=5))
         self._editor_layout.addWidget(hdr)
 
-        sec = QFrame(self._editor_widget)
-        sec.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
-        sec_lay = QVBoxLayout(sec)
-        sec_lay.setContentsMargins(12, 12, 12, 12)
+        sec, sec_lay = make_editor_card(self._editor_widget, margins=(12, 12, 12, 12), spacing=8)
         g = QWidget(sec)
-        g.setStyleSheet("background-color: transparent;")
+        g.setStyleSheet(ss_transparent())
         g_layout = QGridLayout(g)
         g_layout.setContentsMargins(0, 0, 0, 0)
         for col in range(3):
             f = QWidget(g)
-            f.setStyleSheet("background-color: transparent;")
+            f.setStyleSheet(ss_transparent())
             f_layout = QVBoxLayout(f)
             f_layout.setContentsMargins(8, 0, 8, 0)
             f_layout.setSpacing(4)
@@ -291,15 +303,7 @@ class CharacodeEditor(QWidget):
     def _on_load_error(self, msg):
         _clear_layout(self._entry_list_layout)
         self._entry_list_layout.addStretch()
-        _clear_layout(self._editor_layout)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._placeholder = QLabel(self.t("placeholder_characode"))
-        self._placeholder.setFont(QFont("Segoe UI", 16))
-        self._placeholder.setStyleSheet(f"color: {P['text_dim']};")
-        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._placeholder.setContentsMargins(0, 60, 0, 60)
-        self._editor_layout.addWidget(self._placeholder)
-        self._editor_layout.addStretch()
+        self._show_placeholder()
         self._filepath = None
         self._dirty = False
         set_file_label_empty(self._file_label, self.t("no_file_loaded"))
@@ -351,26 +355,25 @@ class CharacodeEditor(QWidget):
             btn = QPushButton(self._entry_list_widget)
             btn.setFixedHeight(44)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(
-                f"QPushButton {{ background-color: transparent; border-radius: 6px; "
-                f"text-align: left; padding: 0px; border: none; }}"
-                f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
-            )
+            btn.setStyleSheet(ss_sidebar_btn(False))
             btn.clicked.connect(lambda checked, e=entry: self._select_entry(e))
 
             btn_layout = QVBoxLayout(btn)
             btn_layout.setContentsMargins(10, 3, 10, 3)
             btn_layout.setSpacing(0)
 
-            name_lbl = QLabel(entry['name'])
+            name_text = entry['name']
+            name_lbl = QLabel(_truncate(name_text, 21))
             name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-            name_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+            name_lbl.setStyleSheet(ss_main_label())
+            name_lbl.setToolTip(name_text)
             name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             btn_layout.addWidget(name_lbl)
 
-            code_lbl = QLabel(entry['char_code'])
+            code_lbl = QLabel(_truncate(entry['char_code'], 24))
             code_lbl.setFont(QFont("Consolas", 11))
-            code_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+            code_lbl.setStyleSheet(ss_dim_label())
+            code_lbl.setToolTip(entry['char_code'])
             code_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             btn_layout.addWidget(code_lbl)
 
@@ -395,17 +398,9 @@ class CharacodeEditor(QWidget):
         self._current_entry = entry
         for btn, e in self._entry_buttons:
             if e is entry:
-                btn.setStyleSheet(
-                    f"QPushButton {{ background-color: {P['bg_card']}; border-radius: 6px; "
-                    f"text-align: left; padding: 0px; border: none; }}"
-                    f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
-                )
+                btn.setStyleSheet(ss_sidebar_btn(True))
             else:
-                btn.setStyleSheet(
-                    f"QPushButton {{ background-color: transparent; border-radius: 6px; "
-                    f"text-align: left; padding: 0px; border: none; }}"
-                    f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
-                )
+                btn.setStyleSheet(ss_sidebar_btn(False))
         self._build_editor(entry)
 
     # Apply field changes back to entry
@@ -430,8 +425,10 @@ class CharacodeEditor(QWidget):
             if e is entry:
                 labels = btn.findChildren(QLabel)
                 if len(labels) >= 2:
-                    labels[0].setText(entry['name'])
-                    labels[1].setText(entry['char_code'])
+                    labels[0].setText(_truncate(entry['name'], 21))
+                    labels[0].setToolTip(entry['name'])
+                    labels[1].setText(_truncate(entry['char_code'], 24))
+                    labels[1].setToolTip(entry['char_code'])
                 break
 
     # Editor panel
@@ -443,85 +440,73 @@ class CharacodeEditor(QWidget):
         self._editor_layout.setSpacing(8)
 
         # Entry header card
-        hdr = QFrame(self._editor_widget)
-        hdr.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
+        hdr, hdr_main_layout = make_editor_card(self._editor_widget, margins=(18, 16, 18, 16), spacing=14)
+        hdr.setMaximumWidth(860)
+        hdr.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        add_editor_card_title(
+            hdr_main_layout,
+            self.t("label_resolved_name"),
+            "fa6s.id-card",
+            subtitle=entry["name"],
+            icon_size=20,
+        )
         hdr_inner = QWidget(hdr)
-        hdr_inner.setStyleSheet("background: transparent;")
+        hdr_inner.setStyleSheet(ss_transparent())
         hdr_grid = QGridLayout(hdr_inner)
-        hdr_grid.setContentsMargins(16, 12, 16, 12)
+        hdr_grid.setContentsMargins(0, 0, 0, 0)
         hdr_grid.setHorizontalSpacing(16)
-
-        hdr_main_layout = QVBoxLayout(hdr)
-        hdr_main_layout.setContentsMargins(0, 0, 0, 0)
-        hdr_main_layout.addWidget(hdr_inner)
+        hdr_grid.setVerticalSpacing(10)
+        compact = self._editor_scroll.viewport().width() < 860
 
         # Resolved Name (read-only, first and prominent)
         name_frame = QWidget(hdr_inner)
-        name_frame.setStyleSheet("background: transparent;")
+        name_frame.setStyleSheet(ss_transparent())
         name_lay = QVBoxLayout(name_frame)
         name_lay.setContentsMargins(0, 0, 0, 0)
         name_lay.setSpacing(2)
-        lbl3 = QLabel(self.t("label_resolved_name"), name_frame)
-        lbl3.setFont(QFont("Segoe UI", 12))
-        lbl3.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        name_lay.addWidget(lbl3)
         name_val = QLabel(entry['name'], name_frame)
         name_val.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
-        name_val.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+        name_val.setStyleSheet(ss_accent_label())
         name_val.setContentsMargins(2, 4, 0, 0)
+        name_val.setWordWrap(True)
         name_lay.addWidget(name_val)
-        hdr_grid.addWidget(name_frame, 0, 0)
+        hdr_grid.addWidget(name_frame, 0, 0, 1, 2)
         hdr_grid.setColumnStretch(0, 2)
 
         # Character Code
-        code_frame = QWidget(hdr_inner)
-        code_frame.setStyleSheet("background: transparent;")
-        code_lay = QVBoxLayout(code_frame)
-        code_lay.setContentsMargins(0, 0, 0, 0)
-        code_lay.setSpacing(2)
-        lbl2 = QLabel(self.t("label_char_code"), code_frame)
-        lbl2.setFont(QFont("Segoe UI", 12))
-        lbl2.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        code_lay.addWidget(lbl2)
-        e_code = QLineEdit(code_frame)
-        e_code.setFixedHeight(36)
-        e_code.setFont(QFont("Consolas", 16))
-        e_code.setStyleSheet(
-            f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-            f"color: {P['text_main']}; border-radius: 4px; padding: 2px 6px; }}"
+        code_frame, e_code = make_editor_field(
+            self.t("label_char_code"),
+            entry["char_code"],
+            height=36,
+            value_font=QFont("Consolas", 16),
         )
         e_code.setText(entry['char_code'])
         e_code.textEdited.connect(self._mark_dirty)
-        code_lay.addWidget(e_code)
         self._fields['char_code'] = e_code
-        hdr_grid.addWidget(code_frame, 0, 1)
+        hdr_grid.addWidget(code_frame, 1, 0, 1, 2 if compact else 1)
         hdr_grid.setColumnStretch(1, 2)
 
         # Slot Index
-        slot_frame = QWidget(hdr_inner)
-        slot_frame.setStyleSheet("background: transparent;")
-        slot_lay = QVBoxLayout(slot_frame)
-        slot_lay.setContentsMargins(0, 0, 0, 0)
-        slot_lay.setSpacing(2)
-        lbl = QLabel(self.t("label_slot_index"), slot_frame)
-        lbl.setFont(QFont("Segoe UI", 12))
-        lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        slot_lay.addWidget(lbl)
-        e_slot = QLineEdit(slot_frame)
-        e_slot.setFixedHeight(36)
-        e_slot.setFixedWidth(100)
-        e_slot.setFont(QFont("Consolas", 18, QFont.Weight.Bold))
-        e_slot.setStyleSheet(
-            f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-            f"color: {P['accent']}; border-radius: 4px; padding: 2px 6px; }}"
+        slot_frame, e_slot = make_editor_field(
+            self.t("label_slot_index"),
+            entry["slot_index"],
+            height=36,
+            value_font=QFont("Consolas", 18, QFont.Weight.Bold),
+            accent=True,
         )
+        e_slot.setFixedWidth(100)
         e_slot.setText(str(entry['slot_index']))
         e_slot.textEdited.connect(self._mark_dirty)
-        slot_lay.addWidget(e_slot)
         self._fields['slot_index'] = e_slot
-        hdr_grid.addWidget(slot_frame, 0, 2)
+        slot_frame.setMinimumWidth(118)
+        hdr_grid.addWidget(slot_frame, 2 if compact else 1, 0 if compact else 1)
+        if compact:
+            hdr_grid.setColumnStretch(1, 0)
+        else:
+            hdr_grid.setColumnStretch(1, 1)
 
-        self._editor_layout.addWidget(hdr)
+        hdr_main_layout.addWidget(hdr_inner)
+        self._editor_layout.addWidget(hdr, 0, Qt.AlignmentFlag.AlignLeft)
         self._editor_layout.addStretch()
 
     # Add / Duplicate / Delete

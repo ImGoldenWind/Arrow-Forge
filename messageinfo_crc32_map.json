@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-06-25T19:02:41.447056+00:00",
+  "updated_at": "2026-07-18T16:00:30.776201+00:00",
   "ids": {
     "001BBE05": [
       "V_gallery_4sgc01_02"
@@ -3694,6 +3694,9 @@
     ],
     "3E08DC12": [
       "cmn_difficult_02"
+    ],
+    "3E09ACC9": [
+      "msg_jolyne_string"
     ],
     "3E3AA223": [
       "V_gallery_7vtn01_29"
@@ -9983,6 +9986,9 @@
     "A6FAA687": [
       "5ris01_voice_h012"
     ],
+    "A6FEFC65": [
+      "msg_jotaro_yare"
+    ],
     "A7018DA8": [
       "cmn_difficult_01"
     ],
@@ -10582,6 +10588,9 @@
     ],
     "B0358CC3": [
       "V_gallery_3hhs01_02"
+    ],
+    "B03BAD68": [
+      "msg_jotaro_ora"
     ],
     "B03BF242": [
       "c_name_3pln01_short"

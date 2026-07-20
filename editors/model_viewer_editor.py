@@ -30,7 +30,7 @@ from core.style_helpers import (
     ss_scrollarea_transparent, ss_search, ss_sep, ss_sidebar_frame,
     ss_sidebar_treewidget,
     ss_tab_widget, ss_toggle_btn, ss_transparent,
-    ss_viewport_panel,
+    ss_viewport_panel, make_editor_card, add_editor_card_title,
 )
 from core.themes import P
 from core.translations import ui_text
@@ -191,9 +191,20 @@ class ModelViewerEditor(QWidget):
         self._viewport_frame.set_axis_gizmo(axis_gizmo)
         center_lay.addWidget(self._viewport_frame, 1)
 
+        self._empty_hint_card, empty_hint_lay = make_editor_card(center, margins=(14, 12, 14, 12), spacing=8)
+        add_editor_card_title(
+            empty_hint_lay,
+            self.t("ui_model_viewer_no_model_loaded"),
+            "fa6s.cube",
+            self.t("ui_model_viewer_open_a_model_to_begin"),
+            icon_size=18,
+        )
+        center_lay.addWidget(self._empty_hint_card)
+
         self._status_lbl = QLabel(self.t("ui_model_viewer_open_a_model_to_begin"))
         self._status_lbl.setFont(QFont("Segoe UI", 9))
         self._status_lbl.setStyleSheet(ss_dim_label())
+        self._status_lbl.hide()
         center_lay.addWidget(self._status_lbl)
         main.addWidget(center, 1)
 
@@ -253,7 +264,7 @@ class ModelViewerEditor(QWidget):
             self._inspector.set_context(self._doc, None)
             self._update_file_state()
             self._set_controls_enabled(True)
-            self._status_lbl.setText(self._summary_text())
+            self._set_status(self._summary_text())
         except Exception as exc:
             self._set_controls_enabled(self._doc is not None)
             QMessageBox.critical(self, self.t("dlg_title_error"), str(exc))
@@ -591,7 +602,7 @@ class ModelViewerEditor(QWidget):
             self._rebuild_scene()
             self._sidebar.load(self._doc)
             self._inspector.set_context(self._doc, self._selected)
-            self._status_lbl.setText(self.t("ui_model_viewer_loaded_textures", p0=total))
+            self._set_status(self.t("ui_model_viewer_loaded_textures", p0=total))
         except Exception as exc:
             QMessageBox.critical(self, self.t("dlg_title_error"), str(exc))
 
@@ -602,7 +613,7 @@ class ModelViewerEditor(QWidget):
             save_model_xfbin(self._doc)
             self._dirty = False
             self._update_file_state()
-            self._status_lbl.setText(self.t("ui_model_viewer_saved"))
+            self._set_status(self.t("ui_model_viewer_saved"))
         except Exception as exc:
             QMessageBox.critical(self, self.t("dlg_title_error"), str(exc))
 
@@ -618,7 +629,7 @@ class ModelViewerEditor(QWidget):
         if not path:
             return
         self._viewport.grabFramebuffer().save(path)
-        self._status_lbl.setText(self.t("ui_model_viewer_snapshot_saved", p0=os.path.basename(path)))
+        self._set_status(self.t("ui_model_viewer_snapshot_saved", p0=os.path.basename(path)))
 
     def _reset_camera(self):
         self._viewport.reset_camera()
@@ -651,11 +662,16 @@ class ModelViewerEditor(QWidget):
         self._dirty = True
         self._update_file_state()
 
+    def _set_status(self, text: str):
+        self._status_lbl.setText(text)
+        self._status_lbl.show()
+
     def _rebuild_scene(self, keep_camera: bool = False):
         if not self._doc:
             return
         self._scene = build_render_scene(self._doc)
         self._viewport.set_scene(self._scene, reset_camera=not keep_camera)
+        self._empty_hint_card.hide()
         self._sync_view_toggles()
 
     def _update_file_state(self):

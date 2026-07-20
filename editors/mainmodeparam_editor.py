@@ -3,15 +3,19 @@ import threading
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QComboBox,
     QScrollArea, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QFileDialog, QMessageBox,
+    QFileDialog, QMessageBox, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
 from core.themes import P
 from core.style_helpers import (
     ss_btn, ss_input, ss_sep, ss_accent_sep, ss_search, ss_scrollarea, ss_scrollarea_transparent,
+    ss_accent_label, ss_bg_dark, ss_bg_panel, ss_dim_label, ss_field_label,
+    ss_file_label, ss_main_label, ss_panel_title, ss_sidebar_frame, ss_transparent,
+    make_editor_card, make_empty_state, add_editor_card_title, make_editor_field_shell,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
+from core.editor_file_state import set_file_label, set_file_label_empty
 from parsers.mainmodeparam_parser import (
     parse_mainmodeparam, save_mainmodeparam,
     make_default_panel, PANEL_TYPE_NAMES,
@@ -21,6 +25,10 @@ from core.settings import create_backup_on_open, game_files_dialog_dir
 
 
 # Layout helpers
+
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[:max(1, limit - 1)] + "…"
 
 def _clear_layout(layout):
     if layout is None:
@@ -37,9 +45,7 @@ def _lbl(text, dim=False, bold=False, size=12):
     w = QLabel(text)
     w.setFont(QFont("Segoe UI", size,
                     QFont.Weight.Bold if bold else QFont.Weight.Normal))
-    w.setStyleSheet(
-        f"color: {P['text_dim'] if dim else P['text_main']}; background: transparent;"
-    )
+    w.setStyleSheet(ss_dim_label() if dim else ss_main_label())
     return w
 
 
@@ -63,30 +69,32 @@ def _combo(items, idx=0):
 
 
 def _section(title, color=None):
-    color = color or P['secondary']
     lbl = QLabel(title)
-    lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
-    lbl.setStyleSheet(f"color: {color}; background: transparent;")
-    lbl.setContentsMargins(20, 10, 0, 2)
+    lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+    lbl.setStyleSheet(ss_accent_label() if color else ss_panel_title())
+    lbl.setContentsMargins(0, 8, 0, 2)
     return lbl
 
 
 def _row(label, widget, grid, row, note=None):
-    grid.addWidget(_lbl(label, dim=True), row, 0)
-    grid.addWidget(widget, row, 1)
-    if note:
-        n = _lbl(f"  {note}", dim=True, size=10)
-        n.setWordWrap(True)
-        grid.addWidget(n, row, 2)
+    field, layout, _label, _hint = make_editor_field_shell(label, note or "")
+    field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    widget.setMinimumWidth(0)
+    widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    layout.addWidget(widget)
+    compact = bool(grid.property("compact"))
+    grid.addWidget(field, row if compact else row // 2, 0 if compact else row % 2)
 
 
-def _grid():
+def _grid(compact=False):
     g = QGridLayout()
-    g.setContentsMargins(16, 8, 16, 8)
-    g.setHorizontalSpacing(12)
-    g.setVerticalSpacing(6)
-    g.setColumnStretch(1, 1)
-    g.setColumnStretch(2, 1)
+    g.setProperty("compact", compact)
+    g.setContentsMargins(0, 4, 0, 0)
+    g.setHorizontalSpacing(16)
+    g.setVerticalSpacing(10)
+    g.setColumnStretch(0, 1)
+    if not compact:
+        g.setColumnStretch(1, 1)
     return g
 
 
@@ -116,11 +124,19 @@ class PanelItem(QFrame):
 
         t = QLabel(ui_text("ui_mainmodeparam_value_value", p0=total_idx, p1=panel_id))
         t.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
-        t.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        t.setText(_truncate(t.text(), 24))
+        t.setToolTip(ui_text("ui_mainmodeparam_value_value", p0=total_idx, p1=panel_id))
+        t.setStyleSheet(ss_main_label())
+        t.setMinimumWidth(0)
+        t.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
         s = QLabel(ui_text("ui_mainmodeparam_value_vs_value_value", p0=player_id, p1=enemy_id, p2=type_name))
         s.setFont(QFont("Segoe UI", 10))
+        s.setText(_truncate(s.text(), 28))
+        s.setToolTip(ui_text("ui_mainmodeparam_value_vs_value_value", p0=player_id, p1=enemy_id, p2=type_name))
         s.setStyleSheet(f"color: {tc}; background: transparent;")
+        s.setMinimumWidth(0)
+        s.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
         lay.addWidget(t)
         lay.addWidget(s)
@@ -131,14 +147,17 @@ class PanelItem(QFrame):
         return {0: P['text_dim'], 1: P['secondary'], 2: P['accent']}.get(typ, P['text_dim'])
 
     def _update_style(self, selected: bool):
+        bg = P.get("sidebar_item_selected_bg", P["bg_card"]) if selected else "transparent"
+        hover = P.get("sidebar_item_hover_bg", P["bg_card_hov"])
+        border = P.get("accent", P["border"]) if selected else "transparent"
         if selected:
             self.setStyleSheet(
-                f"QFrame {{ background: {P['bg_card']}; border-radius: 6px; border: none; }}"
+                f"QFrame {{ background: {bg}; border-radius: 6px; border: 1px solid {border}; }}"
             )
         else:
             self.setStyleSheet(
-                f"QFrame {{ background: transparent; border-radius: 6px; border: none; }}"
-                f"QFrame:hover {{ background: {P['bg_card_hov']}; }}"
+                f"QFrame {{ background: {bg}; border-radius: 6px; border: 1px solid transparent; }}"
+                f"QFrame:hover {{ background: {hover}; }}"
             )
 
     def set_selected(self, v):
@@ -177,11 +196,12 @@ class MainModeParamEditor(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+        self.setStyleSheet(ss_bg_dark())
 
         # top bar
         top = QFrame()
         top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(f"background-color: {P['bg_panel']};")
+        top.setStyleSheet(ss_bg_panel())
         tl = QHBoxLayout(top)
         tl.setContentsMargins(12, 8, 12, 8)
         tl.setSpacing(4)
@@ -203,8 +223,9 @@ class MainModeParamEditor(QWidget):
 
         self._file_lbl = QLabel(self.t("no_file_loaded"))
         self._file_lbl.setFont(QFont("Consolas", 12))
-        self._file_lbl.setStyleSheet(f"color: {P['text_dim']};")
+        self._file_lbl.setStyleSheet(ss_file_label())
         tl.addWidget(self._file_lbl)
+        set_file_label_empty(self._file_lbl, self.t("no_file_loaded"))
 
         tl.addStretch(1)
 
@@ -217,6 +238,7 @@ class MainModeParamEditor(QWidget):
 
         # main area
         main = QWidget()
+        main.setStyleSheet(ss_bg_dark())
         ml = QHBoxLayout(main)
         ml.setContentsMargins(0, 0, 0, 0)
         ml.setSpacing(0)
@@ -224,7 +246,7 @@ class MainModeParamEditor(QWidget):
         # sidebar
         sidebar = QFrame()
         sidebar.setFixedWidth(272)
-        sidebar.setStyleSheet(f"QFrame {{ background: {P['bg_panel']}; }}")
+        sidebar.setStyleSheet(ss_sidebar_frame())
         sl = QVBoxLayout(sidebar)
         sl.setContentsMargins(6, 8, 6, 6)
         sl.setSpacing(4)
@@ -239,7 +261,7 @@ class MainModeParamEditor(QWidget):
 
         # action buttons row
         act = QWidget()
-        act.setStyleSheet("background: transparent;")
+        act.setStyleSheet(ss_transparent())
         al = QHBoxLayout(act)
         al.setContentsMargins(0, 2, 0, 4)
         al.setSpacing(4)
@@ -275,8 +297,10 @@ class MainModeParamEditor(QWidget):
         self._list_scroll.setWidgetResizable(True)
         self._list_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._list_scroll.setStyleSheet(ss_scrollarea_transparent())
+        self._list_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._list_inner = QWidget()
-        self._list_inner.setStyleSheet("background: transparent;")
+        self._list_inner.setMinimumWidth(0)
+        self._list_inner.setStyleSheet(ss_transparent())
         self._list_layout = QVBoxLayout(self._list_inner)
         self._list_layout.setContentsMargins(0, 0, 0, 0)
         self._list_layout.setSpacing(2)
@@ -295,12 +319,13 @@ class MainModeParamEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
-        self._editor_widget.setStyleSheet(f"background: {P['bg_dark']};")
+        self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 16)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(14, 12, 14, 16)
+        self._editor_layout.setSpacing(10)
         self._editor_scroll.setWidget(self._editor_widget)
         ml.addWidget(self._editor_scroll, 1)
 
@@ -309,12 +334,14 @@ class MainModeParamEditor(QWidget):
 
     def _show_placeholder(self):
         _clear_layout(self._editor_layout)
-        lbl = QLabel(ui_text("ui_mainmodeparam_open_a_mainmodeparam_bin_xfbin_file_to_begin_editing"))
-        lbl.setFont(QFont("Segoe UI", 16))
-        lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = make_empty_state(
+            self._editor_widget,
+            title=ui_text("no_file_loaded"),
+            text=ui_text("ui_mainmodeparam_open_a_mainmodeparam_bin_xfbin_file_to_begin_editing"),
+            icon_name="fa6s.diagram-project",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(lbl)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     # File I/O
@@ -327,6 +354,7 @@ class MainModeParamEditor(QWidget):
             return
         create_backup_on_open(path)
         self._file_lbl.setText(self.t("loading"))
+        self._file_lbl.setStyleSheet(ss_file_label())
 
         def _worker():
             try:
@@ -342,7 +370,7 @@ class MainModeParamEditor(QWidget):
         self._result   = result
         self._panels   = result['panels']
         self._filepath = path
-        self._file_lbl.setText(os.path.basename(path))
+        set_file_label(self._file_lbl, path)
         self._save_btn.setEnabled(True)
         self._add_btn.setEnabled(True)
         self._current = -1
@@ -352,7 +380,7 @@ class MainModeParamEditor(QWidget):
             QTimer.singleShot(50, lambda: self._select_panel(0))
 
     def _on_load_error(self, msg):
-        self._file_lbl.setText(self.t("no_file_loaded"))
+        set_file_label_empty(self._file_lbl, self.t("no_file_loaded"))
         QMessageBox.critical(self, self.t("dlg_title_error"),
                              self.t("msg_load_error", error=msg))
 
@@ -368,6 +396,7 @@ class MainModeParamEditor(QWidget):
                 self.t("msg_save_success", path=self._filepath) +
                 f"\n\n{len(self._panels)} panels written."
             )
+            set_file_label(self._file_lbl, self._filepath)
         except Exception as e:
             QMessageBox.critical(self, self.t("dlg_title_error"),
                                  self.t("msg_save_error", error=e))
@@ -386,10 +415,7 @@ class MainModeParamEditor(QWidget):
                 current_part = part
                 grp = _lbl(f"  PART {part}", bold=True, size=11)
                 grp.setFixedHeight(24)
-                grp.setStyleSheet(
-                    f"color: {P['accent']}; background: {P['bg_panel']}; "
-                    f"border-top: 1px solid {P['border']};"
-                )
+                grp.setStyleSheet(ss_accent_label() + f"border-top: 1px solid {P['border']};")
                 self._list_layout.addWidget(grp)
 
             item = PanelItem(i, panel)
@@ -538,12 +564,13 @@ class MainModeParamEditor(QWidget):
     def _build_form(self, panel):
         _clear_layout(self._editor_layout)
         self._fields = {}
+        compact = self._editor_scroll.viewport().width() < 560
 
         typ = panel.get('type', 0)
 
         # Basic Information
-        self._editor_layout.addWidget(_section(ui_text("ui_mainmodeparam_basic_information"), P['accent']))
-        g = _grid()
+        basic_title = ui_text("ui_mainmodeparam_basic_information")
+        g = _grid(compact)
         r = 0
 
         for key, label, note, is_str in [
@@ -593,11 +620,11 @@ class MainModeParamEditor(QWidget):
         self._fields['first_speak'] = cb
         _row(ui_text("ui_mainmodeparam_first_to_speak"), cb, g, r, ui_text("ui_mainmodeparam_who_opens_the_battle_dialogue")); r += 1
 
-        self._editor_layout.addWidget(self._wrap(g))
+        self._editor_layout.addWidget(self._wrap(g, basic_title, "fa6s.circle-info"))
 
         # Player Information
-        self._editor_layout.addWidget(_section(ui_text("ui_mainmodeparam_player_information"), P['secondary']))
-        g = _grid(); r = 0
+        player_title = ui_text("ui_mainmodeparam_player_information")
+        g = _grid(compact); r = 0
         for label, key, note in [
             (ui_text("ui_mainmodeparam_player_id"),             'ptr_player_id',  ui_text("ui_mainmodeparam_character_id_e_g_1dio01")),
             (ui_text("ui_mainmodeparam_player_assist_id"),      'ptr_plyr_asst',  ui_text("ui_mainmodeparam_support_character_id_empty_none")),
@@ -608,11 +635,11 @@ class MainModeParamEditor(QWidget):
             w = _le(panel.get(key, ''))
             self._fields[key] = w
             _row(label, w, g, r, note); r += 1
-        self._editor_layout.addWidget(self._wrap(g))
+        self._editor_layout.addWidget(self._wrap(g, player_title, "fa6s.user"))
 
         # Enemy Information
-        self._editor_layout.addWidget(_section(ui_text("ui_mainmodeparam_enemy_information"), P['highlight']))
-        g = _grid(); r = 0
+        enemy_title = ui_text("ui_mainmodeparam_enemy_information")
+        g = _grid(compact); r = 0
         for label, key, note in [
             (ui_text("ui_mainmodeparam_enemy_id"),              'ptr_enemy_id',   ui_text("ui_mainmodeparam_character_id_of_the_opponent")),
             (ui_text("ui_mainmodeparam_enemy_assist_id"),       'ptr_enmy_asst',  ui_text("ui_mainmodeparam_enemy_support_character_id")),
@@ -623,11 +650,11 @@ class MainModeParamEditor(QWidget):
             w = _le(panel.get(key, ''))
             self._fields[key] = w
             _row(label, w, g, r, note); r += 1
-        self._editor_layout.addWidget(self._wrap(g))
+        self._editor_layout.addWidget(self._wrap(g, enemy_title, "fa6s.user-ninja"))
 
         # Special Rules
-        self._editor_layout.addWidget(_section(ui_text("ui_mainmodeparam_special_rules"), P['accent_dim']))
-        g = _grid()
+        rules_title = ui_text("ui_mainmodeparam_special_rules")
+        g = _grid(compact)
         for r, (key, note) in enumerate([
             ('spec_rule_1', ui_text("ui_mainmodeparam_battle_modifier_1_disabled")),
             ('spec_rule_2', ui_text("ui_mainmodeparam_battle_modifier_1_disabled")),
@@ -637,10 +664,12 @@ class MainModeParamEditor(QWidget):
             w = _le(panel.get(key, -1))
             self._fields[key] = w
             _row(f"Special Rule {r + 1}", w, g, r, note)
-        self._editor_layout.addWidget(self._wrap(g))
+        self._editor_layout.addWidget(self._wrap(g, rules_title, "fa6s.gavel"))
 
         # Secret Missions
-        self._editor_layout.addWidget(_section(ui_text("ui_mainmodeparam_secret_missions"), P['secondary']))
+        missions_title = ui_text("ui_mainmodeparam_secret_missions")
+        missions_card, missions_layout = make_editor_card(margins=(16, 14, 16, 16), spacing=10)
+        add_editor_card_title(missions_layout, missions_title, "fa6s.medal")
         mission_keys = [
             ('m1_cond', 'm1_unk', 'ptr_m1_reward', 'm1_gold'),
             ('m2_cond', 'm2_unk', 'ptr_m2_reward', 'm2_gold'),
@@ -649,22 +678,24 @@ class MainModeParamEditor(QWidget):
         ]
         for mi, (ck, uk, rk, gk) in enumerate(mission_keys):
             mf = QFrame()
-            mf.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
+            mf.setStyleSheet(ss_transparent() + f"border-top: 1px solid {P['border']};")
             mfl = QVBoxLayout(mf)
-            mfl.setContentsMargins(16, 10, 16, 10)
-            mfl.setSpacing(6)
+            mfl.setContentsMargins(0, 10, 0, 0)
+            mfl.setSpacing(8)
 
             ml2 = QLabel(ui_text("ui_mainmodeparam_mission_value", p0=mi + 1))
             ml2.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-            ml2.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
+            ml2.setStyleSheet(ss_field_label())
             mfl.addWidget(ml2)
 
             g = QGridLayout()
+            g.setProperty("compact", compact)
             g.setContentsMargins(0, 0, 0, 0)
             g.setHorizontalSpacing(12)
             g.setVerticalSpacing(5)
-            g.setColumnStretch(1, 1)
-            g.setColumnStretch(2, 1)
+            g.setColumnStretch(0, 1)
+            if not compact:
+                g.setColumnStretch(1, 1)
 
             wc = _le(panel.get(ck, -1))
             wu = _le(panel.get(uk,  0))
@@ -680,14 +711,15 @@ class MainModeParamEditor(QWidget):
             _row(ui_text("ui_mainmodeparam_gold_reward"), wg, g, 3, ui_text("ui_mainmodeparam_gold_for_completing_this_mission"))
 
             inner = QWidget()
-            inner.setStyleSheet("background: transparent;")
+            inner.setStyleSheet(ss_transparent())
             inner.setLayout(g)
             mfl.addWidget(inner)
-            self._editor_layout.addWidget(mf)
+            missions_layout.addWidget(mf)
+        self._editor_layout.addWidget(missions_card)
 
         # Additional Data
-        self._editor_layout.addWidget(_section(ui_text("ui_mainmodeparam_additional_data"), P['text_dim']))
-        g = _grid()
+        extra_title = ui_text("ui_mainmodeparam_additional_data")
+        g = _grid(compact)
         for r, (key, label, note) in enumerate([
             ('extra_unk1', ui_text("ui_mainmodeparam_unknown_a"),          ui_text("ui_mainmodeparam_unknown_uint32")),
             ('extra_unk2', ui_text("ui_mainmodeparam_unknown_b"),          ui_text("ui_mainmodeparam_unknown_uint32")),
@@ -697,20 +729,18 @@ class MainModeParamEditor(QWidget):
             w = _le(panel.get(key, 0))
             self._fields[key] = w
             _row(label, w, g, r, note)
-        self._editor_layout.addWidget(self._wrap(g))
+        self._editor_layout.addWidget(self._wrap(g, extra_title, "fa6s.database"))
 
         self._editor_layout.addStretch()
         self._editor_scroll.verticalScrollBar().setValue(0)
 
     @staticmethod
-    def _wrap(layout):
-        f = QFrame()
-        f.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
+    def _wrap(layout, title=None, icon_name=None):
+        f, flay = make_editor_card(margins=(16, 14, 16, 16), spacing=10)
+        if title:
+            add_editor_card_title(flay, title, icon_name)
         inner = QWidget()
-        inner.setStyleSheet("background: transparent;")
+        inner.setStyleSheet(ss_transparent())
         inner.setLayout(layout)
-        flay = QVBoxLayout(f)
-        flay.setContentsMargins(0, 0, 0, 0)
-        flay.setSpacing(0)
         flay.addWidget(inner)
         return f

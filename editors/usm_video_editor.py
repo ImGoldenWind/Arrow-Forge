@@ -41,6 +41,7 @@ from core.settings import create_backup_on_open, game_files_dialog_dir
 from core.style_helpers import (
     TOOLBAR_BTN_H,
     TOOLBAR_H,
+    add_editor_card_title,
     ss_bg_dark,
     ss_bg_panel,
     ss_btn,
@@ -49,14 +50,15 @@ from core.style_helpers import (
     ss_blocking_overlay_card,
     ss_check,
     ss_dim_label,
+    ss_editor_card,
     ss_file_label,
     ss_main_label,
-    ss_panel,
     ss_progressbar,
     ss_scrollarea,
     ss_section_label,
     ss_sep,
     ss_slider,
+    ss_transparent,
     ss_video_matte,
 )
 from core.translations import ui_text
@@ -225,15 +227,20 @@ class UsmVideoEditor(QWidget):
         body = QWidget()
         body.setStyleSheet(ss_bg_dark())
         body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(14, 14, 14, 14)
+        body_layout.setSpacing(14)
         body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         preview = self._panel()
         preview.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
         preview_layout = QVBoxLayout(preview)
+        preview_layout.setContentsMargins(16, 14, 16, 14)
+        preview_layout.setSpacing(10)
         preview_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        preview_layout.addWidget(self._section_label("usm_section_preview"))
+        add_editor_card_title(preview_layout, self.t("usm_section_preview"), "fa6s.film")
 
         self._preview_inner = QWidget()
+        self._preview_inner.setStyleSheet(ss_transparent())
         self._preview_inner.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
         self._preview_inner.setFixedWidth(PREVIEW_MAX_WIDTH)
         preview_inner_layout = QVBoxLayout(self._preview_inner)
@@ -293,6 +300,8 @@ class UsmVideoEditor(QWidget):
         preview_inner_layout.addLayout(controls)
 
         video_actions = QHBoxLayout()
+        video_actions.setContentsMargins(0, 0, 0, 0)
+        video_actions.setSpacing(8)
         self._export_btn = self._toolbar_button("usm_btn_export")
         self._export_btn.clicked.connect(self._export_video)
         video_actions.addWidget(self._export_btn)
@@ -308,7 +317,9 @@ class UsmVideoEditor(QWidget):
         summary = self._panel()
         summary.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         summary_layout = QVBoxLayout(summary)
-        summary_layout.addWidget(self._section_label("usm_section_media"))
+        summary_layout.setContentsMargins(16, 14, 16, 14)
+        summary_layout.setSpacing(10)
+        add_editor_card_title(summary_layout, self.t("usm_section_media"), "fa6s.circle-info")
         grid = QGridLayout()
         grid.setColumnStretch(0, 0)
         grid.setColumnStretch(1, 1)
@@ -339,7 +350,8 @@ class UsmVideoEditor(QWidget):
 
     def _panel(self) -> QFrame:
         panel = QFrame()
-        panel.setStyleSheet(ss_panel())
+        panel.setObjectName("EditorCard")
+        panel.setStyleSheet(ss_editor_card())
         return panel
 
     def _section_label(self, key: str) -> QLabel:

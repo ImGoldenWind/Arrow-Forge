@@ -24,7 +24,7 @@ import subprocess
 import tempfile
 
 from PyQt6.QtWidgets import (
-    QWidget, QFrame, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QWidget, QFrame, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QScrollArea, QSlider,
     QFileDialog, QMessageBox, QSizePolicy, QComboBox,
     QDoubleSpinBox, QSpinBox, QCheckBox,
@@ -35,10 +35,14 @@ from PyQt6.QtGui import QFont, QPainter, QColor, QPen
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_accent_sep, ss_check, ss_dim_label, ss_file_label, ss_input, ss_panel,
-    ss_placeholder, ss_scrollarea, ss_scrollarea_transparent, ss_search,
-    ss_section_label, ss_sep, ss_sidebar_btn, ss_slider,
+    TOOLBAR_H, TOOLBAR_BTN_H,
+    add_editor_card_title, make_editor_card, make_editor_field_shell, make_empty_state,
+    ss_btn, ss_accent_label, ss_accent_sep, ss_check, ss_dim_label, ss_field_label,
+    ss_file_label, ss_file_label_loaded, ss_input,
+    ss_scrollarea, ss_scrollarea_transparent, ss_search,
+    ss_bg_dark, ss_bg_panel, ss_sep, ss_sidebar_btn, ss_sidebar_frame, ss_slider,
     ss_blocking_overlay, ss_blocking_overlay_card, ss_progressbar,
+    ss_transparent,
 )
 from core.editor_file_state import set_file_label, set_file_label_empty
 from core.external_tools import find_vgaudio_cli, find_vgmstream_cli, is_tool_path, tool_command
@@ -456,7 +460,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -713,21 +720,21 @@ class XfbinAudioEditor(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        self.setStyleSheet(f"background-color: {P['bg_dark']};")
+        self.setStyleSheet(ss_bg_dark())
         top = QFrame()
-        top.setFixedHeight(46)
-        top.setStyleSheet(f"background-color: {P['bg_panel']};")
+        top.setFixedHeight(TOOLBAR_H)
+        top.setStyleSheet(ss_bg_panel())
         tl = QHBoxLayout(top)
         tl.setContentsMargins(12, 8, 12, 8)
         tl.setSpacing(4)
         self._open_btn = QPushButton(self.t("btn_open_file", default=ui_text("btn_open_file")))
-        self._open_btn.setFixedHeight(30)
+        self._open_btn.setFixedHeight(TOOLBAR_BTN_H)
         self._open_btn.setFont(QFont("Segoe UI", 10))
         self._open_btn.setStyleSheet(ss_btn(accent=True))
         self._open_btn.clicked.connect(self._load_file)
         tl.addWidget(self._open_btn)
         self._save_btn = QPushButton(self.t("btn_save_file", default=ui_text("btn_save_file")))
-        self._save_btn.setFixedHeight(30)
+        self._save_btn.setFixedHeight(TOOLBAR_BTN_H)
         self._save_btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self._save_btn.setEnabled(False)
         self._save_btn.setStyleSheet(ss_btn(accent=True))
@@ -755,7 +762,7 @@ class XfbinAudioEditor(QWidget):
         main_layout.setSpacing(0)
         left = QFrame()
         left.setFixedWidth(260)
-        left.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; }}")
+        left.setStyleSheet(ss_sidebar_frame())
         ll = QVBoxLayout(left)
         ll.setContentsMargins(8, 8, 8, 4)
         ll.setSpacing(4)
@@ -767,7 +774,7 @@ class XfbinAudioEditor(QWidget):
         self._search.textChanged.connect(self._filter_tones)
         ll.addWidget(self._search)
         actions_frame = QWidget()
-        actions_frame.setStyleSheet("background: transparent;")
+        actions_frame.setStyleSheet(ss_transparent())
         actions_layout = QHBoxLayout(actions_frame)
         actions_layout.setContentsMargins(0, 2, 0, 4)
         actions_layout.setSpacing(4)
@@ -797,9 +804,11 @@ class XfbinAudioEditor(QWidget):
         self._tone_scroll = QScrollArea()
         self._tone_scroll.setWidgetResizable(True)
         self._tone_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._tone_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._tone_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._tone_list_widget = QWidget()
-        self._tone_list_widget.setStyleSheet("background: transparent;")
+        self._tone_list_widget.setMinimumWidth(0)
+        self._tone_list_widget.setStyleSheet(ss_transparent())
         self._tone_list_layout = QVBoxLayout(self._tone_list_widget)
         self._tone_list_layout.setContentsMargins(0, 0, 0, 0)
         self._tone_list_layout.setSpacing(1)
@@ -814,12 +823,14 @@ class XfbinAudioEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_inner = QWidget()
-        self._editor_inner.setStyleSheet(f"background: {P['bg_dark']};")
+        self._editor_inner.setMinimumWidth(0)
+        self._editor_inner.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_inner)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_inner)
         self._show_placeholder()
         main_layout.addWidget(self._editor_scroll, 1)
@@ -846,7 +857,7 @@ class XfbinAudioEditor(QWidget):
 
         self._busy_title_lbl = QLabel(ui_text("loading"))
         self._busy_title_lbl.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        self._busy_title_lbl.setStyleSheet(ss_section_label())
+        self._busy_title_lbl.setStyleSheet(ss_file_label())
         self._busy_title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card_layout.addWidget(self._busy_title_lbl)
 
@@ -909,13 +920,14 @@ class XfbinAudioEditor(QWidget):
 
     def _show_placeholder(self, text: str | None = None):
         _clear_layout(self._editor_layout)
-        self._placeholder_lbl = QLabel(
-            text or self.t("xfa_placeholder", default=ui_text("xfa_placeholder")))
-        self._placeholder_lbl.setFont(QFont("Segoe UI", 16))
-        self._placeholder_lbl.setStyleSheet(ss_placeholder())
-        self._placeholder_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._placeholder_lbl = make_empty_state(
+            self._editor_inner,
+            title=self.t("no_file_loaded", default=ui_text("cpk_no_file")),
+            text=text or self.t("xfa_placeholder", default=ui_text("xfa_placeholder")),
+            icon_name="fa6s.wave-square",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(self._placeholder_lbl)
+        self._editor_layout.addWidget(self._placeholder_lbl, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     def _load_file(self):
@@ -1002,7 +1014,7 @@ class XfbinAudioEditor(QWidget):
             tcl.setSpacing(0)
             nl = QLabel(tone.name or f"tone_{i}")
             nl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-            nl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+            nl.setStyleSheet(ss_file_label_loaded())
             nl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             tcl.addWidget(nl)
             il.addWidget(tc, 1)
@@ -1050,9 +1062,10 @@ class XfbinAudioEditor(QWidget):
 
     def _build_editor(self, bank_idx: int, tone_idx: int, tone: ToneEntry):
         _clear_layout(self._editor_layout)
-        hdr = _card_frame()
-        hl = QVBoxLayout(hdr)
-        hl.setContentsMargins(16, 12, 16, 12)
+        hdr, hl = make_editor_card(margins=(16, 12, 16, 12), spacing=8)
+        title = tone.name or f"tone_{tone_idx}"
+        subtitle = f"Bank {bank_idx} | Tone {tone_idx}"
+        add_editor_card_title(hl, title, "fa6s.music", subtitle=subtitle)
         self._name_edit = QLineEdit(tone.name)
         self._name_edit.setFont(QFont("Consolas", 13, QFont.Weight.Bold))
         self._name_edit.setStyleSheet(ss_input())
@@ -1060,39 +1073,52 @@ class XfbinAudioEditor(QWidget):
         self._editor_layout.addWidget(hdr)
         sec_play = self._make_section(ui_text("sound_section_playback"))
         play_frame = QWidget()
-        play_frame.setStyleSheet("background-color: transparent;")
-        play_layout = QHBoxLayout(play_frame)
+        play_frame.setStyleSheet(ss_transparent())
+        compact_editor = self.width() < 900
+        play_layout = QVBoxLayout(play_frame) if compact_editor else QHBoxLayout(play_frame)
         play_layout.setContentsMargins(12, 0, 12, 12)
         play_layout.setSpacing(6)
+        if compact_editor:
+            button_row = QWidget()
+            button_row.setStyleSheet(ss_transparent())
+            button_layout = QHBoxLayout(button_row)
+            button_layout.setContentsMargins(0, 0, 0, 0)
+            button_layout.setSpacing(6)
+        else:
+            button_row = None
+            button_layout = play_layout
         self._play_btn = QPushButton(ui_text("ui_xfbin_audio_play"))
         self._play_btn.setFixedHeight(34)
         self._play_btn.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         self._play_btn.setStyleSheet(ss_btn(accent=True))
         self._play_btn.clicked.connect(self._play_tone)
-        play_layout.addWidget(self._play_btn)
+        button_layout.addWidget(self._play_btn)
         self._pause_btn = QPushButton(ui_text("ui_sound_pause"))
         self._pause_btn.setFixedHeight(34)
         self._pause_btn.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         self._pause_btn.setEnabled(False)
         self._pause_btn.setStyleSheet(ss_btn())
         self._pause_btn.clicked.connect(self._toggle_pause)
-        play_layout.addWidget(self._pause_btn)
+        button_layout.addWidget(self._pause_btn)
         self._stop_btn = QPushButton(ui_text("ui_xfbin_audio_stop"))
         self._stop_btn.setFixedHeight(34)
         self._stop_btn.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         self._stop_btn.setEnabled(False)
         self._stop_btn.setStyleSheet(ss_btn(danger=True))
         self._stop_btn.clicked.connect(self._stop_playback)
-        play_layout.addWidget(self._stop_btn)
+        button_layout.addWidget(self._stop_btn)
+        if compact_editor:
+            play_layout.addWidget(button_row)
         self._prog_lbl = QLabel("0:00.00 / 0:00.00")
         self._prog_lbl.setFont(QFont("Consolas", 11))
         self._prog_lbl.setStyleSheet(ss_dim_label())
         play_layout.addWidget(self._prog_lbl)
-        play_layout.addStretch()
+        if not compact_editor:
+            play_layout.addStretch()
         sec_play.layout().addWidget(play_frame)
 
         seek_frame = QWidget()
-        seek_frame.setStyleSheet("background-color: transparent;")
+        seek_frame.setStyleSheet(ss_transparent())
         seek_layout = QHBoxLayout(seek_frame)
         seek_layout.setContentsMargins(12, 0, 12, 8)
         seek_layout.setSpacing(8)
@@ -1109,14 +1135,14 @@ class XfbinAudioEditor(QWidget):
 
         self._wave_widget = WaveformWidget()
         wf_container = QWidget()
-        wf_container.setStyleSheet("background-color: transparent;")
+        wf_container.setStyleSheet(ss_transparent())
         wf_layout = QHBoxLayout(wf_container)
         wf_layout.setContentsMargins(12, 0, 12, 12)
         wf_layout.addWidget(self._wave_widget)
         sec_play.layout().addWidget(wf_container)
         sec_vol = self._make_section(ui_text("sound_section_volume"))
         vol_frame = QWidget()
-        vol_frame.setStyleSheet("background-color: transparent;")
+        vol_frame.setStyleSheet(ss_transparent())
         vol_layout = QVBoxLayout(vol_frame)
         vol_layout.setContentsMargins(12, 0, 12, 12)
         row_w, self._vol_slider, _ = _param_slider(ui_text("ui_xfbin_audio_volume"), 0.0, 4.0, tone.volume, 100)
@@ -1124,8 +1150,9 @@ class XfbinAudioEditor(QWidget):
         sec_vol.layout().addWidget(vol_frame)
         sec_act = self._make_section(ui_text("sound_section_actions"))
         act_frame = QWidget()
-        act_frame.setStyleSheet("background-color: transparent;")
-        act_layout = QHBoxLayout(act_frame)
+        act_frame.setStyleSheet(ss_transparent())
+        compact_actions = self.width() < 900
+        act_layout = QVBoxLayout(act_frame) if compact_actions else QHBoxLayout(act_frame)
         act_layout.setContentsMargins(12, 0, 12, 12)
         act_layout.setSpacing(8)
         for text, fn, accent in [
@@ -1134,16 +1161,18 @@ class XfbinAudioEditor(QWidget):
             (ui_text("ui_sound_replace_audio"), self._replace_audio, False),
         ]:
             b = QPushButton(text)
-            b.setFixedSize(160, 34)
+            b.setFixedHeight(34)
+            b.setMinimumWidth(0 if compact_actions else 150)
             b.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
             b.setStyleSheet(ss_btn(accent=accent))
             b.clicked.connect(fn)
             act_layout.addWidget(b)
-        act_layout.addStretch()
+        if not compact_actions:
+            act_layout.addStretch()
         sec_act.layout().addWidget(act_frame)
         sec_params = self._make_section(ui_text("skill_section_params"))
         params = QWidget()
-        params.setStyleSheet("background-color: transparent;")
+        params.setStyleSheet(ss_transparent())
         pl = QVBoxLayout(params)
         pl.setContentsMargins(12, 0, 12, 12)
         pl.setSpacing(6)
@@ -1152,7 +1181,7 @@ class XfbinAudioEditor(QWidget):
         row_w, self._send_slider, _ = _param_slider(ui_text("ui_xfbin_audio_send_level"), 0.0, 4.0, getattr(tone, 'send_level', 0.0), 100)
         pl.addWidget(row_w)
         pan_container = QWidget()
-        pan_container.setStyleSheet("background: transparent;")
+        pan_container.setStyleSheet(ss_transparent())
         pan_hl = QHBoxLayout(pan_container)
         pan_hl.setContentsMargins(0, 4, 0, 4)
         pan_hl.addStretch()
@@ -1164,7 +1193,7 @@ class XfbinAudioEditor(QWidget):
         pan_hl.addStretch()
         pl.addWidget(pan_container)
         track_row = QWidget()
-        track_row.setStyleSheet("background: transparent;")
+        track_row.setStyleSheet(ss_transparent())
         trl = QHBoxLayout(track_row)
         trl.setContentsMargins(0, 2, 0, 2)
         lbl = QLabel(ui_text("ui_xfbin_audio_track_count"))
@@ -1184,7 +1213,7 @@ class XfbinAudioEditor(QWidget):
         sec_params.layout().addWidget(params)
         sec_loop = self._make_section(ui_text("ui_xfbin_audio_loop_control"))
         loop = QWidget()
-        loop.setStyleSheet("background-color: transparent;")
+        loop.setStyleSheet(ss_transparent())
         lc = QVBoxLayout(loop)
         lc.setContentsMargins(12, 0, 12, 12)
         self._loop_chk = QCheckBox(ui_text("ui_xfbin_audio_loop_audio"))
@@ -1207,22 +1236,19 @@ class XfbinAudioEditor(QWidget):
         self._editor_layout.addStretch()
 
     def _make_section(self, title):
-        sec = QFrame()
-        sec.setStyleSheet(ss_panel())
-        sec_layout = QVBoxLayout(sec)
-        sec_layout.setContentsMargins(0, 0, 0, 0)
-        sec_layout.setSpacing(0)
-        title_lbl = QLabel(title)
-        title_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        title_lbl.setStyleSheet(ss_section_label())
-        title_lbl.setContentsMargins(14, 10, 14, 4)
-        sec_layout.addWidget(title_lbl)
-        wrapper = QWidget()
-        wrapper.setStyleSheet("background-color: transparent;")
-        wrapper_layout = QHBoxLayout(wrapper)
-        wrapper_layout.setContentsMargins(12, 0, 12, 8)
-        wrapper_layout.addWidget(sec)
-        self._editor_layout.addWidget(wrapper)
+        sec, sec_layout = make_editor_card(margins=(16, 14, 16, 14), spacing=10)
+        icon_name = "fa6s.sliders"
+        text = str(title).lower()
+        if "play" in text or "preview" in text:
+            icon_name = "fa6s.play"
+        elif "loop" in text:
+            icon_name = "fa6s.repeat"
+        elif "pan" in text:
+            icon_name = "fa6s.location-crosshairs"
+        elif "action" in text or "import" in text or "export" in text:
+            icon_name = "fa6s.screwdriver-wrench"
+        add_editor_card_title(sec_layout, title, icon_name)
+        self._editor_layout.addWidget(sec)
         return sec
 
     def _bind_auto_apply(self, bank_idx: int, tone_idx: int):
@@ -1942,30 +1968,10 @@ def _style_mid(btn):
     btn.setStyleSheet(ss_btn())
 
 
-def _card_frame() -> QFrame:
-    f = QFrame()
-    f.setStyleSheet(ss_panel())
-    return f
-
-
-def _section_title(layout, text: str):
-    lbl = QLabel(text)
-    lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-    lbl.setStyleSheet(ss_section_label())
-    layout.addWidget(lbl)
-
-
 def _grid_row(grid, row: int, label: str, widget, hint: str = ""):
-    lbl = QLabel(label)
-    lbl.setFont(QFont("Segoe UI", 11))
-    lbl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
-    grid.addWidget(lbl, row, 0)
+    shell, shell_layout, _label, _hint = make_editor_field_shell(label, hint, label_font_size=11)
+    grid.addWidget(shell, row, 0)
     grid.addWidget(widget, row, 1)
-    if hint:
-        hl = QLabel(hint)
-        hl.setFont(QFont("Segoe UI", 9))
-        hl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        grid.addWidget(hl, row, 2)
 
 
 def _float_spin(lo: float, hi: float, val: float,
@@ -2021,16 +2027,30 @@ def _param_slider(label: str, lo: float, hi: float, val: float,
     slider.value() / scale == current float value.
     """
     row = QWidget()
-    row.setStyleSheet("background: transparent;")
-    rl = QHBoxLayout(row)
-    rl.setContentsMargins(0, 2, 0, 2)
-    rl.setSpacing(8)
+    row.setMinimumWidth(0)
+    row.setStyleSheet(ss_transparent())
+    rl = QVBoxLayout(row)
+    rl.setContentsMargins(0, 2, 0, 4)
+    rl.setSpacing(5)
+
+    top = QWidget()
+    top.setStyleSheet(ss_transparent())
+    top_layout = QHBoxLayout(top)
+    top_layout.setContentsMargins(0, 0, 0, 0)
+    top_layout.setSpacing(8)
 
     lbl = QLabel(label)
     lbl.setFont(QFont("Segoe UI", 11))
-    lbl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
-    lbl.setFixedWidth(130)
-    rl.addWidget(lbl)
+    lbl.setStyleSheet(ss_field_label())
+    top_layout.addWidget(lbl, 1)
+
+    val_lbl = QLabel(fmt.format(val))
+    val_lbl.setFont(QFont("Consolas", 13, QFont.Weight.Bold))
+    val_lbl.setStyleSheet(ss_accent_label())
+    val_lbl.setMinimumWidth(56)
+    val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    top_layout.addWidget(val_lbl)
+    rl.addWidget(top)
 
     sl = QSlider(Qt.Orientation.Horizontal)
     sl_lo = int(round(lo * scale))
@@ -2038,15 +2058,9 @@ def _param_slider(label: str, lo: float, hi: float, val: float,
     sl_val = max(sl_lo, min(sl_hi, int(round(val * scale))))
     sl.setRange(sl_lo, sl_hi)
     sl.setValue(sl_val)
+    sl.setMinimumWidth(90)
     sl.setStyleSheet(_make_slider_css())
-    rl.addWidget(sl, 1)
-
-    val_lbl = QLabel(fmt.format(val))
-    val_lbl.setFont(QFont("Consolas", 13, QFont.Weight.Bold))
-    val_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
-    val_lbl.setFixedWidth(64)
-    val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-    rl.addWidget(val_lbl)
+    rl.addWidget(sl)
 
     sl.valueChanged.connect(lambda v, f=fmt, s=scale, vl=val_lbl: vl.setText(f.format(v / s)))
     return row, sl, val_lbl
@@ -2058,24 +2072,30 @@ def _loop_slider(label: str, total: int, val: int, sr: int) -> tuple:
     Returns (container_widget, QSlider, value_QLabel).
     """
     row = QWidget()
-    row.setStyleSheet("background: transparent;")
-    rl = QHBoxLayout(row)
-    rl.setContentsMargins(0, 2, 0, 2)
-    rl.setSpacing(8)
+    row.setMinimumWidth(0)
+    row.setStyleSheet(ss_transparent())
+    rl = QVBoxLayout(row)
+    rl.setContentsMargins(0, 2, 0, 4)
+    rl.setSpacing(5)
+
+    top = QWidget()
+    top.setStyleSheet(ss_transparent())
+    top_layout = QHBoxLayout(top)
+    top_layout.setContentsMargins(0, 0, 0, 0)
+    top_layout.setSpacing(8)
 
     lbl = QLabel(label)
     lbl.setFont(QFont("Segoe UI", 11))
-    lbl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
-    lbl.setFixedWidth(130)
-    rl.addWidget(lbl)
+    lbl.setStyleSheet(ss_field_label())
+    top_layout.addWidget(lbl, 1)
 
     sl_max = min(total, 0x7FFFFFFF)
     sl_val = max(0, min(sl_max, val))
     sl = QSlider(Qt.Orientation.Horizontal)
     sl.setRange(0, sl_max)
     sl.setValue(sl_val)
+    sl.setMinimumWidth(90)
     sl.setStyleSheet(_make_slider_css())
-    rl.addWidget(sl, 1)
 
     def _fmt_samp(s):
         t = s / sr if sr else 0.0
@@ -2083,10 +2103,14 @@ def _loop_slider(label: str, total: int, val: int, sr: int) -> tuple:
 
     val_lbl = QLabel(_fmt_samp(sl_val))
     val_lbl.setFont(QFont("Consolas", 10))
-    val_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
-    val_lbl.setFixedWidth(130)
+    val_lbl.setStyleSheet(ss_accent_label())
+    val_lbl.setMinimumWidth(118)
+    val_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
     val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-    rl.addWidget(val_lbl)
+    top_layout.addWidget(val_lbl)
+    rl.addWidget(top)
+
+    rl.addWidget(sl)
 
     sl.valueChanged.connect(lambda v, vl=val_lbl, _sr=sr: vl.setText(_fmt_samp(v)))
     return row, sl, val_lbl
@@ -2094,22 +2118,28 @@ def _loop_slider(label: str, total: int, val: int, sr: int) -> tuple:
 
 def _loop_range_slider(label: str, total: int, start: int, end: int, sr: int) -> tuple:
     row = QWidget()
-    row.setStyleSheet("background: transparent;")
-    rl = QHBoxLayout(row)
-    rl.setContentsMargins(0, 2, 0, 2)
-    rl.setSpacing(8)
+    row.setMinimumWidth(0)
+    row.setStyleSheet(ss_transparent())
+    rl = QVBoxLayout(row)
+    rl.setContentsMargins(0, 2, 0, 4)
+    rl.setSpacing(5)
+
+    top = QWidget()
+    top.setStyleSheet(ss_transparent())
+    top_layout = QHBoxLayout(top)
+    top_layout.setContentsMargins(0, 0, 0, 0)
+    top_layout.setSpacing(8)
 
     lbl = QLabel(label)
     lbl.setFont(QFont("Segoe UI", 11))
-    lbl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
-    lbl.setFixedWidth(130)
-    rl.addWidget(lbl)
+    lbl.setStyleSheet(ss_field_label())
+    top_layout.addWidget(lbl, 1)
 
     sl_max = min(total, 0x7FFFFFFF)
     start = max(0, min(sl_max, start))
     end = max(start, min(sl_max, end))
     slider = RangeSlider(0, sl_max, start, end)
-    rl.addWidget(slider, 1)
+    slider.setMinimumWidth(90)
 
     def _fmt_samp(s):
         t = s / sr if sr else 0.0
@@ -2117,13 +2147,21 @@ def _loop_range_slider(label: str, total: int, start: int, end: int, sr: int) ->
 
     val_lbl = QLabel(ui_text("ui_xfbin_audio_value_value", p0=_fmt_samp(start), p1=_fmt_samp(end)))
     val_lbl.setFont(QFont("Consolas", 10))
-    val_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
-    val_lbl.setFixedWidth(260)
+    val_lbl.setStyleSheet(ss_accent_label())
+    val_lbl.setMinimumWidth(118)
+    val_lbl.setMaximumWidth(220)
+    val_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+    val_lbl.setToolTip(val_lbl.text())
     val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-    rl.addWidget(val_lbl)
+    top_layout.addWidget(val_lbl)
+    rl.addWidget(top)
 
     slider.valueChanged.connect(
-        lambda a, b, vl=val_lbl: vl.setText(ui_text("ui_xfbin_audio_value_value", p0=_fmt_samp(a), p1=_fmt_samp(b))))
+        lambda a, b, vl=val_lbl: (
+            vl.setText(ui_text("ui_xfbin_audio_value_value", p0=_fmt_samp(a), p1=_fmt_samp(b))),
+            vl.setToolTip(vl.text()),
+        ))
+    rl.addWidget(slider)
     return row, slider, val_lbl
 
 
@@ -2135,7 +2173,7 @@ def _param_knob(label: str, lo: int, hi: int, val: int) -> tuple:
     Returns (container_widget, KnobWidget, value_QLabel).
     """
     col = QWidget()
-    col.setStyleSheet("background: transparent;")
+    col.setStyleSheet(ss_transparent())
     cl  = QVBoxLayout(col)
     cl.setContentsMargins(6, 2, 6, 2)
     cl.setSpacing(2)
@@ -2143,7 +2181,7 @@ def _param_knob(label: str, lo: int, hi: int, val: int) -> tuple:
 
     lbl = QLabel(label)
     lbl.setFont(QFont("Segoe UI", 10))
-    lbl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
+    lbl.setStyleSheet(ss_field_label())
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     cl.addWidget(lbl)
 
@@ -2152,17 +2190,17 @@ def _param_knob(label: str, lo: int, hi: int, val: int) -> tuple:
 
     val_lbl = QLabel(ui_text("ui_xfbin_audio_value", p0=val))
     val_lbl.setFont(QFont("Consolas", 13, QFont.Weight.Bold))
-    val_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+    val_lbl.setStyleSheet(ss_accent_label())
     val_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     cl.addWidget(val_lbl)
 
     # L / C / R positional hints
-    hint_w = QWidget(); hint_w.setStyleSheet("background: transparent;")
+    hint_w = QWidget(); hint_w.setStyleSheet(ss_transparent())
     hl = QHBoxLayout(hint_w); hl.setContentsMargins(0, 0, 0, 0)
     for side in ("L", "C", "R"):
         sl = QLabel(side)
         sl.setFont(QFont("Segoe UI", 9))
-        sl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        sl.setStyleSheet(ss_dim_label())
         sl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hl.addWidget(sl)
     cl.addWidget(hint_w)

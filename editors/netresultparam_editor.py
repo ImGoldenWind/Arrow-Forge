@@ -6,7 +6,6 @@ from PyQt6.QtGui import QFont, QRegularExpressionValidator
 from PyQt6.QtWidgets import (
     QFileDialog,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -22,6 +21,10 @@ from core.settings import create_backup_on_open, game_files_dialog_dir
 from core.style_helpers import (
     TOOLBAR_BTN_H,
     TOOLBAR_H,
+    add_editor_card_title,
+    make_empty_state,
+    make_editor_grid_card,
+    make_editor_field_shell,
     ss_bg_dark,
     ss_bg_panel,
     ss_btn,
@@ -32,6 +35,7 @@ from core.style_helpers import (
     ss_input,
     ss_main_label,
     ss_panel,
+    ss_editor_card,
     ss_placeholder,
     ss_scrollarea,
     ss_scrollarea_transparent,
@@ -42,7 +46,6 @@ from core.style_helpers import (
     ss_sidebar_frame,
     ss_transparent,
 )
-from core.utils.ui_helpers import _add_card_section_title
 from core.translations import ui_text
 from parsers.netresultparam_parser import (
     make_default_entry,
@@ -63,7 +66,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -229,12 +235,14 @@ class NetResultParamEditor(QWidget):
         _clear_layout(self._editor_layout)
         self._fields = {}
         self._entry_count_label = None
-        label = QLabel(text)
-        label.setFont(QFont("Segoe UI", 16))
-        label.setStyleSheet(ss_placeholder())
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = make_empty_state(
+            self._editor_widget,
+            title=ui_text("no_file_loaded"),
+            text=text,
+            icon_name="fa6s.folder-open",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(label)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     def _do_open(self):
@@ -406,18 +414,13 @@ class NetResultParamEditor(QWidget):
         self._loading_detail = True
         entry = self._entries[idx]
 
-        header = QFrame()
-        header.setStyleSheet(ss_panel())
-        header_inner = QWidget(header)
-        header_inner.setStyleSheet(ss_transparent())
-        header_layout = QGridLayout(header_inner)
-        header_layout.setContentsMargins(16, 12, 16, 12)
-        header_layout.setHorizontalSpacing(16)
-        header_layout.setVerticalSpacing(8)
-
-        header_main = QVBoxLayout(header)
-        header_main.setContentsMargins(0, 0, 0, 0)
-        header_main.addWidget(header_inner)
+        header, header_layout = make_editor_grid_card(
+            title=self._entry_title(idx),
+            icon_name="fa6s.chart-line",
+            subtitle=self._entry_subtitle(entry),
+            grid_margins=(0, 2, 0, 0),
+            vertical_spacing=8,
+        )
 
         self._add_int_field(
             header_layout,
@@ -467,24 +470,13 @@ class NetResultParamEditor(QWidget):
         self._editor_layout.addWidget(info_card)
 
         self._add_section(ui_text("ui_netresultparam_file_header"))
-        file_card = self._make_card()
-        file_inner = QWidget(file_card)
-        file_inner.setStyleSheet(ss_transparent())
-        file_grid = QGridLayout(file_inner)
-        file_grid.setContentsMargins(12, 12, 12, 12)
-        file_grid.setHorizontalSpacing(16)
-        file_grid.setVerticalSpacing(8)
-        file_layout = QVBoxLayout(file_card)
         section_title = getattr(self, "_pending_section_title", None)
         self._pending_section_title = None
-        if section_title:
-            file_layout.setContentsMargins(12, 12, 12, 12)
-            file_layout.setSpacing(8)
-            file_grid.setContentsMargins(0, 4, 0, 0)
-            _add_card_section_title(file_layout, section_title)
-        else:
-            file_layout.setContentsMargins(0, 0, 0, 0)
-        file_layout.addWidget(file_inner)
+        file_card, file_grid = make_editor_grid_card(
+            title=section_title,
+            icon_name="fa6s.sliders",
+            vertical_spacing=10,
+        )
         self._entry_count_label = QLabel(ui_text("ui_netresultparam_entry_count_value", count=len(self._entries)))
         self._entry_count_label.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         self._entry_count_label.setStyleSheet(ss_field_label())
@@ -513,21 +505,12 @@ class NetResultParamEditor(QWidget):
 
     def _make_card(self) -> QFrame:
         card = QFrame()
-        card.setStyleSheet(ss_panel())
+        card.setObjectName("EditorCard")
+        card.setStyleSheet(ss_editor_card())
         return card
 
     def _field_shell(self, label: str) -> tuple[QWidget, QVBoxLayout]:
-        frame = QWidget()
-        frame.setStyleSheet(ss_transparent())
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-
-        label_widget = QLabel(label)
-        label_widget.setFont(QFont("Segoe UI", 12))
-        label_widget.setStyleSheet(ss_field_label())
-        layout.addWidget(label_widget)
-
+        frame, layout, _label, _hint = make_editor_field_shell(label)
         return frame, layout
 
     def _add_int_field(self, grid, row, col, key, label, value, min_value, max_value, big=False):
@@ -538,6 +521,7 @@ class NetResultParamEditor(QWidget):
         edit.setFixedHeight(36 if big else 30)
         edit.setFont(QFont("Consolas", 16 if big else 13))
         edit.setStyleSheet(ss_input())
+        edit.setMinimumWidth(0)
         edit.setText(str(int(value)))
         edit.textChanged.connect(self._on_numeric_text_changed)
         edit.editingFinished.connect(lambda k=key, lo=min_value, hi=max_value: self._on_numeric_finished(k, lo, hi))
@@ -551,6 +535,7 @@ class NetResultParamEditor(QWidget):
         edit.setFixedHeight(30)
         edit.setFont(QFont("Consolas", 13))
         edit.setStyleSheet(ss_input())
+        edit.setMinimumWidth(0)
         edit.setText(str(value))
         edit.textChanged.connect(self._on_numeric_text_changed)
         field_layout.addWidget(edit)

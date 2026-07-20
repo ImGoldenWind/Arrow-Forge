@@ -22,6 +22,9 @@ from core.settings import create_backup_on_open, game_files_dialog_dir
 from core.style_helpers import (
     TOOLBAR_BTN_H,
     TOOLBAR_H,
+    make_empty_state,
+    make_editor_field_shell,
+    make_editor_grid_card,
     ss_accent_sep,
     ss_bg_dark,
     ss_bg_panel,
@@ -55,7 +58,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -205,12 +211,14 @@ class NetRankParamEditor(QWidget):
     def _show_placeholder(self, text: str):
         _clear_layout(self._editor_layout)
         self._fields = {}
-        label = QLabel(text)
-        label.setFont(QFont("Segoe UI", 16))
-        label.setStyleSheet(ss_placeholder())
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = make_empty_state(
+            self._editor_widget,
+            title=ui_text("no_file_loaded"),
+            text=text,
+            icon_name="fa6s.folder-open",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(label)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     def _do_open(self):
@@ -361,17 +369,18 @@ class NetRankParamEditor(QWidget):
         self._loading_detail = True
         entry = self._entries[idx]
 
-        header = QFrame()
-        header.setStyleSheet(ss_panel())
-        header_layout = QGridLayout(header)
-        header_layout.setContentsMargins(16, 12, 16, 12)
-        header_layout.setHorizontalSpacing(16)
-        header_layout.setVerticalSpacing(8)
+        header, header_layout = make_editor_grid_card(
+            title=ui_text("ui_netrankparam_rank_parameters"),
+            icon_name="fa6s.medal",
+            grid_margins=(0, 0, 0, 0),
+            vertical_spacing=8,
+        )
         self._add_uint_field(header_layout, 0, 0, "rank_id", ui_text("ui_netrankparam_rank_id"), entry.get("rank_id", 0), big=True)
         self._add_uint_field(header_layout, 0, 1, "required_points", ui_text("ui_netrankparam_required_points"), entry.get("required_points", 0), big=True)
         self._add_text_field(header_layout, 0, 2, "name_key", ui_text("ui_netrankparam_name_key"), entry.get("name_key", ""), big=True)
-        for col in range(3):
-            header_layout.setColumnStretch(col, 1)
+        header_layout.setColumnStretch(0, 1)
+        header_layout.setColumnStretch(1, 1)
+        header_layout.setColumnStretch(2, 2)
         self._editor_layout.addWidget(header)
 
         spacer = QWidget()
@@ -382,15 +391,7 @@ class NetRankParamEditor(QWidget):
         self._loading_detail = False
 
     def _field_shell(self, label: str) -> tuple[QWidget, QVBoxLayout]:
-        frame = QWidget()
-        frame.setStyleSheet(ss_transparent())
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-        label_widget = QLabel(label)
-        label_widget.setFont(QFont("Segoe UI", 12))
-        label_widget.setStyleSheet(ss_field_label())
-        layout.addWidget(label_widget)
+        frame, layout, _label, _hint = make_editor_field_shell(label)
         return frame, layout
 
     def _add_text_field(self, grid, row, col, key, label, value, big=False):
@@ -399,6 +400,7 @@ class NetRankParamEditor(QWidget):
         edit.setFixedHeight(36 if big else 30)
         edit.setFont(QFont("Consolas", 16 if big else 13))
         edit.setStyleSheet(ss_input())
+        edit.setMinimumWidth(0)
         edit.setText(str(value))
         edit.textChanged.connect(lambda _text, k=key: self._on_text_changed(k))
         layout.addWidget(edit)
@@ -413,6 +415,7 @@ class NetRankParamEditor(QWidget):
         edit.setFixedHeight(36 if big else 30)
         edit.setFont(QFont("Consolas", 16 if big else 13))
         edit.setStyleSheet(ss_input())
+        edit.setMinimumWidth(0)
         edit.setText(str(int(value)))
         edit.textChanged.connect(self._on_numeric_text_changed)
         edit.editingFinished.connect(lambda k=key: self._on_uint_finished(k))

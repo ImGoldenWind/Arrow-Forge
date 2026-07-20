@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 from core.style_helpers import (
     TOOLBAR_BTN_H,
     TOOLBAR_H,
+    make_empty_state,
     ss_bg_dark,
     ss_bg_panel,
     ss_accent_sep,
@@ -381,12 +382,14 @@ class SndCmnParamEditor(QWidget):
     def _show_placeholder(self, text):
         _clear_layout(self._editor_layout)
         self._fields = {}
-        lbl = QLabel(text)
-        lbl.setFont(QFont("Segoe UI", 16))
-        lbl.setStyleSheet(ss_placeholder())
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = make_empty_state(
+            self._editor_widget,
+            title=ui_text("no_file_loaded"),
+            text=text,
+            icon_name="fa6s.folder-open",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(lbl)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     def _build_entry_cards(self):

@@ -5,7 +5,7 @@ import copy
 
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QScrollArea,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QMessageBox,
+    QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
@@ -13,7 +13,9 @@ from PyQt6.QtGui import QFont
 from core.themes import P
 from core.style_helpers import (
     ss_btn, ss_sep, ss_accent_sep, ss_input, ss_search, ss_scrollarea, ss_scrollarea_transparent,
-    ss_field_label, ss_sidebar_btn, ss_file_label,
+    ss_sidebar_btn, ss_file_label, ss_transparent,
+    ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
+    make_empty_state, make_editor_field_shell, make_editor_grid_card,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
 from core.editor_file_state import set_file_label
@@ -28,7 +30,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            w = item.widget()
+            w.hide()
+            w.setParent(None)
+            w.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -59,7 +64,7 @@ class ConstParamEditor(QWidget):
         # Toolbar
         top = QFrame()
         top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(f"background-color: {P['bg_panel']};")
+        top.setStyleSheet(ss_bg_panel())
         tl = QHBoxLayout(top)
         tl.setContentsMargins(12, 8, 12, 8)
         tl.setSpacing(4)
@@ -101,7 +106,7 @@ class ConstParamEditor(QWidget):
         # Left sidebar
         sidebar = QFrame()
         sidebar.setFixedWidth(260)
-        sidebar.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; }}")
+        sidebar.setStyleSheet(ss_sidebar_frame())
         sl = QVBoxLayout(sidebar)
         sl.setContentsMargins(8, 8, 8, 4)
         sl.setSpacing(4)
@@ -115,7 +120,7 @@ class ConstParamEditor(QWidget):
         sl.addWidget(self._search_entry)
 
         abf = QWidget()
-        abf.setStyleSheet("background: transparent;")
+        abf.setStyleSheet(ss_transparent())
         abl = QHBoxLayout(abf)
         abl.setContentsMargins(0, 2, 0, 4)
         abl.setSpacing(4)
@@ -152,7 +157,7 @@ class ConstParamEditor(QWidget):
         self._param_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._param_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._param_list_widget = QWidget()
-        self._param_list_widget.setStyleSheet("background: transparent;")
+        self._param_list_widget.setStyleSheet(ss_transparent())
         self._param_list_layout = QVBoxLayout(self._param_list_widget)
         self._param_list_layout.setContentsMargins(0, 0, 0, 0)
         self._param_list_layout.setSpacing(1)
@@ -173,7 +178,7 @@ class ConstParamEditor(QWidget):
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
-        self._editor_widget.setStyleSheet(f"background-color: {P['bg_dark']};")
+        self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
         self._editor_layout.setContentsMargins(0, 0, 0, 0)
         self._editor_layout.setSpacing(8)
@@ -188,12 +193,15 @@ class ConstParamEditor(QWidget):
 
     def _set_editor_placeholder(self, text):
         _clear_layout(self._editor_layout)
-        lbl = QLabel(text)
-        lbl.setFont(QFont("Segoe UI", 15))
-        lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title = self._t("no_file_loaded") if self._filepath is None else ui_text("ui_model_viewer_select_item")
+        card = make_empty_state(
+            self._editor_widget,
+            title=title,
+            text=text,
+            icon_name="fa6s.sliders",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(lbl)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     # Data
@@ -265,62 +273,46 @@ class ConstParamEditor(QWidget):
     def _build_editor(self, idx):
         _clear_layout(self._editor_layout)
         if idx < 0 or idx >= len(self._params):
-            lbl = QLabel(ui_text("ui_constparam_select_a_parameter"))
-            lbl.setFont(QFont("Segoe UI", 15))
-            lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            card = make_empty_state(
+                self._editor_widget,
+                title=ui_text("ui_model_viewer_select_item"),
+                text=ui_text("ui_constparam_select_a_parameter"),
+                icon_name="fa6s.sliders",
+            )
             self._editor_layout.addStretch()
-            self._editor_layout.addWidget(lbl)
+            self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
             self._editor_layout.addStretch()
             return
 
         p = self._params[idx]
 
-        card = QFrame()
-        card.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
-        card_inner = QWidget(card)
-        card_inner.setStyleSheet("background: transparent;")
-        grid = QGridLayout(card_inner)
-        grid.setContentsMargins(12, 12, 12, 12)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(8)
-        card_main = QVBoxLayout(card)
-        card_main.setContentsMargins(0, 0, 0, 0)
-        card_main.addWidget(card_inner)
+        card, grid = make_editor_grid_card(
+            title=p['name'],
+            icon_name="fa6s.sliders",
+            subtitle=ui_text("ui_constparam_value"),
+            grid_margins=(0, 2, 0, 0),
+            vertical_spacing=10,
+        )
 
         # Name field
-        nf = QWidget()
-        nf.setStyleSheet("background: transparent;")
-        nfl = QVBoxLayout(nf)
-        nfl.setContentsMargins(0, 0, 0, 0)
-        nfl.setSpacing(2)
-        nlbl = QLabel(ui_text("bone_col_name"))
-        nlbl.setFont(QFont("Segoe UI", 12))
-        nlbl.setStyleSheet(ss_field_label())
-        nfl.addWidget(nlbl)
+        nf, nfl, _label, _hint = make_editor_field_shell(ui_text("bone_col_name"))
         self._name_field = QLineEdit(p['name'])
         self._name_field.setFixedHeight(30)
         self._name_field.setFont(QFont("Consolas", 13))
         self._name_field.setStyleSheet(ss_input())
+        self._name_field.setMinimumWidth(0)
         self._name_field.editingFinished.connect(lambda i=idx: self._commit_name(i))
         nfl.addWidget(self._name_field)
         grid.addWidget(nf, 0, 0)
         grid.setColumnStretch(0, 1)
 
         # Value field
-        vf = QWidget()
-        vf.setStyleSheet("background: transparent;")
-        vfl = QVBoxLayout(vf)
-        vfl.setContentsMargins(0, 0, 0, 0)
-        vfl.setSpacing(2)
-        vlbl = QLabel(ui_text("ui_constparam_value"))
-        vlbl.setFont(QFont("Segoe UI", 12))
-        vlbl.setStyleSheet(ss_field_label())
-        vfl.addWidget(vlbl)
+        vf, vfl, _label, _hint = make_editor_field_shell(ui_text("ui_constparam_value"))
         self._value_field = QLineEdit(p['value'])
         self._value_field.setFixedHeight(30)
         self._value_field.setFont(QFont("Consolas", 13))
         self._value_field.setStyleSheet(ss_input())
+        self._value_field.setMinimumWidth(0)
         self._value_field.editingFinished.connect(lambda i=idx: self._commit_value(i))
         vfl.addWidget(self._value_field)
         grid.addWidget(vf, 0, 1)

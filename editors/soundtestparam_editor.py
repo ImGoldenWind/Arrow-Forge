@@ -27,10 +27,12 @@ from PyQt6.QtWidgets import (
 from core.style_helpers import (
     TOOLBAR_BTN_H,
     TOOLBAR_H,
+    make_empty_state,
+    make_editor_grid_card,
+    make_editor_field_shell,
     ss_bg_dark,
     ss_bg_panel,
     ss_accent_sep,
-    ss_accent_label,
     ss_btn,
     ss_dim_label,
     ss_field_label,
@@ -41,7 +43,6 @@ from core.style_helpers import (
     ss_placeholder,
     ss_scrollarea,
     ss_scrollarea_transparent,
-    ss_section_label,
     ss_sep,
     ss_search,
     ss_sidebar_btn,
@@ -49,7 +50,6 @@ from core.style_helpers import (
     ss_main_label,
     ss_transparent,
 )
-from core.utils.ui_helpers import _add_card_section_title
 from parsers.soundtestparam_parser import (
     make_default_entry,
     parse_soundtestparam_xfbin,
@@ -72,7 +72,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -410,12 +413,14 @@ class SoundTestParamEditor(QWidget):
     def _show_placeholder(self, text: str):
         _clear_layout(self._editor_layout)
         self._fields = {}
-        lbl = QLabel(text)
-        lbl.setFont(QFont("Segoe UI", 16))
-        lbl.setStyleSheet(ss_placeholder())
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = make_empty_state(
+            self._editor_widget,
+            title=ui_text("no_file_loaded"),
+            text=text,
+            icon_name="fa6s.folder-open",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(lbl)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     def _build_editor(self, idx: int):
@@ -424,17 +429,13 @@ class SoundTestParamEditor(QWidget):
         entry = self._entries[idx]
         self._block_detail = True
 
-        hdr = QFrame()
-        hdr.setStyleSheet(ss_panel())
-        hdr_layout = QGridLayout(hdr)
-        hdr_layout.setContentsMargins(16, 14, 16, 14)
-        hdr_layout.setHorizontalSpacing(16)
-        hdr_layout.setVerticalSpacing(8)
-
-        title = QLabel(self._entry_title(idx))
-        title.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
-        title.setStyleSheet(ss_accent_label())
-        hdr_layout.addWidget(title, 0, 0, 1, 3)
+        hdr, hdr_layout = make_editor_grid_card(
+            title=self._entry_title(idx),
+            icon_name="fa6s.music",
+            subtitle=self._entry_subtitle(entry),
+            grid_margins=(0, 2, 0, 0),
+            vertical_spacing=8,
+        )
 
         self._add_field(hdr_layout, 1, 0, "bgm_id", "BGM_ID", entry.get("bgm_id", ""), maxlen=64, big=True)
         self._add_field(hdr_layout, 1, 1, "chara_code", ui_text("ui_soundtestparam_characode"), entry.get("chara_code", ""), maxlen=32, big=True)
@@ -523,50 +524,21 @@ class SoundTestParamEditor(QWidget):
         self._pending_section_title = title
 
     def _make_card(self) -> QFrame:
-        card = QFrame()
-        card.setStyleSheet(ss_panel())
+        section_title = getattr(self, "_pending_section_title", None)
+        self._pending_section_title = None
+        card, grid = make_editor_grid_card(
+            title=section_title,
+            icon_name="fa6s.music",
+            vertical_spacing=10,
+        )
+        card._editor_grid = grid
         return card
 
     def _card_grid(self, card: QFrame) -> QGridLayout:
-        inner = QWidget(card)
-        inner.setStyleSheet(ss_transparent())
-        grid = QGridLayout(inner)
-        grid.setContentsMargins(12, 12, 12, 12)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(8)
-
-        main = QVBoxLayout(card)
-        section_title = getattr(self, "_pending_section_title", None)
-        self._pending_section_title = None
-        if section_title:
-            main.setContentsMargins(12, 12, 12, 12)
-            main.setSpacing(8)
-            grid.setContentsMargins(0, 4, 0, 0)
-            _add_card_section_title(main, section_title)
-        else:
-            main.setContentsMargins(0, 0, 0, 0)
-        main.addWidget(inner)
-        return grid
+        return card._editor_grid
 
     def _field_shell(self, label: str, hint: str = "") -> tuple[QWidget, QVBoxLayout]:
-        frame = QWidget()
-        frame.setStyleSheet(ss_transparent())
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-
-        lbl = QLabel(label)
-        lbl.setFont(QFont("Segoe UI", 12))
-        lbl.setStyleSheet(ss_field_label())
-        layout.addWidget(lbl)
-
-        if hint:
-            hint_lbl = QLabel(hint)
-            hint_lbl.setWordWrap(True)
-            hint_lbl.setFont(QFont("Segoe UI", 9))
-            hint_lbl.setStyleSheet(ss_dim_label())
-            layout.addWidget(hint_lbl)
-
+        frame, layout, _label, _hint = make_editor_field_shell(label, hint)
         return frame, layout
 
     def _add_field(

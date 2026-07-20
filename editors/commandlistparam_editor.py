@@ -23,12 +23,14 @@ from core.settings import create_backup_on_open, game_files_dialog_dir
 from core.style_helpers import (
     TOOLBAR_BTN_H,
     TOOLBAR_H,
+    make_empty_state,
+    make_editor_grid_card,
+    make_editor_field_shell,
     ss_bg_dark,
     ss_bg_panel,
     ss_btn,
     ss_accent_sep,
     ss_dim_label,
-    ss_field_label,
     ss_file_label,
     ss_input,
     ss_main_label,
@@ -37,12 +39,10 @@ from core.style_helpers import (
     ss_scrollarea,
     ss_scrollarea_transparent,
     ss_search,
-    ss_section_label,
     ss_sep,
     ss_sidebar_btn,
     ss_transparent,
 )
-from core.utils.ui_helpers import _add_card_section_title
 from core.translations import ui_text
 from parsers.commandlistparam_parser import (
     TYPE_DISABLED,
@@ -86,7 +86,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -250,12 +253,14 @@ class CommandListParamEditor(QWidget):
         _clear_layout(self._editor_layout)
         self._fields = {}
         self._type_combo = None
-        label = QLabel(text)
-        label.setFont(QFont("Segoe UI", 16))
-        label.setStyleSheet(ss_placeholder())
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = make_empty_state(
+            self._editor_widget,
+            title=ui_text("no_file_loaded"),
+            text=text,
+            icon_name="fa6s.folder-open",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(label)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     def _clear_entry_list(self):
@@ -435,12 +440,13 @@ class CommandListParamEditor(QWidget):
         self._loading_detail = True
         entry = self._entries[idx]
 
-        header = QFrame()
-        header.setStyleSheet(ss_panel())
-        header_layout = QGridLayout(header)
-        header_layout.setContentsMargins(16, 14, 16, 14)
-        header_layout.setHorizontalSpacing(16)
-        header_layout.setVerticalSpacing(8)
+        header, header_layout = make_editor_grid_card(
+            title=self._entry_title(idx, entry),
+            icon_name="fa6s.list-check",
+            subtitle=self._entry_subtitle(entry),
+            grid_margins=(0, 2, 0, 0),
+            vertical_spacing=8,
+        )
 
         self._add_text_field(
             header_layout,
@@ -561,42 +567,21 @@ class CommandListParamEditor(QWidget):
         self._pending_section_title = title
 
     def _make_card(self) -> QFrame:
-        card = QFrame()
-        card.setStyleSheet(ss_panel())
+        section_title = getattr(self, "_pending_section_title", None)
+        self._pending_section_title = None
+        card, grid = make_editor_grid_card(
+            title=section_title,
+            icon_name="fa6s.sliders",
+            vertical_spacing=10,
+        )
+        card._editor_grid = grid
         return card
 
     def _card_grid(self, card: QFrame) -> QGridLayout:
-        inner = QWidget(card)
-        inner.setStyleSheet(ss_transparent())
-        grid = QGridLayout(inner)
-        grid.setContentsMargins(12, 12, 12, 12)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(8)
-        layout = QVBoxLayout(card)
-        section_title = getattr(self, "_pending_section_title", None)
-        self._pending_section_title = None
-        if section_title:
-            layout.setContentsMargins(12, 12, 12, 12)
-            layout.setSpacing(8)
-            grid.setContentsMargins(0, 4, 0, 0)
-            _add_card_section_title(layout, section_title)
-        else:
-            layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(inner)
-        return grid
+        return card._editor_grid
 
     def _field_shell(self, label: str) -> tuple[QWidget, QVBoxLayout]:
-        frame = QWidget()
-        frame.setStyleSheet(ss_transparent())
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-
-        label_widget = QLabel(label)
-        label_widget.setFont(QFont("Segoe UI", 12))
-        label_widget.setStyleSheet(ss_field_label())
-        layout.addWidget(label_widget)
-
+        frame, layout, _label, _hint = make_editor_field_shell(label)
         return frame, layout
 
     def _add_text_field(self, grid, row, col, key, label, value, big=False):

@@ -11,12 +11,14 @@ from PyQt6.QtGui import QFont
 
 from core.themes import P
 from core.style_helpers import (
+    add_editor_card_title, make_editor_card, make_editor_field_shell, make_empty_state,
+    ss_bg_dark, ss_bg_panel,
     ss_btn, ss_accent_sep, ss_input, ss_search, ss_sidebar_btn,
-    ss_section_label, ss_field_label, ss_file_label, ss_scrollarea, ss_sep,
-    ss_scrollarea_transparent, ss_tab_widget, ss_tab_bar,
+    ss_field_label, ss_file_label, ss_scrollarea, ss_sep,
+    ss_scrollarea_transparent, ss_sidebar_frame, ss_tab_widget, ss_tab_bar,
+    ss_editor_card, ss_main_label, ss_dim_label, ss_transparent,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
-from core.utils.ui_helpers import _add_card_section_title
 from core.editor_file_state import set_file_label, set_file_label_empty
 from parsers.skill_parser import (
     parse_prm_xfbin, save_prm_xfbin,
@@ -45,49 +47,42 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
 
 def _make_field(label_text, value_text):
     """Returns (container_widget, QLineEdit)."""
-    f = QWidget()
-    f.setStyleSheet("background: transparent;")
-    fl = QVBoxLayout(f)
-    fl.setContentsMargins(0, 0, 0, 0)
-    fl.setSpacing(2)
-    lbl = QLabel(str(label_text))
-    lbl.setFont(QFont("Segoe UI", 12))
-    lbl.setStyleSheet(ss_field_label())
-    fl.addWidget(lbl)
+    f, fl, _label, _hint = make_editor_field_shell(label_text, label_font_size=12, spacing=3)
     e = QLineEdit(str(value_text))
     e.setFixedHeight(30)
+    e.setMinimumWidth(0)
     e.setFont(QFont("Consolas", 13))
     e.setStyleSheet(ss_input())
+    e.setCursorPosition(0)
     fl.addWidget(e)
     return f, e
 
 
 def _make_combo_field(label_text, items, current):
     """Returns (container_widget, QComboBox)."""
-    f = QWidget()
-    f.setStyleSheet("background: transparent;")
-    fl = QVBoxLayout(f)
-    fl.setContentsMargins(0, 0, 0, 0)
-    fl.setSpacing(2)
-    lbl = QLabel(str(label_text))
-    lbl.setFont(QFont("Segoe UI", 12))
-    lbl.setStyleSheet(ss_field_label())
-    fl.addWidget(lbl)
+    f, fl, _label, _hint = make_editor_field_shell(label_text, label_font_size=12, spacing=3)
     cb = QComboBox()
     cb.addItems(items)
     cb.setFixedHeight(30)
+    cb.setMinimumWidth(0)
+    cb.setMinimumContentsLength(1)
+    cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
     cb.setFont(QFont("Consolas", 13))
     cb.setStyleSheet(ss_input())
     cb.blockSignals(True)
     cb.setCurrentText(str(current))
     cb.blockSignals(False)
+    cb.lineEdit().setCursorPosition(0) if cb.isEditable() and cb.lineEdit() else None
     fl.addWidget(cb)
     return f, cb
 
@@ -95,15 +90,42 @@ def _make_combo_field(label_text, items, current):
 def _section_label(text):
     lbl = QLabel(text)
     lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
-    lbl.setStyleSheet(ss_section_label())
+    lbl.setStyleSheet(ss_main_label())
     lbl.setContentsMargins(20, 10, 0, 2)
     return lbl
 
 
 def _card_frame():
     f = QFrame()
-    f.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
+    f.setObjectName("EditorCard")
+    f.setStyleSheet(ss_editor_card())
     return f
+
+
+def _card_with_layout(parent=None, *, margins=(12, 12, 12, 12), spacing=8):
+    return make_editor_card(parent, margins=margins, spacing=spacing)
+
+
+def _make_sidebar(width=260):
+    sidebar = QFrame()
+    sidebar.setFixedWidth(width)
+    sidebar.setStyleSheet(ss_sidebar_frame())
+    layout = QVBoxLayout(sidebar)
+    layout.setContentsMargins(8, 8, 8, 4)
+    layout.setSpacing(4)
+    return sidebar, layout
+
+
+def _sidebar_actions_row(*buttons):
+    frame = QWidget()
+    frame.setStyleSheet(ss_transparent())
+    layout = QHBoxLayout(frame)
+    layout.setContentsMargins(0, 2, 0, 4)
+    layout.setSpacing(4)
+    for button in buttons:
+        button.setMinimumWidth(0)
+        layout.addWidget(button, 1)
+    return frame
 
 
 def _sidebar_search(placeholder):
@@ -119,9 +141,11 @@ def _sidebar_scroll():
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     scroll.setStyleSheet(ss_scrollarea_transparent())
     inner = QWidget()
-    inner.setStyleSheet("background: transparent;")
+    inner.setMinimumWidth(0)
+    inner.setStyleSheet(ss_transparent())
     layout = QVBoxLayout(inner)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(1)
@@ -139,14 +163,16 @@ def _entry_btn(title, subtitle, selected, on_click):
     bl.setContentsMargins(10, 3, 10, 3)
     bl.setSpacing(0)
     name_lbl = QLabel(title)
+    name_lbl.setMinimumWidth(0)
     name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-    name_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+    name_lbl.setStyleSheet(ss_main_label())
     name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
     bl.addWidget(name_lbl)
     if subtitle:
         sub_lbl = QLabel(subtitle)
+        sub_lbl.setMinimumWidth(0)
         sub_lbl.setFont(QFont("Segoe UI", 11))
-        sub_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        sub_lbl.setStyleSheet(ss_dim_label())
         sub_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         bl.addWidget(sub_lbl)
     btn.clicked.connect(on_click)
@@ -157,9 +183,11 @@ def _right_scroll():
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     scroll.setStyleSheet(ss_scrollarea())
     inner = QWidget()
-    inner.setStyleSheet(f"background-color: {P['bg_dark']};")
+    inner.setMinimumWidth(0)
+    inner.setStyleSheet(ss_bg_dark())
     layout = QVBoxLayout(inner)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(8)
@@ -167,13 +195,13 @@ def _right_scroll():
     return scroll, layout
 
 
-def _placeholder_label(text):
-    lbl = QLabel(text)
-    lbl.setFont(QFont("Segoe UI", 15))
-    lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    lbl.setContentsMargins(0, 60, 0, 60)
-    return lbl
+def _placeholder_label(text, *, loaded=True, icon_name="fa6s.list"):
+    title = ui_text("ui_model_viewer_select_item") if loaded else ui_text("no_file_loaded")
+    return make_empty_state(
+        title=title,
+        text=text,
+        icon_name=icon_name,
+    )
 
 
 _LOAD_TYPE_NAMES = {
@@ -199,22 +227,12 @@ class _SklslotTab(QWidget):
         root.setSpacing(0)
 
         # Sidebar
-        sidebar = QFrame()
-        sidebar.setFixedWidth(260)
-        sidebar.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; }}")
-        sl = QVBoxLayout(sidebar)
-        sl.setContentsMargins(8, 8, 8, 4)
-        sl.setSpacing(4)
+        sidebar, sl = _make_sidebar(260)
 
         self._search = _sidebar_search(ui_text("ui_skill_search_slots"))
         self._search.textChanged.connect(self._filter_list)
         sl.addWidget(self._search)
 
-        abf = QWidget()
-        abf.setStyleSheet("background: transparent;")
-        abl = QHBoxLayout(abf)
-        abl.setContentsMargins(0, 2, 0, 4)
-        abl.setSpacing(4)
         bf = QFont("Segoe UI", 10)
 
         self._new_btn = QPushButton(ui_text("btn_new"))
@@ -224,7 +242,6 @@ class _SklslotTab(QWidget):
         self._new_btn.setEnabled(False)
         self._new_btn.setToolTip(ui_text("ui_skill_add_slot_tooltip"))
         self._new_btn.clicked.connect(self._add_slot)
-        abl.addWidget(self._new_btn, 1)
 
         self._dup_btn = QPushButton(ui_text("btn_duplicate"))
         self._dup_btn.setFixedHeight(28)
@@ -233,7 +250,6 @@ class _SklslotTab(QWidget):
         self._dup_btn.setEnabled(False)
         self._dup_btn.setToolTip(ui_text("ui_skill_duplicate_slot_tooltip"))
         self._dup_btn.clicked.connect(self._dup_slot)
-        abl.addWidget(self._dup_btn, 1)
 
         self._del_btn = QPushButton(ui_text("btn_delete"))
         self._del_btn.setFixedHeight(28)
@@ -242,8 +258,7 @@ class _SklslotTab(QWidget):
         self._del_btn.setEnabled(False)
         self._del_btn.setToolTip(ui_text("ui_skill_delete_slot_tooltip"))
         self._del_btn.clicked.connect(self._del_slot)
-        abl.addWidget(self._del_btn, 1)
-        sl.addWidget(abf)
+        sl.addWidget(_sidebar_actions_row(self._new_btn, self._dup_btn, self._del_btn))
 
         self._list_scroll, self._list_widget, self._list_layout = _sidebar_scroll()
         sl.addWidget(self._list_scroll)
@@ -255,7 +270,12 @@ class _SklslotTab(QWidget):
         root.addWidget(div)
 
         self._editor_scroll, self._editor_layout = _right_scroll()
-        self._editor_layout.addWidget(_placeholder_label(ui_text("ui_skill_select_a_slot")))
+        self._editor_layout.addStretch()
+        self._editor_layout.addWidget(
+            _placeholder_label(ui_text("ui_skill_select_a_slot")),
+            0,
+            Qt.AlignmentFlag.AlignCenter,
+        )
         self._editor_layout.addStretch()
         root.addWidget(self._editor_scroll, 1)
 
@@ -270,7 +290,12 @@ class _SklslotTab(QWidget):
         self._rebuild_list()
         self._set_action_state(loaded, False)
         _clear_layout(self._editor_layout)
-        self._editor_layout.addWidget(_placeholder_label(text))
+        self._editor_layout.addStretch()
+        self._editor_layout.addWidget(
+            _placeholder_label(text, loaded=loaded, icon_name="fa6s.person-running" if loaded else "fa6s.folder-open"),
+            0,
+            Qt.AlignmentFlag.AlignCenter,
+        )
         self._editor_layout.addStretch()
 
     def load(self, entries):
@@ -279,7 +304,12 @@ class _SklslotTab(QWidget):
         self._rebuild_list()
         self._set_action_state(True, False)
         _clear_layout(self._editor_layout)
-        self._editor_layout.addWidget(_placeholder_label(ui_text("ui_skill_select_a_slot_2")))
+        self._editor_layout.addStretch()
+        self._editor_layout.addWidget(
+            _placeholder_label(ui_text("ui_skill_select_a_slot_2")),
+            0,
+            Qt.AlignmentFlag.AlignCenter,
+        )
         self._editor_layout.addStretch()
 
     def get_entries(self):
@@ -357,15 +387,14 @@ class _SklslotTab(QWidget):
         e = self._entries[idx]
         is_end = self._is_end_entry(e)
 
-        card = _card_frame()
+        card, card_main = _card_with_layout()
+        add_editor_card_title(card_main, e.get('slot_name', ui_text("ui_skill_skill_slots")), "fa6s.person-running")
         inner = QWidget(card)
-        inner.setStyleSheet("background: transparent;")
+        inner.setStyleSheet(ss_transparent())
         grid = QGridLayout(inner)
-        grid.setContentsMargins(12, 12, 12, 12)
+        grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(8)
-        card_main = QVBoxLayout(card)
-        card_main.setContentsMargins(0, 0, 0, 0)
         card_main.addWidget(inner)
 
         for ci, (key, label) in enumerate([
@@ -446,7 +475,12 @@ class _SklslotTab(QWidget):
         self._rebuild_list()
         self._set_action_state(True, False)
         _clear_layout(self._editor_layout)
-        self._editor_layout.addWidget(_placeholder_label(ui_text("ui_skill_select_a_slot")))
+        self._editor_layout.addStretch()
+        self._editor_layout.addWidget(
+            _placeholder_label(ui_text("ui_skill_select_a_slot")),
+            0,
+            Qt.AlignmentFlag.AlignCenter,
+        )
         self._editor_layout.addStretch()
         self.changed.emit()
 
@@ -490,7 +524,7 @@ class _LoadTab(QWidget):
 
         hdr = QLabel(ui_text("ui_mainmodeparam_value_value", p0=i, p1=tname))
         hdr.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        hdr.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        hdr.setStyleSheet(ss_main_label())
         cl.addWidget(hdr)
 
         grid = QGridLayout()
@@ -578,7 +612,7 @@ class _PrmLoadStandaloneTab(QWidget):
 
         hdr = QLabel(ui_text("ui_mainmodeparam_value_value", p0=i, p1=tname))
         hdr.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        hdr.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        hdr.setStyleSheet(ss_main_label())
         cl.addWidget(hdr)
 
         grid = QGridLayout()
@@ -648,22 +682,12 @@ class _MotTab(QWidget):
         root.setSpacing(0)
 
         # Sidebar
-        sidebar = QFrame()
-        sidebar.setFixedWidth(260)
-        sidebar.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; }}")
-        sl = QVBoxLayout(sidebar)
-        sl.setContentsMargins(8, 8, 8, 4)
-        sl.setSpacing(4)
+        sidebar, sl = _make_sidebar(260)
 
         self._search = _sidebar_search(ui_text("ui_messageinfo_search_entries"))
         self._search.textChanged.connect(self._filter_entries)
         sl.addWidget(self._search)
 
-        abf = QWidget()
-        abf.setStyleSheet("background: transparent;")
-        abl = QHBoxLayout(abf)
-        abl.setContentsMargins(0, 2, 0, 4)
-        abl.setSpacing(4)
         bf = QFont("Segoe UI", 10)
 
         self._entry_add_btn = QPushButton(ui_text("btn_new"))
@@ -673,7 +697,6 @@ class _MotTab(QWidget):
         self._entry_add_btn.setEnabled(False)
         self._entry_add_btn.setToolTip(ui_text("ui_skill_add_motion_entry_tooltip"))
         self._entry_add_btn.clicked.connect(self._add_entry)
-        abl.addWidget(self._entry_add_btn, 1)
 
         self._entry_dup_btn = QPushButton(ui_text("btn_duplicate"))
         self._entry_dup_btn.setFixedHeight(28)
@@ -682,7 +705,6 @@ class _MotTab(QWidget):
         self._entry_dup_btn.setEnabled(False)
         self._entry_dup_btn.setToolTip(ui_text("ui_skill_duplicate_motion_entry_tooltip"))
         self._entry_dup_btn.clicked.connect(self._dup_entry)
-        abl.addWidget(self._entry_dup_btn, 1)
 
         self._entry_del_btn = QPushButton(ui_text("btn_delete"))
         self._entry_del_btn.setFixedHeight(28)
@@ -691,8 +713,7 @@ class _MotTab(QWidget):
         self._entry_del_btn.setEnabled(False)
         self._entry_del_btn.setToolTip(ui_text("ui_skill_delete_motion_entry_tooltip"))
         self._entry_del_btn.clicked.connect(self._del_entry)
-        abl.addWidget(self._entry_del_btn, 1)
-        sl.addWidget(abf)
+        sl.addWidget(_sidebar_actions_row(self._entry_add_btn, self._entry_dup_btn, self._entry_del_btn))
 
         self._list_scroll, self._list_widget, self._list_layout = _sidebar_scroll()
         sl.addWidget(self._list_scroll)
@@ -704,7 +725,12 @@ class _MotTab(QWidget):
         root.addWidget(div)
 
         self._editor_scroll, self._editor_layout = _right_scroll()
-        self._editor_layout.addWidget(_placeholder_label(ui_text("ui_skill_select_an_animation_entry")))
+        self._editor_layout.addStretch()
+        self._editor_layout.addWidget(
+            _placeholder_label(ui_text("ui_skill_select_an_animation_entry"), icon_name="fa6s.film"),
+            0,
+            Qt.AlignmentFlag.AlignCenter,
+        )
         self._editor_layout.addStretch()
         root.addWidget(self._editor_scroll, 1)
 
@@ -804,7 +830,12 @@ class _MotTab(QWidget):
 
     def _clear_editor_placeholder(self):
         _clear_layout(self._editor_layout)
-        self._editor_layout.addWidget(_placeholder_label(ui_text("ui_skill_select_an_animation_entry")))
+        self._editor_layout.addStretch()
+        self._editor_layout.addWidget(
+            _placeholder_label(ui_text("ui_skill_select_an_animation_entry"), icon_name="fa6s.film"),
+            0,
+            Qt.AlignmentFlag.AlignCenter,
+        )
         self._editor_layout.addStretch()
 
     @staticmethod
@@ -886,17 +917,17 @@ class _MotTab(QWidget):
 
     def _show_entry(self, entry):
         _clear_layout(self._editor_layout)
+        compact = self._editor_scroll.viewport().width() < 760
 
         # Header card
-        card = _card_frame()
+        card, cm = _card_with_layout()
+        add_editor_card_title(cm, entry.get('event_id', ui_text("ui_skill_motion_data")), "fa6s.film", entry.get('anim_id', ''))
         inner = QWidget(card)
-        inner.setStyleSheet("background: transparent;")
+        inner.setStyleSheet(ss_transparent())
         grid = QGridLayout(inner)
-        grid.setContentsMargins(12, 12, 12, 12)
+        grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(8)
-        cm = QVBoxLayout(card)
-        cm.setContentsMargins(0, 0, 0, 0)
         cm.addWidget(inner)
 
         fw_ev, f_ev = _make_field(ui_text("ui_guidecharparam_event_id"), entry['event_id'])
@@ -906,7 +937,7 @@ class _MotTab(QWidget):
         f_ev.textEdited.connect(lambda t, e=entry: self._on_ev_edited(t, e))
 
         fw_an, f_an = _make_field(ui_text("ui_playertitleparam_anim_id"), entry['anim_id'])
-        grid.addWidget(fw_an, 0, 2, 1, 2)
+        grid.addWidget(fw_an, 1 if compact else 0, 0 if compact else 2, 1, 2)
         grid.setColumnStretch(2, 1)
         grid.setColumnStretch(3, 1)
         f_an.textEdited.connect(lambda t, e=entry: self._on_an_edited(t, e))
@@ -918,10 +949,12 @@ class _MotTab(QWidget):
             ('frame_skip',            ui_text("ui_skill_frmskip")),
             ('file_id',               ui_text("ui_skill_fileid")),
         ]
+        flag_start_row = 2 if compact else 1
+        flag_cols = 2 if compact else len(flag_defs)
         for col, (key, label) in enumerate(flag_defs):
             fw, fe = _make_field(label, entry.get(key, 0))
-            grid.addWidget(fw, 1, col)
-            grid.setColumnStretch(col, 1)
+            grid.addWidget(fw, flag_start_row + (col // flag_cols), col % flag_cols)
+            grid.setColumnStretch(col % flag_cols, 1)
             fe.editingFinished.connect(
                 lambda k=key, f=fe, e=entry: self._on_flag_edited(k, f, e)
             )
@@ -929,8 +962,8 @@ class _MotTab(QWidget):
         self._editor_layout.addWidget(card)
 
         action_row = QWidget()
-        action_row.setStyleSheet("background: transparent;")
-        action_layout = QHBoxLayout(action_row)
+        action_row.setStyleSheet(ss_transparent())
+        action_layout = QVBoxLayout(action_row) if compact else QHBoxLayout(action_row)
         action_layout.setContentsMargins(20, 0, 20, 0)
         action_layout.setSpacing(6)
         bf = QFont("Segoe UI", 10)
@@ -958,7 +991,8 @@ class _MotTab(QWidget):
         del_sub_btn.clicked.connect(lambda _, e=entry: self._del_last_subentry(e))
         action_layout.addWidget(del_sub_btn)
 
-        action_layout.addStretch()
+        if not compact:
+            action_layout.addStretch()
         self._editor_layout.addWidget(action_row)
 
         # Subentry cards
@@ -1051,21 +1085,22 @@ class _MotTab(QWidget):
         self.changed.emit()
 
     def _make_sub_card(self, entry, r, s, section_title=None):
+        compact = self._editor_scroll.viewport().width() < 760
         card = _card_frame()
         cl = QVBoxLayout(card)
         cl.setContentsMargins(12, 12, 12, 12)
         cl.setSpacing(8)
         if section_title:
-            _add_card_section_title(cl, section_title)
+            add_editor_card_title(cl, section_title, "fa6s.sliders")
 
         hdr_lbl = QLabel(ui_text("ui_skill_value_value_value", p0=r, p1=s.get('bone', ''), p2=s.get('func_name', '')))
         hdr_lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        hdr_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+        hdr_lbl.setStyleSheet(ss_main_label())
         cl.addWidget(hdr_lbl)
 
         sub_action_row = QWidget()
-        sub_action_row.setStyleSheet("background: transparent;")
-        sub_action_layout = QHBoxLayout(sub_action_row)
+        sub_action_row.setStyleSheet(ss_transparent())
+        sub_action_layout = QGridLayout(sub_action_row) if compact else QHBoxLayout(sub_action_row)
         sub_action_layout.setContentsMargins(0, 0, 0, 0)
         sub_action_layout.setSpacing(6)
         sf = QFont("Segoe UI", 9)
@@ -1075,30 +1110,31 @@ class _MotTab(QWidget):
         insert_above_btn.setFont(sf)
         insert_above_btn.setStyleSheet(ss_btn())
         insert_above_btn.clicked.connect(lambda _, e=entry, idx=r: self._insert_subentry(e, idx))
-        sub_action_layout.addWidget(insert_above_btn)
+        sub_action_layout.addWidget(insert_above_btn, 0, 0) if compact else sub_action_layout.addWidget(insert_above_btn)
 
         insert_below_btn = QPushButton(ui_text("ui_skill_insert_subentry_below"))
         insert_below_btn.setFixedHeight(26)
         insert_below_btn.setFont(sf)
         insert_below_btn.setStyleSheet(ss_btn())
         insert_below_btn.clicked.connect(lambda _, e=entry, idx=r: self._insert_subentry(e, idx + 1))
-        sub_action_layout.addWidget(insert_below_btn)
+        sub_action_layout.addWidget(insert_below_btn, 0, 1) if compact else sub_action_layout.addWidget(insert_below_btn)
 
         duplicate_here_btn = QPushButton(ui_text("ui_skill_duplicate_subentry_here"))
         duplicate_here_btn.setFixedHeight(26)
         duplicate_here_btn.setFont(sf)
         duplicate_here_btn.setStyleSheet(ss_btn())
         duplicate_here_btn.clicked.connect(lambda _, e=entry, idx=r: self._duplicate_subentry(e, idx))
-        sub_action_layout.addWidget(duplicate_here_btn)
+        sub_action_layout.addWidget(duplicate_here_btn, 1, 0) if compact else sub_action_layout.addWidget(duplicate_here_btn)
 
         delete_here_btn = QPushButton(ui_text("ui_skill_delete_subentry_here"))
         delete_here_btn.setFixedHeight(26)
         delete_here_btn.setFont(sf)
         delete_here_btn.setStyleSheet(ss_btn(danger=True))
         delete_here_btn.clicked.connect(lambda _, e=entry, idx=r: self._delete_subentry(e, idx))
-        sub_action_layout.addWidget(delete_here_btn)
+        sub_action_layout.addWidget(delete_here_btn, 1, 1) if compact else sub_action_layout.addWidget(delete_here_btn)
 
-        sub_action_layout.addStretch()
+        if not compact:
+            sub_action_layout.addStretch()
         cl.addWidget(sub_action_row)
 
         grid = QGridLayout()
@@ -1114,54 +1150,62 @@ class _MotTab(QWidget):
             ['', 'high', 'middle', 'low', 'unblockable'],
             s.get('attack', ''),
         )
-        grid.addWidget(fw0, 0, 0); grid.setColumnStretch(0, 1)
-        grid.addWidget(fw1, 0, 1); grid.setColumnStretch(1, 1)
-        grid.addWidget(fw2, 0, 2); grid.setColumnStretch(2, 1)
-        grid.addWidget(fw3, 0, 3); grid.setColumnStretch(3, 1)
+        grid_cols = 2 if compact else 4
+        def add_field(widget, index, colspan=1):
+            row = index // grid_cols
+            col = index % grid_cols
+            span = min(colspan, grid_cols - col)
+            grid.addWidget(widget, row, col, 1, span)
+            grid.setColumnStretch(col, 1)
+
+        add_field(fw0, 0)
+        add_field(fw1, 1)
+        add_field(fw2, 2)
+        add_field(fw3, 3)
 
         # Row 1: Dmg | Grd | X | Y
         fw4, f_dmg = _make_field(ui_text("ui_skill_dmg"), s.get('dmg', 0) or 0)
         fw5, f_grd = _make_field(ui_text("ui_skill_grd"), s.get('grd', 0) or 0)
         fw6, f_x   = _make_field("X",   f"{s['x']:.6g}" if s.get('x') else '0')
         fw7, f_y   = _make_field("Y",   f"{s['y']:.6g}" if s.get('y') else '0')
-        grid.addWidget(fw4, 1, 0)
-        grid.addWidget(fw5, 1, 1)
-        grid.addWidget(fw6, 1, 2)
-        grid.addWidget(fw7, 1, 3)
+        add_field(fw4, 4)
+        add_field(fw5, 5)
+        add_field(fw6, 6)
+        add_field(fw7, 7)
 
         # Row 2: Push | Speed/FWD params | Function (spans 2 cols)
         fw8, f_push = _make_field(ui_text("ui_skill_push"), s.get('push', 0))
-        grid.addWidget(fw8, 2, 0)
+        add_field(fw8, 8)
 
         fw_speed, f_speed = _make_field(
             ui_text("skill_field_speed"),
             f"{s.get('speed_multiplier', 1.0):.6g}",
         )
-        grid.addWidget(fw_speed, 2, 1)
+        add_field(fw_speed, 9)
 
         fw_fwd_vel, f_fwd_vel = _make_field(
             ui_text("skill_field_fwd_velocity"),
             s.get('fwd_velocity', 0),
         )
-        grid.addWidget(fw_fwd_vel, 3, 0)
+        add_field(fw_fwd_vel, 10)
 
         fw_fwd_dur, f_fwd_dur = _make_field(
             ui_text("skill_field_duration_frames"),
             s.get('fwd_velocity_duration', 0),
         )
-        grid.addWidget(fw_fwd_dur, 3, 1)
+        add_field(fw_fwd_dur, 11)
 
         fw_gion_id, f_gion_id = _make_field(
             ui_text("skill_field_gion_id"),
             s.get('gion_id', ''),
         )
-        grid.addWidget(fw_gion_id, 3, 2)
+        add_field(fw_gion_id, 12)
 
         fw_gion_scale, f_gion_scale = _make_field(
             ui_text("skill_field_gion_scale"),
             f"{s.get('gion_scale', 1.0):.6g}",
         )
-        grid.addWidget(fw_gion_scale, 3, 3)
+        add_field(fw_gion_scale, 13)
 
         atkhit_values = list(s.get('atkhit_params', [0, 0, 0, 0, 0]))
         atkhit_values.extend([0] * (5 - len(atkhit_values)))
@@ -1171,9 +1215,7 @@ class _MotTab(QWidget):
                 ui_text("skill_field_atkhit_param_n", n=i + 1),
                 atkhit_values[i],
             )
-            row = 4 + (i // 4)
-            col = i % 4
-            grid.addWidget(fw_param, row, col)
+            add_field(fw_param, 14 + i)
             atkhit_fields.append((fw_param, f_param))
 
         func_param_values = list(s.get('func_param_bytes', [0, 0, 0]))
@@ -1184,7 +1226,7 @@ class _MotTab(QWidget):
                 ui_text("skill_field_func_byte_n", n=i + 1),
                 func_param_values[i],
             )
-            grid.addWidget(fw_param, 6, i)
+            add_field(fw_param, 19 + i)
             func_param_fields.append((fw_param, f_param))
 
         fw_func_w, f_func = _make_combo_field(ui_text("skill_field_function"), [], s.get('func_name', ''))
@@ -1195,7 +1237,7 @@ class _MotTab(QWidget):
             f_func.addItem(name)
         f_func.setCurrentText(s.get('func_name', ''))
         f_func.blockSignals(False)
-        grid.addWidget(fw_func_w, 2, 2, 1, 2)
+        add_field(fw_func_w, 22, 2)
 
         def update_func_param_visibility():
             is_speed_func = f_func.currentText().strip() in ANM_SPEED_FUNC_NAMES
@@ -1422,11 +1464,12 @@ class SkillEditor(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+        self.setStyleSheet(ss_bg_dark())
 
         # Top bar — matches CharacterStats style
         top = QFrame()
         top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(f"background-color: {P['bg_panel']};")
+        top.setStyleSheet(ss_bg_panel())
         tl = QHBoxLayout(top)
         tl.setContentsMargins(12, 8, 12, 8)
         tl.setSpacing(4)

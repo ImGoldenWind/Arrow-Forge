@@ -16,10 +16,13 @@ from PyQt6.QtGui import QFont
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_accent_sep, ss_input, ss_search, ss_sidebar_btn,
-    ss_section_label, ss_field_label, ss_file_label, ss_scrollarea, ss_sep,
-    ss_panel, ss_scrollarea_transparent, ss_editor_card, ss_panel_title,
-    ss_main_label, ss_dim_label, ss_tab_widget, ss_transparent,
+    add_editor_card_title, make_editor_card, make_editor_field_shell,
+    ss_accent_label, ss_bg_dark, ss_bg_panel, ss_btn, ss_accent_sep,
+    ss_input, ss_search, ss_sidebar_btn, ss_sidebar_frame,
+    ss_field_label, ss_file_label, ss_file_label_loaded, ss_scrollarea, ss_sep,
+    ss_sidebar_treewidget,
+    ss_scrollarea_transparent, ss_editor_card, ss_panel_title, ss_main_label, ss_dim_label,
+    ss_tab_widget, ss_transparent, make_empty_state,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
 from core.editor_file_state import set_file_label
@@ -100,21 +103,16 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
 
 def _make_field(label_text, value_text):
-    f = QWidget()
-    f.setStyleSheet("background: transparent;")
-    fl = QVBoxLayout(f)
-    fl.setContentsMargins(0, 0, 0, 0)
-    fl.setSpacing(2)
-    lbl = QLabel(str(label_text))
-    lbl.setFont(QFont("Segoe UI", 12))
-    lbl.setStyleSheet(ss_field_label())
-    fl.addWidget(lbl)
+    f, fl, _label, _hint = make_editor_field_shell(label_text, label_font_size=12, spacing=3)
     e = QLineEdit(str(value_text))
     e.setFixedHeight(30)
     e.setFont(QFont("Consolas", 13))
@@ -140,32 +138,10 @@ def _card_layout(card, margins=(24, 20, 24, 20), spacing=14):
 def _title_row(title, subtitle="", icon_name=None):
     row = QWidget()
     row.setStyleSheet(ss_transparent())
-    rl = QHBoxLayout(row)
-    rl.setContentsMargins(0, 0, 0, 0)
-    rl.setSpacing(12)
-
-    if icon_name:
-        icon = QLabel()
-        icon.setFixedSize(22, 22)
-        icon.setPixmap(qta.icon(icon_name, color=P["accent"]).pixmap(22, 22))
-        icon.setStyleSheet(ss_transparent())
-        rl.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
-
-    texts = QWidget()
-    texts.setStyleSheet(ss_transparent())
-    tl = QVBoxLayout(texts)
-    tl.setContentsMargins(0, 0, 0, 0)
-    tl.setSpacing(2)
-    title_lbl = QLabel(title)
-    title_lbl.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-    title_lbl.setStyleSheet(ss_panel_title())
-    tl.addWidget(title_lbl)
-    if subtitle:
-        sub_lbl = QLabel(subtitle)
-        sub_lbl.setFont(QFont("Segoe UI", 11))
-        sub_lbl.setStyleSheet(ss_dim_label())
-        tl.addWidget(sub_lbl)
-    rl.addWidget(texts, 1)
+    layout = QVBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(0)
+    add_editor_card_title(layout, title, icon_name, subtitle, icon_size=20)
     return row
 
 
@@ -183,9 +159,11 @@ def _sidebar_scroll():
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     scroll.setStyleSheet(ss_scrollarea_transparent())
     inner = QWidget()
-    inner.setStyleSheet("background: transparent;")
+    inner.setMinimumWidth(0)
+    inner.setStyleSheet(ss_transparent())
     layout = QVBoxLayout(inner)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(1)
@@ -198,9 +176,11 @@ def _right_scroll():
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     scroll.setStyleSheet(ss_scrollarea())
     inner = QWidget()
-    inner.setStyleSheet(f"background-color: {P['bg_dark']};")
+    inner.setMinimumWidth(0)
+    inner.setStyleSheet(ss_bg_dark())
     layout = QVBoxLayout(inner)
     layout.setContentsMargins(16, 16, 16, 16)
     layout.setSpacing(12)
@@ -208,39 +188,43 @@ def _right_scroll():
     return scroll, layout
 
 
-def _placeholder_label(text):
-    lbl = QLabel(text)
-    lbl.setFont(QFont("Segoe UI", 15))
-    lbl.setStyleSheet(f"color: {P['text_dim']};")
-    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    return lbl
+def _placeholder_label(text, *, title=None, icon_name="fa6s.list"):
+    return make_empty_state(
+        title=title or ui_text("ui_model_viewer_select_item"),
+        text=text,
+        icon_name=icon_name,
+    )
 
 
 def _sidebar_buttons_row():
     """Returns (frame, new_btn, dup_btn, del_btn) — matches CharStats sidebar style."""
     frame = QWidget()
-    frame.setStyleSheet("background: transparent;")
+    frame.setStyleSheet(ss_transparent())
     layout = QHBoxLayout(frame)
     layout.setContentsMargins(0, 2, 0, 4)
     layout.setSpacing(4)
-    bf = QFont("Segoe UI", 10)
+    bf = QFont("Segoe UI", 9)
+    compact_btn_qss = "QPushButton { padding-left: 4px; padding-right: 4px; }"
 
     new_btn = QPushButton(ui_text("btn_new"))
     new_btn.setFixedHeight(28)
+    new_btn.setMinimumWidth(0)
     new_btn.setFont(bf)
-    new_btn.setStyleSheet(ss_btn())
+    new_btn.setStyleSheet(ss_btn() + compact_btn_qss)
     layout.addWidget(new_btn, 1)
 
     dup_btn = QPushButton(ui_text("btn_duplicate"))
     dup_btn.setFixedHeight(28)
+    dup_btn.setMinimumWidth(0)
     dup_btn.setFont(bf)
-    dup_btn.setStyleSheet(ss_btn())
+    dup_btn.setStyleSheet(ss_btn() + compact_btn_qss)
     layout.addWidget(dup_btn, 1)
 
     del_btn = QPushButton(ui_text("btn_delete"))
     del_btn.setFixedHeight(28)
+    del_btn.setMinimumWidth(0)
     del_btn.setFont(bf)
-    del_btn.setStyleSheet(ss_btn(danger=True))
+    del_btn.setStyleSheet(ss_btn(danger=True) + compact_btn_qss)
     layout.addWidget(del_btn, 1)
 
     return frame, new_btn, dup_btn, del_btn
@@ -249,7 +233,7 @@ def _sidebar_buttons_row():
 def _make_sidebar(width=240):
     sidebar = QFrame()
     sidebar.setFixedWidth(width)
-    sidebar.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; }}")
+    sidebar.setStyleSheet(ss_sidebar_frame())
     sl = QVBoxLayout(sidebar)
     sl.setContentsMargins(8, 8, 8, 4)
     sl.setSpacing(4)
@@ -266,7 +250,8 @@ class _AttrForm(QScrollArea):
         super().__init__(parent)
         self._elem = None
         inner = QWidget()
-        inner.setStyleSheet(f"background-color: {P['bg_dark']};")
+        inner.setMinimumWidth(0)
+        inner.setStyleSheet(ss_bg_dark())
         self._grid = QGridLayout(inner)
         self._grid.setContentsMargins(16, 12, 16, 12)
         self._grid.setSpacing(6)
@@ -285,7 +270,7 @@ class _AttrForm(QScrollArea):
 
         if elem is None:
             lbl = QLabel(ui_text("ui_spm_nothing_selected"))
-            lbl.setStyleSheet(f"color: {P['text_dim']}; padding: 12px;")
+            lbl.setStyleSheet(ss_dim_label())
             lbl.setFont(QFont("Segoe UI", 12))
             self._grid.addWidget(lbl, 0, 0, 1, 2)
             return
@@ -333,7 +318,8 @@ class _MoveInfoTab(QScrollArea):
         self._move = None
         self._elem = None
         self._inner = QWidget()
-        self._inner.setStyleSheet(f"background-color: {P['bg_dark']};")
+        self._inner.setMinimumWidth(0)
+        self._inner.setStyleSheet(ss_bg_dark())
         self._layout = QVBoxLayout(self._inner)
         self._layout.setContentsMargins(16, 16, 16, 16)
         self._layout.setSpacing(14)
@@ -525,14 +511,14 @@ class _CommandsTab(QWidget):
 
         # Page 0: no EntrySPM
         no_entry = QWidget()
-        no_entry.setStyleSheet(f"background-color: {P['bg_dark']};")
+        no_entry.setStyleSheet(ss_bg_dark())
         nl = QVBoxLayout(no_entry)
         nl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         nl.setSpacing(14)
 
         msg = QLabel(ui_text("ui_spm_this_move_has_no_input_commands_non_inputtable_d"))
         msg.setFont(QFont("Segoe UI", 13))
-        msg.setStyleSheet(f"color: {P['text_dim']};")
+        msg.setStyleSheet(ss_dim_label())
         msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
         nl.addWidget(msg)
 
@@ -546,7 +532,7 @@ class _CommandsTab(QWidget):
 
         # Page 1: command editor
         entry_w = QWidget()
-        entry_w.setStyleSheet(f"background-color: {P['bg_dark']};")
+        entry_w.setStyleSheet(ss_bg_dark())
         ev = QHBoxLayout(entry_w)
         ev.setContentsMargins(0, 0, 0, 0)
         ev.setSpacing(0)
@@ -629,12 +615,12 @@ class _CommandsTab(QWidget):
         bl.setSpacing(0)
         name_lbl = QLabel(ui_text("ui_spm_command_value", p0=idx + 1))
         name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        name_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        name_lbl.setStyleSheet(ss_main_label())
         name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         bl.addWidget(name_lbl)
         sub_lbl = QLabel(ui_text("ui_spm_trigger_value", p0=cmd_elem.get('trigger', '?')))
         sub_lbl.setFont(QFont("Segoe UI", 11))
-        sub_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        sub_lbl.setStyleSheet(ss_dim_label())
         sub_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         bl.addWidget(sub_lbl)
         btn.clicked.connect(lambda _, c=cmd_elem: self._select_cmd(c))
@@ -659,6 +645,7 @@ class _CommandsTab(QWidget):
     def _build_cmd_editor(self, cmd_elem):
         self._cur_cmd_elem = cmd_elem
         _clear_layout(self._right_layout)
+        compact = self.width() < 760
 
         card = _card_frame()
         card_main = _card_layout(card)
@@ -675,11 +662,14 @@ class _CommandsTab(QWidget):
         ]
         for ci, (key, label) in enumerate(fields_def):
             fw, fe = _make_field(label, cmd_elem.get(key, ''))
-            grid.addWidget(fw, 0, ci)
-            grid.setColumnStretch(ci, 1)
+            row = ci if compact else 0
+            col = 0 if compact else ci
+            grid.addWidget(fw, row, col)
+            grid.setColumnStretch(col, 1)
             fe.editingFinished.connect(
                 lambda k=key, f=fe: cmd_elem.set(k, f.text()))
 
+        bool_row_offset = len(fields_def) if compact else 1
         for ci, (key, label) in enumerate([
             (ATTR_AS_DERIVED, ui_text("ui_spm_as_derived")),
             (ATTR_DISABLE_AIR_INV, ui_text("ui_spm_disable_air_inv")),
@@ -696,7 +686,9 @@ class _CommandsTab(QWidget):
             combo = _bool_combo(cmd_elem.get(key, 'false'))
             combo.currentTextChanged.connect(lambda value, k=key: cmd_elem.set(k, value))
             fl.addWidget(combo)
-            grid.addWidget(frame, 1, ci)
+            row = bool_row_offset + ci if compact else 1
+            col = 0 if compact else ci
+            grid.addWidget(frame, row, col)
 
         card_main.addLayout(grid)
         self._right_layout.addWidget(card)
@@ -704,6 +696,7 @@ class _CommandsTab(QWidget):
         self._right_layout.addStretch()
 
     def _build_comel_card(self, cmd_elem):
+        compact = self.width() < 760
         card = _card_frame()
         cl = _card_layout(card)
         cl.addWidget(_title_row(
@@ -725,9 +718,9 @@ class _CommandsTab(QWidget):
         # Direction picker label
         bottom = QWidget()
         bottom.setStyleSheet(ss_transparent())
-        bottom_l = QHBoxLayout(bottom)
+        bottom_l = QVBoxLayout(bottom) if compact else QHBoxLayout(bottom)
         bottom_l.setContentsMargins(0, 4, 0, 0)
-        bottom_l.setSpacing(28)
+        bottom_l.setSpacing(14 if compact else 28)
 
         picker_shell = QWidget()
         picker_shell.setStyleSheet(ss_transparent())
@@ -831,6 +824,9 @@ class _CommandsTab(QWidget):
 
         del_btn = QPushButton(ui_text("btn_delete"))
         del_btn.setFixedHeight(30)
+        if self.width() < 760:
+            del_btn.setText("")
+            del_btn.setFixedWidth(34)
         del_btn.setFont(QFont("Segoe UI", 10))
         del_btn.setIcon(qta.icon("fa6s.trash-can", color=P["accent"]))
         del_btn.setStyleSheet(ss_btn(danger=True))
@@ -923,7 +919,7 @@ class _DecoratorsTab(QWidget):
 
         # Decorator type selector
         type_frame = QWidget()
-        type_frame.setStyleSheet("background: transparent;")
+        type_frame.setStyleSheet(ss_transparent())
         tf = QVBoxLayout(type_frame)
         tf.setContentsMargins(0, 0, 0, 4)
         tf.setSpacing(2)
@@ -948,20 +944,14 @@ class _DecoratorsTab(QWidget):
 
         self._tree = QTreeWidget()
         self._tree.setHeaderHidden(True)
-        self._tree.setStyleSheet(
-            f"QTreeWidget {{ background-color: transparent; color: {P['text_main']}; "
-            f"border: none; outline: none; }}"
-            f"QTreeWidget::item {{ padding: 3px 8px; border-radius: 4px; }}"
-            f"QTreeWidget::item:selected {{ background-color: {P['bg_card']}; }}"
-            f"QTreeWidget::branch {{ background: transparent; }}"
-        )
+        self._tree.setStyleSheet(ss_sidebar_treewidget())
         self._tree.setFont(QFont("Segoe UI", 11))
         self._tree.itemSelectionChanged.connect(self._on_tree_sel)
         sl.addWidget(self._tree, 1)
 
         # Child item buttons below tree
         child_frame = QWidget()
-        child_frame.setStyleSheet("background: transparent;")
+        child_frame.setStyleSheet(ss_transparent())
         cf = QHBoxLayout(child_frame)
         cf.setContentsMargins(0, 4, 0, 0)
         cf.setSpacing(4)
@@ -1270,7 +1260,7 @@ class SpmEditor(QWidget):
         root_l.addWidget(sep)
 
         sp = QSplitter(Qt.Orientation.Horizontal)
-        sp.setStyleSheet(f"QSplitter::handle {{ background: {P['mid']}; width: 2px; }}")
+        sp.setStyleSheet(ss_bg_dark())
         sp.addWidget(self._make_left_panel())
         sp.addWidget(self._make_right_panel())
         sp.setSizes([230, 1000])
@@ -1279,7 +1269,7 @@ class SpmEditor(QWidget):
     def _make_toolbar(self):
         bar = QFrame()
         bar.setFixedHeight(TOOLBAR_H)
-        bar.setStyleSheet(f"background-color: {P['bg_panel']};")
+        bar.setStyleSheet(ss_bg_panel())
         bl = QHBoxLayout(bar)
         bl.setContentsMargins(12, 8, 12, 8)
         bl.setSpacing(4)
@@ -1332,14 +1322,16 @@ class SpmEditor(QWidget):
 
     def _make_right_panel(self):
         ph = QWidget()
-        ph.setStyleSheet(f"background-color: {P['bg_dark']};")
+        ph.setStyleSheet(ss_bg_dark())
         pl = QVBoxLayout(ph)
         pl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ph_lbl = QLabel(ui_text("ui_spm_open_a_spm_xfbin_file_to_begin_editing"))
-        ph_lbl.setFont(QFont("Segoe UI", 16))
-        ph_lbl.setStyleSheet(f"color: {P['text_dim']};")
-        ph_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pl.addWidget(ph_lbl)
+        ph_card = make_empty_state(
+            ph,
+            title=ui_text("no_file_loaded"),
+            text=ui_text("ui_spm_open_a_spm_xfbin_file_to_begin_editing"),
+            icon_name="fa6s.list-ol",
+        )
+        pl.addWidget(ph_card)
 
         self._tabs = QTabWidget()
         self._tabs.setFont(QFont("Segoe UI", 12))
@@ -1441,12 +1433,12 @@ class SpmEditor(QWidget):
         bl.setSpacing(0)
         name_lbl = QLabel(name)
         name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        name_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        name_lbl.setStyleSheet(ss_main_label())
         name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         bl.addWidget(name_lbl)
         id_lbl = QLabel(aid)
         id_lbl.setFont(QFont("Consolas", 11))
-        id_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        id_lbl.setStyleSheet(ss_dim_label())
         id_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         bl.addWidget(id_lbl)
         btn.clicked.connect(lambda _, m=move_dict: self._select_move(m))

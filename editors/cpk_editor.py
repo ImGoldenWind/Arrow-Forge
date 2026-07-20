@@ -5,6 +5,7 @@ Embedded inline in the main window via _show_frame(), same as all other tools.
 
 import os
 
+import qtawesome as qta
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QTreeWidget, QTreeWidgetItem, QLabel, QPushButton, QProgressBar,
@@ -12,12 +13,16 @@ from PyQt6.QtWidgets import (
     QApplication, QSizePolicy,
 )
 from PyQt6.QtGui import QFont, QColor
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
 
 from core.themes import P
 from core.translations import ui_text
 from core.settings import create_backup_on_open, game_files_dialog_dir
-from core.style_helpers import ss_vertical_scrollbar
+from core.style_helpers import (
+    add_editor_card_title, make_editor_card, ss_bg_dark, ss_bg_panel, ss_btn,
+    ss_dim_label, ss_main_label, ss_progressbar, ss_sep,
+    ss_splitter, ss_textedit, ss_transparent, ss_treewidget,
+)
 
 
 # Worker thread for long operations
@@ -51,20 +56,20 @@ class _Worker(QThread):
 
 # Helpers
 
-def _make_btn(text, bg, hover, fg, font, w=0, h=32):
+def _make_btn(text, bg, hover, fg, font, w=0, h=32, icon_name=None):
     btn = QPushButton(text)
     btn.setFont(font)
+    btn.setToolTip(text)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    style = (
-        f"QPushButton {{ background-color: {bg}; color: {fg}; border: none; "
-        f"border-radius: 6px; padding: 4px 12px; }}"
-        f"QPushButton:hover {{ background-color: {hover}; }}"
-        f"QPushButton:disabled {{ background-color: {bg}; color: {P['text_dim']}; opacity: 0.5; }}"
-    )
-    btn.setStyleSheet(style)
+    btn.setStyleSheet(ss_btn(accent=(bg == P["accent"])))
+    if icon_name:
+        btn.setIcon(qta.icon(icon_name, color=P.get("button_text", P["text_main"])))
+        btn.setIconSize(QSize(13, 13))
     if w:
         btn.setFixedWidth(w)
+        btn.setMinimumWidth(w)
     btn.setFixedHeight(h)
+    btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
     return btn
 
 
@@ -72,8 +77,10 @@ def _label(text, bold=False, size=11, color=None):
     lbl = QLabel(text)
     lbl.setFont(QFont("Segoe UI", size,
                       QFont.Weight.Bold if bold else QFont.Weight.Normal))
-    lbl.setStyleSheet(
-        f"color: {color or P['text_main']}; background: transparent; border: none;")
+    if color == P["text_dim"]:
+        lbl.setStyleSheet(ss_dim_label())
+    else:
+        lbl.setStyleSheet(ss_main_label())
     return lbl
 
 
@@ -97,18 +104,7 @@ class CpkTreeWidget(QTreeWidget):
         self.setColumnWidth(1, 90)
         self.setColumnWidth(2, 90)
         self.setFont(QFont("Consolas", 10))
-        self.setStyleSheet(
-            f"QTreeWidget {{ background-color: {P['bg_dark']}; color: {P['text_main']}; "
-            f"border: none; outline: none; }}"
-            f"QTreeWidget::item {{ padding: 3px 2px; border: none; }}"
-            f"QTreeWidget::item:selected {{ background-color: {P['mid']}; "
-            f"color: {P['accent']}; }}"
-            f"QTreeWidget::item:hover {{ background-color: {P['bg_card_hov']}; }}"
-            f"QHeaderView::section {{ background-color: {P['bg_panel']}; "
-            f"color: {P['text_dim']}; border: none; padding: 4px 6px; "
-            f"font: 10pt 'Segoe UI'; }}"
-            f"{ss_vertical_scrollbar(P['bg_dark'], hover_color=P['secondary'])}"
-        )
+        self.setStyleSheet(ss_treewidget())
         self.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)
         self.setRootIsDecorated(True)
         self.setAnimated(True)
@@ -186,10 +182,7 @@ class CpkEditor(QWidget):
         self._worker   = None
         self._cpk_path: str | None = None
 
-        self.setStyleSheet(
-            f"QWidget {{ background-color: {P['bg_dark']}; }}"
-            f"QSplitter::handle {{ background-color: {P['mid']}; width: 1px; }}"
-        )
+        self.setStyleSheet(ss_bg_dark() + ss_splitter())
 
         self._build_ui()
 
@@ -204,8 +197,9 @@ class CpkEditor(QWidget):
         tb = QFrame()
         self._toolbar = tb
         self._toolbar_compact = None
+        self._toolbar_narrow = None
         tb.setFixedHeight(52)
-        tb.setStyleSheet(f"background-color: {P['bg_panel']};")
+        tb.setStyleSheet(ss_bg_panel())
         tb_l = QVBoxLayout(tb)
         tb_l.setContentsMargins(12, 8, 12, 8)
         tb_l.setSpacing(6)
@@ -234,7 +228,7 @@ class CpkEditor(QWidget):
 
         self._btn_open = _make_btn(
             self.t("cpk_btn_open"), P["accent"], P["secondary"],
-            P["bg_dark"], font_btn, w=140)
+            P["bg_dark"], font_btn, w=150, icon_name="fa6s.folder-open")
         self._btn_open.clicked.connect(self._open_cpk)
         unpack_l.addWidget(self._btn_open)
 
@@ -243,21 +237,21 @@ class CpkEditor(QWidget):
 
         self._btn_unpack_all = _make_btn(
             self.t("cpk_btn_unpack_all"), P["mid"], P["bg_card_hov"],
-            P["secondary"], font_btn, w=150)
+            P["secondary"], font_btn, w=160, icon_name="fa6s.box-open")
         self._btn_unpack_all.clicked.connect(self._unpack_all)
         self._btn_unpack_all.setEnabled(False)
         unpack_l.addWidget(self._btn_unpack_all)
 
         self._btn_unpack_dir = _make_btn(
             self.t("cpk_btn_unpack_dir"), P["mid"], P["bg_card_hov"],
-            P["secondary"], font_btn, w=180)
+            P["secondary"], font_btn, w=226, icon_name="fa6s.folder-tree")
         self._btn_unpack_dir.clicked.connect(self._unpack_selected_dir)
         self._btn_unpack_dir.setEnabled(False)
         unpack_l.addWidget(self._btn_unpack_dir)
 
         self._btn_unpack_file = _make_btn(
             self.t("cpk_btn_unpack_file"), P["mid"], P["bg_card_hov"],
-            P["secondary"], font_btn, w=180)
+            P["secondary"], font_btn, w=236, icon_name="fa6s.file-export")
         self._btn_unpack_file.clicked.connect(self._unpack_selected_file)
         self._btn_unpack_file.setEnabled(False)
         unpack_l.addWidget(self._btn_unpack_file)
@@ -269,21 +263,21 @@ class CpkEditor(QWidget):
 
         self._btn_repack_dir = _make_btn(
             self.t("cpk_btn_repack_dir"), P["mid"], P["bg_card_hov"],
-            P["secondary"], font_btn, w=200)
+            P["secondary"], font_btn, w=250, icon_name="fa6s.folder-plus")
         self._btn_repack_dir.clicked.connect(self._replace_dir)
         self._btn_repack_dir.setEnabled(False)
         pack_l.addWidget(self._btn_repack_dir)
 
         self._btn_replace_file = _make_btn(
             self.t("cpk_btn_replace_file"), P["mid"], P["bg_card_hov"],
-            P["secondary"], font_btn, w=200)
+            P["secondary"], font_btn, w=256, icon_name="fa6s.file-import")
         self._btn_replace_file.clicked.connect(self._replace_file)
         self._btn_replace_file.setEnabled(False)
         pack_l.addWidget(self._btn_replace_file)
 
         self._btn_save_as = _make_btn(
             self.t("cpk_btn_save_as"), P["mid"], P["bg_card_hov"],
-            P["secondary"], font_btn)
+            P["secondary"], font_btn, w=200, icon_name="fa6s.floppy-disk")
         self._btn_save_as.clicked.connect(self._save_as)
         self._btn_save_as.setEnabled(False)
         pack_l.addWidget(self._btn_save_as)
@@ -297,64 +291,80 @@ class CpkEditor(QWidget):
         # main splitter
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(2)
+        splitter.setStyleSheet(ss_splitter())
 
         # Tree + stats panel
         top_widget = QWidget()
+        top_widget.setStyleSheet(ss_bg_dark())
         top_l = QVBoxLayout(top_widget)
-        top_l.setContentsMargins(8, 8, 8, 4)
-        top_l.setSpacing(4)
+        top_l.setContentsMargins(12, 12, 12, 6)
+        top_l.setSpacing(8)
 
+        tree_card, tree_l = make_editor_card(top_widget, margins=(14, 12, 14, 14), spacing=8)
+        _row, _title, self._tree_subtitle_lbl = add_editor_card_title(
+            tree_l,
+            self.t("cpk_title"),
+            "fa6s.box-archive",
+            self.t("cpk_no_file"),
+        )
         self._stats_lbl = _label("", size=10, color=P["text_dim"])
-        top_l.addWidget(self._stats_lbl)
+        tree_l.addWidget(self._stats_lbl)
 
         self._tree = CpkTreeWidget()
-        top_l.addWidget(self._tree, 1)
+        tree_l.addWidget(self._tree, 1)
         self._tree.itemSelectionChanged.connect(self._on_selection_changed)
+        top_l.addWidget(tree_card, 1)
 
         splitter.addWidget(top_widget)
 
         # Log + progress panel
         bot_widget = QWidget()
+        bot_widget.setStyleSheet(ss_bg_dark())
         bot_l = QVBoxLayout(bot_widget)
-        bot_l.setContentsMargins(8, 4, 8, 8)
-        bot_l.setSpacing(4)
+        bot_l.setContentsMargins(12, 6, 12, 12)
+        bot_l.setSpacing(8)
+
+        log_card, log_l = make_editor_card(bot_widget, margins=(14, 12, 14, 14), spacing=8)
 
         log_header_l = QHBoxLayout()
-        log_header_l.addWidget(_label(self.t("cpk_log"), bold=True,
-                                      size=10, color=P["text_dim"]))
+        log_header_l.setContentsMargins(0, 0, 0, 0)
+        log_header_l.setSpacing(8)
+        title_wrap = QWidget(log_card)
+        title_wrap.setStyleSheet(ss_transparent())
+        title_l = QVBoxLayout(title_wrap)
+        title_l.setContentsMargins(0, 0, 0, 0)
+        title_l.setSpacing(0)
+        add_editor_card_title(title_l, self.t("cpk_log"), "fa6s.terminal")
+        log_header_l.addWidget(title_wrap, 1)
         log_header_l.addStretch()
         self._clear_log_btn = _make_btn(
             self.t("cpk_clear_log"), P["mid"], P["bg_card_hov"],
-            P["text_dim"], QFont("Segoe UI", 9), w=80, h=22)
+            P["text_dim"], QFont("Segoe UI", 9), w=86, h=24, icon_name="fa6s.eraser")
         self._clear_log_btn.clicked.connect(self._log_widget.clear
                                             if hasattr(self, "_log_widget")
                                             else lambda: None)
         log_header_l.addWidget(self._clear_log_btn)
-        bot_l.addLayout(log_header_l)
+        log_l.addLayout(log_header_l)
 
         self._log_widget = QTextEdit()
         self._log_widget.setReadOnly(True)
         self._log_widget.setFont(QFont("Consolas", 9))
         self._log_widget.setMaximumHeight(160)
-        self._log_widget.setStyleSheet(
-            f"QTextEdit {{ background-color: {P['bg_dark']}; color: {P['text_dim']}; "
-            f"border: 1px solid {P['border']}; border-radius: 4px; padding: 4px; }}"
-        )
-        bot_l.addWidget(self._log_widget)
+        self._log_widget.setStyleSheet(ss_textedit())
+        log_l.addWidget(self._log_widget)
 
         self._progress = QProgressBar()
         self._progress.setFixedHeight(10)
         self._progress.setTextVisible(False)
         self._progress.setRange(0, 100)
         self._progress.setValue(0)
-        self._progress.setStyleSheet(
-            f"QProgressBar {{ background-color: {P['bg_panel']}; border-radius: 5px; border: none; }}"
-            f"QProgressBar::chunk {{ background-color: {P['accent']}; border-radius: 5px; }}"
-        )
-        bot_l.addWidget(self._progress)
+        self._progress.setStyleSheet(ss_progressbar())
+        log_l.addWidget(self._progress)
 
         self._status_lbl = _label("", size=9, color=P["text_dim"])
-        bot_l.addWidget(self._status_lbl)
+        log_l.addWidget(self._status_lbl)
+        bot_l.addWidget(log_card, 1)
 
         splitter.addWidget(bot_widget)
         splitter.setSizes([460, 200])
@@ -369,6 +379,7 @@ class CpkEditor(QWidget):
         super().resizeEvent(event)
         if hasattr(self, "_toolbar"):
             self._set_toolbar_compact(self.width() < self._toolbar_one_row_min_width())
+            self._set_toolbar_narrow(self.width() < 900)
 
     @staticmethod
     def _take_all(layout):
@@ -414,6 +425,40 @@ class CpkEditor(QWidget):
             self._toolbar_top_l.addWidget(widget)
         self._toolbar_top_l.addStretch()
         self._toolbar_top_l.addWidget(self._path_lbl)
+        self._set_toolbar_narrow(self.width() < 900)
+
+    def _set_toolbar_narrow(self, narrow: bool):
+        if self._toolbar_narrow == narrow:
+            return
+        self._toolbar_narrow = narrow
+
+        if narrow:
+            compact_specs = (
+                (self._btn_open, self.t("cpk_btn_open"), 160),
+                (self._btn_unpack_all, self.t("cpk_btn_unpack_all"), 158),
+                (self._btn_unpack_dir, "", 38),
+                (self._btn_unpack_file, "", 38),
+                (self._btn_repack_dir, "", 38),
+                (self._btn_replace_file, "", 38),
+                (self._btn_save_as, self.t("ui_texture_save_as"), 136),
+            )
+            self._path_lbl.setMaximumWidth(140)
+        else:
+            compact_specs = (
+                (self._btn_open, self.t("cpk_btn_open"), 160),
+                (self._btn_unpack_all, self.t("cpk_btn_unpack_all"), 160),
+                (self._btn_unpack_dir, "", 38),
+                (self._btn_unpack_file, "", 38),
+                (self._btn_repack_dir, "", 38),
+                (self._btn_replace_file, "", 38),
+                (self._btn_save_as, self.t("ui_texture_save_as"), 136),
+            )
+            self._path_lbl.setMaximumWidth(400)
+
+        for btn, text, width in compact_specs:
+            btn.setText(text)
+            btn.setFixedWidth(width)
+            btn.setMinimumWidth(width)
 
     def _toolbar_one_row_min_width(self):
         widgets = (
@@ -433,7 +478,7 @@ class CpkEditor(QWidget):
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.VLine)
         sep.setFixedWidth(1)
-        sep.setStyleSheet(f"color: {P['mid']}; background: {P['mid']};")
+        sep.setStyleSheet(ss_sep())
         return sep
 
     # Logging
@@ -472,6 +517,9 @@ class CpkEditor(QWidget):
         self._tree.populate(reader)
         self._path_lbl.setText(os.path.basename(path))
         self._path_lbl.setToolTip(path)
+        if getattr(self, "_tree_subtitle_lbl", None) is not None:
+            self._tree_subtitle_lbl.setText(os.path.basename(path))
+            self._tree_subtitle_lbl.setToolTip(path)
 
         dirs = reader.directories
         self._stats_lbl.setText(

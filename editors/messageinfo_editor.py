@@ -16,8 +16,11 @@ from PyQt6.QtGui import QFont
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_accent_sep, ss_input, ss_table, ss_textedit, ss_progressbar,
-    ss_scrollarea_transparent,
+    ss_bg_dark, ss_bg_panel, ss_btn, ss_accent_sep, ss_dim_label,
+    ss_file_label, ss_main_label, ss_input, ss_table, ss_textedit, ss_progressbar,
+    ss_scrollarea_transparent, ss_field_label, ss_search, ss_sep,
+    ss_sidebar_btn, ss_sidebar_frame, ss_transparent,
+    make_editor_card, make_editor_field_shell, add_editor_card_title, make_empty_state,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
 from core.editor_file_state import set_file_label, set_file_label_empty
@@ -131,7 +134,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            w = item.widget()
+            w.hide()
+            w.setParent(None)
+            w.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -356,11 +362,12 @@ class MessageInfoEditor(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+        self.setStyleSheet(ss_bg_dark())
 
         # Toolbar — identical structure to CharacterStatsEditor
         top = QFrame()
         top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(f"background-color: {P['bg_panel']};")
+        top.setStyleSheet(ss_bg_panel())
         tl = QHBoxLayout(top)
         tl.setContentsMargins(12, 8, 12, 8)
         tl.setSpacing(4)
@@ -382,12 +389,15 @@ class MessageInfoEditor(QWidget):
 
         self._file_lbl = QLabel(ui_text("ui_btladjprm_no_file_loaded"))
         self._file_lbl.setFont(QFont("Consolas", 12))
-        self._file_lbl.setStyleSheet(f"color: {P['text_dim']};")
+        self._file_lbl.setMinimumWidth(0)
+        self._file_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._file_lbl.setStyleSheet(ss_file_label())
         tl.addWidget(self._file_lbl, 1)
 
         self._process_combo = QComboBox()
         self._process_combo.setFixedHeight(TOOLBAR_BTN_H)
-        self._process_combo.setFixedWidth(220)
+        self._process_combo.setFixedWidth(160)
+        self._process_combo.setMinimumWidth(0)
         self._process_combo.setFont(QFont("Segoe UI", 9))
         self._process_combo.setStyleSheet(ss_input())
         self._process_combo.currentIndexChanged.connect(lambda _idx: self._update_capture_buttons())
@@ -395,6 +405,7 @@ class MessageInfoEditor(QWidget):
 
         self._btn_refresh_processes = QPushButton(ui_text("ui_messageinfo_refresh_processes"))
         self._btn_refresh_processes.setFixedHeight(TOOLBAR_BTN_H)
+        self._btn_refresh_processes.setFixedWidth(82)
         self._btn_refresh_processes.setFont(QFont("Segoe UI", 9))
         self._btn_refresh_processes.setStyleSheet(ss_btn())
         self._btn_refresh_processes.clicked.connect(self._refresh_processes)
@@ -402,6 +413,7 @@ class MessageInfoEditor(QWidget):
 
         self._btn_scan_now = QPushButton(ui_text("ui_messageinfo_scan_now"))
         self._btn_scan_now.setFixedHeight(TOOLBAR_BTN_H)
+        self._btn_scan_now.setFixedWidth(92)
         self._btn_scan_now.setFont(QFont("Segoe UI", 9))
         self._btn_scan_now.setStyleSheet(ss_btn())
         self._btn_scan_now.clicked.connect(self._scan_now)
@@ -409,6 +421,7 @@ class MessageInfoEditor(QWidget):
 
         self._btn_start_capture = QPushButton(ui_text("ui_messageinfo_start_capture"))
         self._btn_start_capture.setFixedHeight(TOOLBAR_BTN_H)
+        self._btn_start_capture.setFixedWidth(126)
         self._btn_start_capture.setFont(QFont("Segoe UI", 9))
         self._btn_start_capture.setStyleSheet(ss_btn(accent=True))
         self._btn_start_capture.clicked.connect(self._start_capture)
@@ -416,6 +429,7 @@ class MessageInfoEditor(QWidget):
 
         self._btn_stop_capture = QPushButton(ui_text("ui_messageinfo_stop_capture"))
         self._btn_stop_capture.setFixedHeight(TOOLBAR_BTN_H)
+        self._btn_stop_capture.setFixedWidth(58)
         self._btn_stop_capture.setFont(QFont("Segoe UI", 9))
         self._btn_stop_capture.setStyleSheet(ss_btn())
         self._btn_stop_capture.clicked.connect(self._stop_capture)
@@ -423,7 +437,10 @@ class MessageInfoEditor(QWidget):
 
         self._capture_status = QLabel("")
         self._capture_status.setFont(QFont("Consolas", 10))
-        self._capture_status.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        self._capture_status.setMinimumWidth(0)
+        self._capture_status.setMaximumWidth(190)
+        self._capture_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._capture_status.setStyleSheet(ss_dim_label())
         tl.addWidget(self._capture_status)
 
         root.addWidget(top)
@@ -445,7 +462,7 @@ class MessageInfoEditor(QWidget):
         # Left sidebar
         list_frame = QFrame()
         list_frame.setFixedWidth(260)
-        list_frame.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; }}")
+        list_frame.setStyleSheet(ss_sidebar_frame())
         list_vlayout = QVBoxLayout(list_frame)
         list_vlayout.setContentsMargins(8, 8, 8, 4)
         list_vlayout.setSpacing(4)
@@ -454,16 +471,13 @@ class MessageInfoEditor(QWidget):
         self._search_entry.setPlaceholderText(ui_text("ui_damageeff_search"))
         self._search_entry.setFixedHeight(32)
         self._search_entry.setFont(QFont("Segoe UI", 13))
-        self._search_entry.setStyleSheet(
-            f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-            f"color: {P['text_main']}; padding: 2px 6px; border-radius: 4px; }}"
-        )
+        self._search_entry.setStyleSheet(ss_search())
         self._search_entry.textChanged.connect(self._filter_list)
         list_vlayout.addWidget(self._search_entry)
 
         # Action buttons — same layout as CharacterStatsEditor
         actions_frame = QWidget()
-        actions_frame.setStyleSheet("background: transparent;")
+        actions_frame.setStyleSheet(ss_transparent())
         actions_layout = QHBoxLayout(actions_frame)
         actions_layout.setContentsMargins(0, 2, 0, 4)
         actions_layout.setSpacing(4)
@@ -500,9 +514,11 @@ class MessageInfoEditor(QWidget):
         self._char_scroll = QScrollArea()
         self._char_scroll.setWidgetResizable(True)
         self._char_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._char_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._char_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._char_list_widget = QWidget()
-        self._char_list_widget.setStyleSheet("background-color: transparent;")
+        self._char_list_widget.setMinimumWidth(0)
+        self._char_list_widget.setStyleSheet(ss_transparent())
         self._char_list_layout = QVBoxLayout(self._char_list_widget)
         self._char_list_layout.setContentsMargins(0, 0, 0, 0)
         self._char_list_layout.setSpacing(1)
@@ -514,12 +530,12 @@ class MessageInfoEditor(QWidget):
 
         divider = QFrame()
         divider.setFixedWidth(1)
-        divider.setStyleSheet(f"background-color: {P['mid']};")
+        divider.setStyleSheet(ss_sep())
         main_layout.addWidget(divider)
 
         # Right panel container (header + virtualized table/detail editor)
         right_container = QWidget()
-        right_container.setStyleSheet(f"background-color: {P['bg_dark']};")
+        right_container.setStyleSheet(ss_bg_dark())
         right_vlayout = QVBoxLayout(right_container)
         right_vlayout.setContentsMargins(0, 0, 0, 0)
         right_vlayout.setSpacing(0)
@@ -527,14 +543,14 @@ class MessageInfoEditor(QWidget):
         # Persistent header: character title + entry search
         right_header = QFrame()
         right_header.setFixedHeight(46)
-        right_header.setStyleSheet(f"background-color: {P['bg_panel']};")
+        right_header.setStyleSheet(ss_bg_panel())
         rh_layout = QHBoxLayout(right_header)
         rh_layout.setContentsMargins(16, 8, 12, 8)
         rh_layout.setSpacing(10)
 
         self._right_title_lbl = QLabel("")
         self._right_title_lbl.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        self._right_title_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+        self._right_title_lbl.setStyleSheet(ss_main_label())
         rh_layout.addWidget(self._right_title_lbl, 1)
 
         self._entry_search = QLineEdit()
@@ -542,11 +558,7 @@ class MessageInfoEditor(QWidget):
         self._entry_search.setFixedHeight(30)
         self._entry_search.setFixedWidth(220)
         self._entry_search.setFont(QFont("Segoe UI", 10))
-        self._entry_search.setStyleSheet(
-            f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-            f"color: {P['text_main']}; padding: 2px 8px; border-radius: 4px; }}"
-            f"QLineEdit:focus {{ border: 1px solid {P['accent']}; }}"
-        )
+        self._entry_search.setStyleSheet(ss_search())
         self._entry_search.textChanged.connect(lambda _: self._entry_search_timer.start())
         rh_layout.addWidget(self._entry_search)
 
@@ -554,11 +566,12 @@ class MessageInfoEditor(QWidget):
 
         rh_sep = QFrame()
         rh_sep.setFixedHeight(1)
-        rh_sep.setStyleSheet(f"background-color: {P['mid']};")
+        rh_sep.setStyleSheet(ss_sep())
         right_vlayout.addWidget(rh_sep)
 
         self._editor_widget = QWidget()
-        self._editor_widget.setStyleSheet(f"background-color: {P['bg_dark']};")
+        self._editor_widget.setMinimumWidth(0)
+        self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
         self._editor_layout.setContentsMargins(0, 0, 0, 0)
         self._editor_layout.setSpacing(0)
@@ -574,12 +587,15 @@ class MessageInfoEditor(QWidget):
         self._table_model = None
         self._proxy_model = None
         self._detail_widgets = []
-        lbl = QLabel(text)
-        lbl.setFont(QFont("Segoe UI", 16))
-        lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title = ui_text("no_file_loaded") if self._filepath is None else ui_text("ui_model_viewer_select_item")
+        card = make_empty_state(
+            self._editor_widget,
+            title=title,
+            text=text,
+            icon_name="fa6s.message",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(lbl)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     # Character list (left panel)
@@ -617,11 +633,7 @@ class MessageInfoEditor(QWidget):
         btn = QPushButton()
         btn.setFixedHeight(44)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet(
-            f"QPushButton {{ background-color: transparent; border-radius: 6px; "
-            f"text-align: left; padding: 0px; border: none; }} "
-            f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
-        )
+        btn.setStyleSheet(ss_sidebar_btn(selected=False))
 
         inner = QVBoxLayout(btn)
         inner.setContentsMargins(10, 3, 10, 3)
@@ -629,13 +641,13 @@ class MessageInfoEditor(QWidget):
 
         name_lbl = QLabel(_scope_label(char_id))
         name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        name_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        name_lbl.setStyleSheet(ss_main_label())
         name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         inner.addWidget(name_lbl)
 
         count_lbl = QLabel(ui_text("ui_messageinfo_value_entries", p0=count))
         count_lbl.setFont(QFont("Consolas", 11))
-        count_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        count_lbl.setStyleSheet(ss_dim_label())
         count_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         inner.addWidget(count_lbl)
 
@@ -644,18 +656,7 @@ class MessageInfoEditor(QWidget):
 
     def _update_char_button_styles(self):
         for btn, cid in self._char_buttons:
-            if cid == self._current_char_id:
-                btn.setStyleSheet(
-                    f"QPushButton {{ background-color: {P['bg_card']}; border-radius: 6px; "
-                    f"text-align: left; padding: 0px; border: none; }} "
-                    f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
-                )
-            else:
-                btn.setStyleSheet(
-                    f"QPushButton {{ background-color: transparent; border-radius: 6px; "
-                    f"text-align: left; padding: 0px; border: none; }} "
-                    f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
-                )
+            btn.setStyleSheet(ss_sidebar_btn(selected=(cid == self._current_char_id)))
 
     def _filter_list(self):
         self._populate_char_list(self._search_entry.text())
@@ -676,269 +677,6 @@ class MessageInfoEditor(QWidget):
         self._update_char_button_styles()
         self._build_entries_panel(char_id)
 
-    # Entries panel (right panel)
-
-    _PAGE_SIZE = 100
-
-    def _build_entries_panel(self, char_id: int):
-        _clear_layout(self._editor_layout)
-        self._card_widgets = []
-        self._load_more_btn = None
-        self._cards_layout = None
-        self._all_char_entries = []
-        self._loaded_count = 0
-
-        self._right_title_lbl.setText(_char_label(char_id))
-
-        char_entries = [(i, self._entries[i]) for i in range(len(self._entries))
-                        if self._entries[i]["char_id"] == char_id]
-
-        if not char_entries:
-            lbl = QLabel(ui_text("ui_messageinfo_no_entries_for_this_character"))
-            lbl.setFont(QFont("Segoe UI", 13))
-            lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._editor_layout.addStretch()
-            self._editor_layout.addWidget(lbl)
-            self._editor_layout.addStretch()
-            return
-
-        self._all_char_entries = char_entries
-
-        container = QWidget()
-        container.setStyleSheet(f"background-color: {P['bg_dark']};")
-        container_layout = QVBoxLayout(container)
-        container_layout.setContentsMargins(16, 4, 16, 16)
-        container_layout.setSpacing(8)
-        self._cards_layout = container_layout
-
-        self._editor_layout.addWidget(container)
-        self._editor_layout.addStretch()
-
-        self._render_next_page()
-
-    def _render_next_page(self):
-        if self._cards_layout is None:
-            return
-        start = self._loaded_count
-        end = min(start + self._PAGE_SIZE, len(self._all_char_entries))
-
-        # Remove old "Load more" button before appending new cards
-        if self._load_more_btn is not None:
-            self._cards_layout.removeWidget(self._load_more_btn)
-            self._load_more_btn.deleteLater()
-            self._load_more_btn = None
-
-        for pos in range(start, end):
-            entry_idx, entry = self._all_char_entries[pos]
-            card = self._make_entry_card(entry_idx, entry)
-            self._cards_layout.addWidget(card)
-            self._card_widgets.append((entry_idx, card))
-
-        self._loaded_count = end
-        remaining = len(self._all_char_entries) - end
-
-        if remaining > 0:
-            batch = min(remaining, self._PAGE_SIZE)
-            self._load_more_btn = QPushButton(
-                ui_text("ui_messageinfo_load_value_more_value_remaining", p0=batch, p1=remaining)
-            )
-            self._load_more_btn.setFixedHeight(34)
-            self._load_more_btn.setFont(QFont("Segoe UI", 10))
-            self._load_more_btn.setStyleSheet(ss_btn())
-            self._load_more_btn.clicked.connect(self._render_next_page)
-            self._cards_layout.addWidget(self._load_more_btn)
-
-    def _make_entry_card(self, entry_idx: int, entry: dict) -> QFrame:
-        card = QFrame()
-        card.setObjectName(ui_text("ui_messageinfo_entrycard"))
-        card.setStyleSheet(
-            f"QFrame#entryCard {{ background-color: {P['bg_panel']}; border-radius: 8px; "
-            f"border: 1px solid {P['border']}; }}"
-        )
-
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(14, 10, 14, 10)
-        card_layout.setSpacing(6)
-
-        def on_select(idx=entry_idx, c=card):
-            self._select_card(idx, c)
-
-        # Fields row
-        fields_w = QWidget()
-        fields_w.setStyleSheet("background: transparent;")
-        fields_layout = QGridLayout(fields_w)
-        fields_layout.setContentsMargins(0, 0, 0, 0)
-        fields_layout.setHorizontalSpacing(12)
-        fields_layout.setVerticalSpacing(4)
-        fields_layout.setColumnStretch(0, 2)
-        fields_layout.setColumnStretch(1, 1)
-        fields_layout.setColumnStretch(2, 1)
-        fields_layout.setColumnStretch(3, 1)
-
-        def make_field(label_text, value_str, col, read_only=False, accent=False):
-            f = QWidget()
-            f.setStyleSheet("background: transparent;")
-            fl = QVBoxLayout(f)
-            fl.setContentsMargins(0, 0, 0, 0)
-            fl.setSpacing(2)
-            lbl = QLabel(label_text)
-            lbl.setFont(QFont("Segoe UI", 11))
-            lbl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
-            fl.addWidget(lbl)
-            fg = P['accent'] if accent else P['text_main']
-            if read_only:
-                e = QLineEdit(value_str)
-                e.setReadOnly(True)
-            else:
-                e = _FocusLineEdit(on_select, value_str)
-            e.setFixedHeight(28)
-            e.setFont(QFont("Consolas", 12))
-            e.setStyleSheet(
-                f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-                f"color: {fg}; padding: 2px 6px; border-radius: 4px; }}"
-            )
-            fl.addWidget(e)
-            fields_layout.addWidget(f, 0, col)
-            return e
-
-        e_crc  = make_field(ui_text("ui_messageinfo_crc32_id"), f"{entry['crc32_id']:08X}", 0, accent=True)
-        e_char = make_field(ui_text("ui_assist_char_id"),  str(entry["char_id"]),       1)
-        e_cue  = make_field(ui_text("ui_messageinfo_cue_id"),   str(entry["cue_id"]),        2)
-        type_str = ui_text("ui_messageinfo_reference") if entry["is_ref"] == 1 else ui_text("ui_mainmodeparam_normal")
-        make_field(ui_text("ui_dlcinfoparam_type"), type_str, 3, read_only=True)
-
-        card_layout.addWidget(fields_w)
-
-        # Ref CRC32 row — show for reference entries or when non-zero
-        e_ref = None
-        if entry["is_ref"] == 1 or entry.get("ref_crc32", 0):
-            ref_w = QWidget()
-            ref_w.setStyleSheet("background: transparent;")
-            ref_wl = QVBoxLayout(ref_w)
-            ref_wl.setContentsMargins(0, 0, 0, 0)
-            ref_wl.setSpacing(2)
-            ref_lbl = QLabel(ui_text("ui_messageinfo_ref_crc32"))
-            ref_lbl.setFont(QFont("Segoe UI", 11))
-            ref_lbl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
-            ref_wl.addWidget(ref_lbl)
-            e_ref = _FocusLineEdit(on_select, f"{entry['ref_crc32']:08X}" if entry.get("ref_crc32") else "00000000")
-            e_ref.setFixedHeight(28)
-            e_ref.setFont(QFont("Consolas", 12))
-            e_ref.setStyleSheet(
-                f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-                f"color: {P['secondary']}; padding: 2px 6px; border-radius: 4px; }}"
-            )
-            ref_wl.addWidget(e_ref)
-            card_layout.addWidget(ref_w)
-
-        # Message text area
-        msg_lbl = QLabel(ui_text("ui_messageinfo_message"))
-        msg_lbl.setFont(QFont("Segoe UI", 11))
-        msg_lbl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
-        card_layout.addWidget(msg_lbl)
-
-        msg_edit = _FocusTextEdit(on_select)
-        msg_edit.setFont(QFont("Segoe UI", 10))
-        msg_edit.setStyleSheet(
-            f"QTextEdit {{ background-color: {P['bg_card']}; color: {P['text_main']}; "
-            f"border: 1px solid {P['border']}; border-radius: 4px; padding: 4px; }}"
-            f"QTextEdit:focus {{ border: 1px solid {P['accent']}; }}"
-        )
-        msg_edit.setPlainText(entry["message"])
-        msg_edit.setFixedHeight(72)
-        card_layout.addWidget(msg_edit)
-
-        # Auto-save connections
-        def _crc_changed(text, idx=entry_idx):
-            try:
-                self._entries[idx]["crc32_id"] = int(text.strip() or "0", 16) & 0xFFFFFFFF
-                self._mark_dirty()
-            except ValueError:
-                pass
-
-        def _char_changed(text, idx=entry_idx):
-            try:
-                self._entries[idx]["char_id"] = int(text.strip())
-                self._mark_dirty()
-            except ValueError:
-                pass
-
-        def _cue_changed(text, idx=entry_idx):
-            try:
-                self._entries[idx]["cue_id"] = int(text.strip())
-                self._mark_dirty()
-            except ValueError:
-                pass
-
-        def _ref_changed(text, idx=entry_idx):
-            try:
-                self._entries[idx]["ref_crc32"] = int(text.strip() or "0", 16) & 0xFFFFFFFF
-                self._mark_dirty()
-            except ValueError:
-                pass
-
-        def _msg_changed(idx=entry_idx):
-            self._entries[idx]["message"] = msg_edit.toPlainText()
-            self._mark_dirty()
-
-        e_crc.textChanged.connect(_crc_changed)
-        e_char.textChanged.connect(_char_changed)
-        e_cue.textChanged.connect(_cue_changed)
-        if e_ref is not None:
-            e_ref.textChanged.connect(_ref_changed)
-        msg_edit.textChanged.connect(_msg_changed)
-
-        # Per-card action buttons
-        btn_row = QWidget()
-        btn_row.setStyleSheet("background: transparent;")
-        btn_row_layout = QHBoxLayout(btn_row)
-        btn_row_layout.setContentsMargins(0, 4, 0, 0)
-        btn_row_layout.setSpacing(4)
-
-        _btn_font = QFont("Segoe UI", 9)
-
-        card_add_btn = QPushButton(ui_text("ui_messageinfo_add"))
-        card_add_btn.setFixedHeight(24)
-        card_add_btn.setFont(_btn_font)
-        card_add_btn.setStyleSheet(ss_btn())
-        card_add_btn.clicked.connect(lambda checked=False, idx=entry_idx: self._card_add_entry(idx))
-        btn_row_layout.addWidget(card_add_btn)
-
-        card_dup_btn = QPushButton(ui_text("btn_dup_short"))
-        card_dup_btn.setFixedHeight(24)
-        card_dup_btn.setFont(_btn_font)
-        card_dup_btn.setStyleSheet(ss_btn())
-        card_dup_btn.clicked.connect(lambda checked=False, idx=entry_idx: self._card_dup_entry(idx))
-        btn_row_layout.addWidget(card_dup_btn)
-
-        card_del_btn = QPushButton(ui_text("btn_delete"))
-        card_del_btn.setFixedHeight(24)
-        card_del_btn.setFont(_btn_font)
-        card_del_btn.setStyleSheet(ss_btn(danger=True))
-        card_del_btn.clicked.connect(lambda checked=False, idx=entry_idx: self._card_delete_entry(idx))
-        btn_row_layout.addWidget(card_del_btn)
-
-        btn_row_layout.addStretch()
-        card_layout.addWidget(btn_row)
-
-        card.mousePressEvent = lambda ev, idx=entry_idx, c=card: self._select_card(idx, c)
-        return card
-
-    def _select_card(self, entry_idx: int, card: QFrame):
-        for _, c in self._card_widgets:
-            c.setStyleSheet(
-                f"QFrame#entryCard {{ background-color: {P['bg_panel']}; border-radius: 8px; "
-                f"border: 1px solid {P['border']}; }}"
-            )
-        self._selected_entry_idx = entry_idx
-        card.setStyleSheet(
-            f"QFrame#entryCard {{ background-color: {P['bg_card']}; border-radius: 8px; "
-            f"border: 2px solid {P['accent']}; }}"
-        )
-        self._dup_btn.setEnabled(True)
-        self._del_btn.setEnabled(True)
-
     # Virtualized entries panel (overrides the legacy paged-card renderer above)
 
     def _entry_indices_for_scope(self, scope) -> list[int]:
@@ -958,7 +696,8 @@ class MessageInfoEditor(QWidget):
             return
 
         panel = QWidget()
-        panel.setStyleSheet(f"background-color: {P['bg_dark']};")
+        panel.setMinimumWidth(0)
+        panel.setStyleSheet(ss_bg_dark())
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(12, 10, 12, 12)
         panel_layout.setSpacing(8)
@@ -1002,48 +741,46 @@ class MessageInfoEditor(QWidget):
         self._entries_table = None
         self._table_model = None
         self._proxy_model = None
-        lbl = QLabel(ui_text("ui_messageinfo_no_entries_for_this_character"))
-        lbl.setFont(QFont("Segoe UI", 13))
-        lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = make_empty_state(
+            self._editor_widget,
+            title=ui_text("ui_messageinfo_message"),
+            text=ui_text("ui_messageinfo_no_entries_for_this_character"),
+            icon_name="fa6s.message",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(lbl)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     def _make_detail_panel(self, parent=None) -> QFrame:
-        detail = QFrame(parent)
-        detail.setStyleSheet(
-            f"QFrame {{ background-color: {P['bg_panel']}; border: 1px solid {P['border']}; "
-            f"border-radius: 8px; }}"
-        )
-        layout = QVBoxLayout(detail)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(8)
+        detail, layout = make_editor_card(parent, margins=(14, 12, 14, 12), spacing=9)
+        add_editor_card_title(layout, ui_text("ui_messageinfo_message"), "fa6s.message", ui_text("ui_messageinfo_string_id"))
 
         fields = QWidget(detail)
-        fields.setStyleSheet("background: transparent;")
+        fields.setMinimumWidth(0)
+        fields.setStyleSheet(ss_transparent())
         fields_layout = QGridLayout(fields)
         fields_layout.setContentsMargins(0, 0, 0, 0)
         fields_layout.setHorizontalSpacing(10)
         fields_layout.setVerticalSpacing(6)
 
-        def make_field(label_text: str, col: int, read_only: bool = False) -> QLineEdit:
-            box = QWidget(fields)
-            box.setStyleSheet("background: transparent;")
-            box_layout = QVBoxLayout(box)
-            box_layout.setContentsMargins(0, 0, 0, 0)
-            box_layout.setSpacing(2)
-            lbl = QLabel(label_text, box)
-            lbl.setFont(QFont("Segoe UI", 10))
-            lbl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
-            box_layout.addWidget(lbl)
+        cols = 3 if self.width() < 980 else 6
+
+        def make_field(label_text: str, idx: int, read_only: bool = False) -> QLineEdit:
+            box, box_layout, _label, _hint = make_editor_field_shell(
+                label_text,
+                label_font_size=10,
+                spacing=2,
+            )
             edit = QLineEdit(box)
             edit.setFixedHeight(28)
             edit.setFont(QFont("Consolas", 11))
             edit.setReadOnly(read_only)
             edit.setStyleSheet(ss_input())
+            edit.setMinimumWidth(0)
             box_layout.addWidget(edit)
-            fields_layout.addWidget(box, 0, col)
+            row = idx // cols
+            col = idx % cols
+            fields_layout.addWidget(box, row, col)
             fields_layout.setColumnStretch(col, 1)
             self._detail_widgets.append(edit)
             return edit
@@ -1058,7 +795,7 @@ class MessageInfoEditor(QWidget):
 
         msg_lbl = QLabel(ui_text("ui_messageinfo_message"), detail)
         msg_lbl.setFont(QFont("Segoe UI", 10))
-        msg_lbl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
+        msg_lbl.setStyleSheet(ss_field_label())
         layout.addWidget(msg_lbl)
 
         self._detail_message = QTextEdit(detail)
@@ -1069,7 +806,7 @@ class MessageInfoEditor(QWidget):
         self._detail_widgets.append(self._detail_message)
 
         btn_row = QWidget(detail)
-        btn_row.setStyleSheet("background: transparent;")
+        btn_row.setStyleSheet(ss_transparent())
         btn_layout = QHBoxLayout(btn_row)
         btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_layout.setSpacing(4)
@@ -1148,6 +885,11 @@ class MessageInfoEditor(QWidget):
         )
         self._detail_ref.setText(f"{entry['ref_crc32']:08X}" if entry.get("ref_crc32") else "00000000")
         self._detail_message.setPlainText(entry["message"])
+        for edit in (
+            self._detail_string, self._detail_crc, self._detail_char,
+            self._detail_cue, self._detail_type, self._detail_ref,
+        ):
+            edit.setCursorPosition(0)
         self._loading_detail = False
         self._set_detail_enabled(True)
 
@@ -1317,82 +1059,6 @@ class MessageInfoEditor(QWidget):
             self._select_char(self._char_buttons[0][1])
         else:
             self._show_placeholder(ui_text("ui_messageinfo_select_a_character"))
-
-    # Per-card CRUD (operates on individual entries)
-
-    def _scroll_to_entry(self, global_idx: int):
-        """Load pages as needed and scroll the right panel to the given entry."""
-        char_pos = next(
-            (pos for pos, (idx, _) in enumerate(self._all_char_entries) if idx == global_idx),
-            None,
-        )
-        if char_pos is None:
-            return
-        while self._loaded_count <= char_pos and self._loaded_count < len(self._all_char_entries):
-            self._render_next_page()
-        if char_pos < len(self._card_widgets):
-            _, card = self._card_widgets[char_pos]
-            QTimer.singleShot(60, lambda c=card: self._editor_scroll.ensureWidgetVisible(c))
-
-    def _card_add_entry(self, after_idx: int):
-        """Insert a new blank entry after the card at after_idx."""
-        char_id = self._entries[after_idx]["char_id"]
-        new_entry = {
-            "crc32_id": 0,
-            "unk1": 0, "unk2": 0, "unk3": 0,
-            "message": "",
-            "ref_crc32": 0,
-            "is_ref": -1,
-            "char_id": char_id,
-            "cue_id": -1,
-            "unk6": -1,
-            "unk7": 0,
-        }
-        insert_pos = after_idx + 1
-        self._entries.insert(insert_pos, new_entry)
-        self._orig_entries.insert(insert_pos, dict(new_entry))
-        self._mark_dirty()
-        self._populate_char_list(self._search_entry.text())
-        self._build_entries_panel(char_id)
-        self._scroll_to_entry(insert_pos)
-
-    def _card_dup_entry(self, entry_idx: int):
-        """Duplicate the entry at entry_idx and insert it after."""
-        src = self._entries[entry_idx]
-        char_id = src["char_id"]
-        dup = copy.deepcopy(src)
-        insert_pos = entry_idx + 1
-        self._entries.insert(insert_pos, dup)
-        self._orig_entries.insert(insert_pos, copy.deepcopy(dup))
-        self._mark_dirty()
-        self._populate_char_list(self._search_entry.text())
-        self._build_entries_panel(char_id)
-        self._scroll_to_entry(insert_pos)
-
-    def _card_delete_entry(self, entry_idx: int):
-        """Delete the entry at entry_idx."""
-        char_id = self._entries[entry_idx]["char_id"]
-        ans = QMessageBox.question(
-            self, ui_text("ui_messageinfo_confirm"), ui_text("ui_messageinfo_delete_this_entry"),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if ans != QMessageBox.StandardButton.Yes:
-            return
-        del self._entries[entry_idx]
-        if entry_idx < len(self._orig_entries):
-            del self._orig_entries[entry_idx]
-        if self._selected_entry_idx == entry_idx:
-            self._selected_entry_idx = None
-            self._dup_btn.setEnabled(False)
-            self._del_btn.setEnabled(False)
-        self._mark_dirty()
-        self._populate_char_list(self._search_entry.text())
-        if char_id in self._get_char_groups():
-            self._build_entries_panel(char_id)
-        else:
-            self._current_char_id = None
-            self._show_placeholder(ui_text("ui_messageinfo_select_a_character"))
-            self._update_char_button_styles()
 
     def _detail_add_entry(self):
         if self._selected_entry_idx is None:
@@ -1638,7 +1304,8 @@ class MessageInfoEditor(QWidget):
         self._proxy_model = None
 
         shell = QWidget()
-        shell.setStyleSheet(f"background-color: {P['bg_dark']};")
+        shell.setMinimumWidth(0)
+        shell.setStyleSheet(ss_bg_dark())
         shell_layout = QVBoxLayout(shell)
         shell_layout.setContentsMargins(12, 10, 12, 12)
         shell_layout.setSpacing(8)
@@ -1650,26 +1317,12 @@ class MessageInfoEditor(QWidget):
         progress.setStyleSheet(ss_progressbar())
         shell_layout.addWidget(progress)
 
-        table_shell = QFrame(shell)
-        table_shell.setStyleSheet(
-            f"QFrame {{ background-color: {P['bg_panel']}; border: 1px solid {P['border']}; "
-            f"border-radius: 8px; }}"
-        )
-        table_layout = QVBoxLayout(table_shell)
-        table_layout.setContentsMargins(12, 12, 12, 12)
-        table_layout.setSpacing(8)
+        table_shell, table_layout = make_editor_card(shell, margins=(12, 12, 12, 12), spacing=8)
         for _ in range(12):
             table_layout.addWidget(SkeletonBar(table_shell, height=18, corner_radius=4))
         shell_layout.addWidget(table_shell, 1)
 
-        detail_shell = QFrame(shell)
-        detail_shell.setStyleSheet(
-            f"QFrame {{ background-color: {P['bg_panel']}; border: 1px solid {P['border']}; "
-            f"border-radius: 8px; }}"
-        )
-        detail_layout = QVBoxLayout(detail_shell)
-        detail_layout.setContentsMargins(12, 12, 12, 12)
-        detail_layout.setSpacing(8)
+        detail_shell, detail_layout = make_editor_card(shell, margins=(12, 12, 12, 12), spacing=8)
         detail_layout.addWidget(SkeletonBar(detail_shell, height=28, corner_radius=4))
         detail_layout.addWidget(SkeletonBar(detail_shell, height=92, corner_radius=4))
         shell_layout.addWidget(detail_shell)

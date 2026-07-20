@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -25,22 +26,23 @@ from core.style_helpers import (
     TOOLBAR_BTN_H,
     TOOLBAR_H,
     ss_accent_sep,
+    ss_bg_dark,
     ss_bg_panel,
     ss_btn,
     ss_dim_label,
-    ss_editor_card,
     ss_error_label,
-    ss_field_label,
     ss_file_label,
     ss_input,
     ss_main_label,
-    ss_placeholder,
     ss_scrollarea,
     ss_scrollarea_transparent,
     ss_search,
     ss_sep,
     ss_sidebar_btn,
+    ss_sidebar_frame,
     ss_transparent,
+    make_editor_card, make_empty_state, make_editor_field_shell,
+    add_editor_card_title,
 )
 from parsers.gimmickdmgparam_parser import (
     FIELD_SPECS,
@@ -60,6 +62,8 @@ def _clear_layout(layout):
         widget = item.widget()
         child_layout = item.layout()
         if widget is not None:
+            widget.hide()
+            widget.setParent(None)
             widget.deleteLater()
         elif child_layout is not None:
             _clear_layout(child_layout)
@@ -144,7 +148,7 @@ class GimmickDmgParamEditor(QWidget):
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
-        self._editor_widget.setStyleSheet(ss_transparent())
+        self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
         self._editor_layout.setContentsMargins(12, 12, 12, 12)
         self._editor_layout.setSpacing(10)
@@ -157,7 +161,7 @@ class GimmickDmgParamEditor(QWidget):
     def _build_sidebar(self, parent, main_layout):
         side = QFrame(parent)
         side.setFixedWidth(260)
-        side.setStyleSheet(ss_bg_panel())
+        side.setStyleSheet(ss_sidebar_frame())
         side_layout = QVBoxLayout(side)
         side_layout.setContentsMargins(8, 8, 8, 4)
         side_layout.setSpacing(4)
@@ -196,7 +200,9 @@ class GimmickDmgParamEditor(QWidget):
         self._entry_scroll.setWidgetResizable(True)
         self._entry_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._entry_scroll.setStyleSheet(ss_scrollarea_transparent())
+        self._entry_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._entry_list_widget = QWidget()
+        self._entry_list_widget.setMinimumWidth(0)
         self._entry_list_widget.setStyleSheet(ss_transparent())
         self._entry_list_layout = QVBoxLayout(self._entry_list_widget)
         self._entry_list_layout.setContentsMargins(0, 0, 0, 0)
@@ -210,11 +216,15 @@ class GimmickDmgParamEditor(QWidget):
         _clear_layout(self._editor_layout)
         self._header_fields = {}
         self._record_fields = {}
-        label = QLabel(self.t("ui_gimmickdmg_open_file_to_begin_editing"), self._editor_widget)
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setFont(QFont("Segoe UI", 16))
-        label.setStyleSheet(ss_placeholder())
-        self._editor_layout.addWidget(label, 1)
+        card = make_empty_state(
+            self._editor_widget,
+            title=self.t("no_file_loaded"),
+            text=self.t("ui_gimmickdmg_open_file_to_begin_editing"),
+            icon_name="fa6s.bomb",
+        )
+        self._editor_layout.addStretch(1)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
+        self._editor_layout.addStretch(1)
 
     def _load_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -303,12 +313,14 @@ class GimmickDmgParamEditor(QWidget):
         title_label = QLabel(title, inner)
         title_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         title_label.setStyleSheet(ss_main_label())
+        title_label.setMinimumWidth(0)
         layout.addWidget(title_label)
 
         subtitle = entry.damage_id or self.t("ui_gimmickdmg_blank_damage")
         sub_label = QLabel(self.t("ui_gimmickdmg_entry_subtitle", index=idx, damage=subtitle), inner)
         sub_label.setFont(QFont("Consolas", 10))
         sub_label.setStyleSheet(ss_dim_label())
+        sub_label.setMinimumWidth(0)
         layout.addWidget(sub_label)
 
         outer = QHBoxLayout(btn)
@@ -344,48 +356,29 @@ class GimmickDmgParamEditor(QWidget):
         self._filter_entries()
 
     def _make_editor_card(self, margins=(16, 14, 16, 14), spacing=10):
-        card = QFrame(self._editor_widget)
-        card.setObjectName("EditorCard")
-        card.setStyleSheet(ss_editor_card())
-        inner = QWidget(card)
-        inner.setStyleSheet(ss_transparent())
-        layout = QVBoxLayout(inner)
-        layout.setContentsMargins(*margins)
-        layout.setSpacing(spacing)
-        outer = QVBoxLayout(card)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(inner)
-        return card, layout
+        return make_editor_card(self._editor_widget, margins=margins, spacing=spacing)
 
-    def _add_title(self, layout, title_key, hint_key=None):
-        title = QLabel(self.t(title_key), self._editor_widget)
-        title.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
-        title.setStyleSheet(ss_main_label())
-        layout.addWidget(title)
-        if hint_key:
-            hint = QLabel(self.t(hint_key), self._editor_widget)
-            hint.setWordWrap(True)
-            hint.setFont(QFont("Segoe UI", 10))
-            hint.setStyleSheet(ss_dim_label())
-            layout.addWidget(hint)
+    def _add_title(self, layout, title_key, hint_key=None, icon_name="fa6s.screwdriver-wrench"):
+        add_editor_card_title(
+            layout,
+            self.t(title_key),
+            icon_name,
+            self.t(hint_key) if hint_key else None,
+        )
 
     def _make_field(self, label_text, value_text, on_change, *, width=None):
-        wrap = QWidget(self._editor_widget)
-        wrap.setStyleSheet(ss_transparent())
-        layout = QVBoxLayout(wrap)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        label = QLabel(label_text, wrap)
-        label.setFont(QFont("Segoe UI", 11))
-        label.setStyleSheet(ss_field_label())
+        wrap, layout, _label, _hint = make_editor_field_shell(label_text, label_font_size=11)
+        wrap.setParent(self._editor_widget)
+        wrap.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         edit = QLineEdit(str(value_text), wrap)
         edit.setFixedHeight(30)
         if width:
             edit.setFixedWidth(width)
         edit.setFont(QFont("Consolas", 12))
         edit.setStyleSheet(ss_input())
+        edit.setMinimumWidth(0)
+        edit.setCursorPosition(0)
         edit.textEdited.connect(on_change)
-        layout.addWidget(label)
         layout.addWidget(edit)
         return wrap, edit
 
@@ -405,12 +398,12 @@ class GimmickDmgParamEditor(QWidget):
 
     def _build_layout_panel(self):
         panel, layout = self._make_editor_card()
-        self._add_title(layout, "ui_gimmickdmg_layout_title", "ui_gimmickdmg_layout_hint")
+        self._add_title(layout, "ui_gimmickdmg_layout_title", "ui_gimmickdmg_layout_hint", "fa6s.layer-group")
         self._editor_layout.addWidget(panel)
 
     def _build_header_panel(self):
         panel, layout = self._make_editor_card()
-        self._add_title(layout, "ui_gimmickdmg_header_title")
+        self._add_title(layout, "ui_gimmickdmg_header_title", icon_name="fa6s.table-list")
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(16)
@@ -425,18 +418,19 @@ class GimmickDmgParamEditor(QWidget):
             ("unknown_08", self.t("ui_gimmickdmg_header_unknown_08"), self._item.unknown_08),
             ("reserved_0c", self.t("ui_gimmickdmg_header_reserved_0c"), self._item.reserved_0c),
         ]
+        cols = 1 if self.width() < 900 else 3
         for idx, (key, label, value) in enumerate(fields):
             wrap, edit = self._make_field(label, value, self._on_header_changed)
             if key == "count":
                 edit.setReadOnly(True)
             self._header_fields[key] = edit
-            grid.addWidget(wrap, idx // 3, idx % 3)
-            grid.setColumnStretch(idx % 3, 1)
+            grid.addWidget(wrap, idx // cols, idx % cols)
+            grid.setColumnStretch(idx % cols, 1)
         self._editor_layout.addWidget(panel)
 
     def _build_record_panel(self, entry):
         panel, layout = self._make_editor_card()
-        self._add_title(layout, "ui_gimmickdmg_record_title", "ui_gimmickdmg_record_hint")
+        self._add_title(layout, "ui_gimmickdmg_record_title", "ui_gimmickdmg_record_hint", "fa6s.pen-to-square")
 
         strings_grid = QGridLayout()
         strings_grid.setContentsMargins(0, 0, 0, 0)
@@ -456,8 +450,15 @@ class GimmickDmgParamEditor(QWidget):
         )
         self._record_fields["stage_id"] = stage_edit
         self._record_fields["damage_id"] = damage_edit
-        strings_grid.addWidget(stage_wrap, 0, 0)
-        strings_grid.addWidget(damage_wrap, 0, 1)
+        if self.width() < 900:
+            strings_grid.addWidget(stage_wrap, 0, 0)
+            strings_grid.addWidget(damage_wrap, 1, 0)
+            strings_grid.setColumnStretch(0, 1)
+        else:
+            strings_grid.addWidget(stage_wrap, 0, 0)
+            strings_grid.addWidget(damage_wrap, 0, 1)
+            strings_grid.setColumnStretch(0, 1)
+            strings_grid.setColumnStretch(1, 1)
 
         warn = QLabel(self.t("ui_gimmickdmg_string_pointer_note"), panel)
         warn.setWordWrap(True)
@@ -471,6 +472,7 @@ class GimmickDmgParamEditor(QWidget):
         raw_grid.setVerticalSpacing(10)
         layout.addLayout(raw_grid)
 
+        cols = 1 if self.width() < 900 else 3
         for idx, (key, offset, kind) in enumerate(FIELD_SPECS):
             word_idx = offset // 4
             raw = entry.words[word_idx]
@@ -478,8 +480,8 @@ class GimmickDmgParamEditor(QWidget):
             label = self.t(f"ui_gimmickdmg_field_{key}")
             wrap, edit = self._make_field(label, value_text, self._on_record_changed)
             self._record_fields[key] = edit
-            raw_grid.addWidget(wrap, idx // 3, idx % 3)
-            raw_grid.setColumnStretch(idx % 3, 1)
+            raw_grid.addWidget(wrap, idx // cols, idx % cols)
+            raw_grid.setColumnStretch(idx % cols, 1)
 
         self._editor_layout.addWidget(panel)
 

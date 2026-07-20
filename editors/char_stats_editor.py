@@ -15,7 +15,7 @@ from core.style_helpers import (
     ss_btn, ss_accent_sep, ss_input, ss_file_label,
     ss_scrollarea, ss_scrollarea_transparent, ss_editor_card, ss_field_label,
     ss_main_label, ss_dim_label, ss_section_label, ss_panel_title,
-    ss_transparent,
+    ss_transparent, make_empty_state,
 )
 from core.editor_file_state import set_file_label, set_file_label_empty
 from core.editor_diff import ChangeItem
@@ -200,13 +200,7 @@ class CharacterStatsEditor(QWidget):
         self._editor_layout.setSpacing(0)
         self._editor_scroll.setWidget(self._editor_widget)
 
-        self._placeholder = QLabel(self.t("placeholder_char_stats"))
-        self._placeholder.setFont(QFont("Segoe UI", 16))
-        self._placeholder.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._editor_layout.addStretch()
-        self._editor_layout.addWidget(self._placeholder)
-        self._editor_layout.addStretch()
+        self._show_placeholder()
 
         main_layout.addWidget(self._editor_scroll, 1)
 
@@ -220,6 +214,18 @@ class CharacterStatsEditor(QWidget):
 
     def _clear_editor(self):
         _clear_layout(self._editor_layout)
+
+    def _show_placeholder(self):
+        self._clear_editor()
+        card = make_empty_state(
+            self._editor_widget,
+            title=self.t("no_file_loaded"),
+            text=self.t("placeholder_char_stats"),
+            icon_name="fa6s.chart-simple",
+        )
+        self._editor_layout.addStretch()
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
+        self._editor_layout.addStretch()
 
     @staticmethod
     def _labels_path(xfbin_path):
@@ -316,14 +322,7 @@ class CharacterStatsEditor(QWidget):
 
     def _on_load_error(self, msg):
         self._clear_char_list()
-        self._clear_editor()
-        self._placeholder = QLabel(self.t("placeholder_char_stats"))
-        self._placeholder.setFont(QFont("Segoe UI", 16))
-        self._placeholder.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._editor_layout.addStretch()
-        self._editor_layout.addWidget(self._placeholder)
-        self._editor_layout.addStretch()
+        self._show_placeholder()
         self._filepath = None
         self._saved_characters = []
         self._dirty = False

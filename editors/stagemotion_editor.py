@@ -13,12 +13,14 @@ from PyQt6.QtGui import QFont
 
 from core.themes import P
 from core.style_helpers import (
+    add_editor_card_title, make_empty_state,
     ss_btn, ss_sep, ss_accent_sep, ss_input,
     ss_sidebar_btn, ss_search, ss_scrollarea, ss_scrollarea_transparent,
-    ss_section_label, ss_field_label,
+    ss_editor_card, ss_transparent, ss_bg_dark, ss_bg_panel,
+    ss_sidebar_frame, ss_file_label,
+    make_editor_field_shell, make_editor_grid_card,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
-from core.utils.ui_helpers import _add_card_section_title
 from core.editor_file_state import set_file_label
 from parsers.stagemotion_parser import (
     parse_stagemotion_xfbin, save_stagemotion_xfbin,
@@ -47,56 +49,41 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
 
 def _card_frame():
     f = QFrame()
-    f.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
+    f.setObjectName("EditorCard")
+    f.setStyleSheet(ss_editor_card())
     return f
 
 
-def _section_lbl(text):
-    lbl = QLabel(text)
-    lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
-    lbl.setStyleSheet(ss_section_label())
-    lbl.setContentsMargins(20, 10, 0, 2)
-    return lbl
-
-
-def _make_field(label_text, value_text):
-    f = QWidget()
-    f.setStyleSheet("background: transparent;")
-    fl = QVBoxLayout(f)
-    fl.setContentsMargins(0, 0, 0, 0)
-    fl.setSpacing(2)
-    lbl = QLabel(str(label_text))
-    lbl.setFont(QFont("Segoe UI", 12))
-    lbl.setStyleSheet(ss_field_label())
-    fl.addWidget(lbl)
+def _make_field(label_text, value_text, hint_text=""):
+    f, fl, _label, _hint = make_editor_field_shell(label_text, hint_text)
     e = QLineEdit(str(value_text))
     e.setFixedHeight(30)
+    e.setMinimumWidth(0)
     e.setFont(QFont("Consolas", 13))
     e.setStyleSheet(ss_input())
+    e.setCursorPosition(0)
     fl.addWidget(e)
     return f, e
 
 
 def _make_combo_field(label_text, options_with_data, current_data):
     """Returns (container_widget, QComboBox). options_with_data = [(data, label), ...]"""
-    f = QWidget()
-    f.setStyleSheet("background: transparent;")
-    fl = QVBoxLayout(f)
-    fl.setContentsMargins(0, 0, 0, 0)
-    fl.setSpacing(2)
-    lbl = QLabel(str(label_text))
-    lbl.setFont(QFont("Segoe UI", 12))
-    lbl.setStyleSheet(ss_field_label())
-    fl.addWidget(lbl)
+    f, fl, _label, _hint = make_editor_field_shell(label_text)
     cb = QComboBox()
     cb.setFixedHeight(30)
+    cb.setMinimumWidth(0)
+    cb.setMinimumContentsLength(1)
+    cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
     cb.setFont(QFont("Consolas", 12))
     cb.setStyleSheet(ss_input())
     for data, text in options_with_data:
@@ -164,7 +151,7 @@ class StageMotionEditor(QWidget):
         # Toolbar
         top = QFrame()
         top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(f"background-color: {P['bg_panel']};")
+        top.setStyleSheet(ss_bg_panel())
         tl = QHBoxLayout(top)
         tl.setContentsMargins(12, 8, 12, 8)
         tl.setSpacing(4)
@@ -186,7 +173,7 @@ class StageMotionEditor(QWidget):
 
         self._file_lbl = QLabel(ui_text("xfa_no_file"))
         self._file_lbl.setFont(QFont("Consolas", 12))
-        self._file_lbl.setStyleSheet(f"color: {P['text_dim']};")
+        self._file_lbl.setStyleSheet(ss_file_label())
         tl.addWidget(self._file_lbl)
         tl.addStretch()
 
@@ -206,7 +193,7 @@ class StageMotionEditor(QWidget):
         # Left sidebar
         list_frame = QFrame()
         list_frame.setFixedWidth(260)
-        list_frame.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; }}")
+        list_frame.setStyleSheet(ss_sidebar_frame())
         list_vlay = QVBoxLayout(list_frame)
         list_vlay.setContentsMargins(8, 8, 8, 4)
         list_vlay.setSpacing(4)
@@ -220,7 +207,7 @@ class StageMotionEditor(QWidget):
         list_vlay.addWidget(self._search)
 
         actions_frame = QWidget()
-        actions_frame.setStyleSheet("background: transparent;")
+        actions_frame.setStyleSheet(ss_transparent())
         actions_layout = QHBoxLayout(actions_frame)
         actions_layout.setContentsMargins(0, 2, 0, 4)
         actions_layout.setSpacing(4)
@@ -257,8 +244,10 @@ class StageMotionEditor(QWidget):
         self._list_scroll.setWidgetResizable(True)
         self._list_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._list_scroll.setStyleSheet(ss_scrollarea_transparent())
+        self._list_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._list_inner = QWidget()
-        self._list_inner.setStyleSheet("background: transparent;")
+        self._list_inner.setMinimumWidth(0)
+        self._list_inner.setStyleSheet(ss_transparent())
         self._list_layout = QVBoxLayout(self._list_inner)
         self._list_layout.setContentsMargins(0, 0, 0, 0)
         self._list_layout.setSpacing(1)
@@ -270,37 +259,56 @@ class StageMotionEditor(QWidget):
 
         divider = QFrame()
         divider.setFixedWidth(1)
-        divider.setStyleSheet(f"background-color: {P['mid']};")
+        divider.setStyleSheet(ss_sep())
         main_layout.addWidget(divider)
 
         # Right panel
         right = QWidget()
-        right.setStyleSheet(f"background-color: {P['bg_dark']};")
+        right.setStyleSheet(ss_bg_dark())
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
         right_lay.setSpacing(0)
 
-        self._placeholder = QLabel(ui_text("ui_stagemotion_open_a_xcmnsfprm_bin_xfbin_file_to_begin_editing"))
-        self._placeholder.setFont(QFont("Segoe UI", 16))
-        self._placeholder.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        right_lay.addWidget(self._placeholder, 1)
+        self._placeholder_wrap = QWidget(right)
+        self._placeholder_wrap.setStyleSheet(ss_transparent())
+        self._placeholder_layout = QVBoxLayout(self._placeholder_wrap)
+        self._placeholder_layout.setContentsMargins(0, 0, 0, 0)
+        self._placeholder_layout.setSpacing(0)
+        self._show_placeholder(
+            ui_text("ui_stagemotion_open_a_xcmnsfprm_bin_xfbin_file_to_begin_editing"),
+            title=ui_text("no_file_loaded"),
+            icon_name="fa6s.route",
+        )
+        right_lay.addWidget(self._placeholder_wrap, 1)
 
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_inner = QWidget()
-        self._editor_inner.setStyleSheet(f"background-color: {P['bg_dark']};")
+        self._editor_inner.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_inner)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(10)
         self._editor_scroll.setWidget(self._editor_inner)
         self._editor_scroll.setVisible(False)
 
         right_lay.addWidget(self._editor_scroll, 1)
         main_layout.addWidget(right, 1)
         root.addWidget(main, 1)
+
+    def _show_placeholder(self, text, *, title=None, icon_name="fa6s.list"):
+        _clear_layout(self._placeholder_layout)
+        card = make_empty_state(
+            self._placeholder_wrap,
+            title=title or ui_text("ui_model_viewer_select_item"),
+            text=text,
+            icon_name=icon_name,
+        )
+        self._placeholder_layout.addStretch()
+        self._placeholder_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
+        self._placeholder_layout.addStretch()
+        self._placeholder_wrap.setVisible(True)
 
     # File I/O
 
@@ -330,8 +338,7 @@ class StageMotionEditor(QWidget):
         self._btn_dup.setEnabled(True)
         self._btn_del.setEnabled(True)
 
-        self._placeholder.setText(ui_text("ui_stageinfo_select_a_stage"))
-        self._placeholder.setVisible(True)
+        self._show_placeholder(ui_text("ui_stageinfo_select_a_stage"))
         self._editor_scroll.setVisible(False)
 
         self._rebuild_stage_list()
@@ -381,7 +388,7 @@ class StageMotionEditor(QWidget):
         for btn, i in self._stage_btns:
             btn.setStyleSheet(ss_sidebar_btn(selected=(i == idx)))
         stage = self._result['stages'][idx]
-        self._placeholder.setVisible(False)
+        self._placeholder_wrap.setVisible(False)
         self._editor_scroll.setVisible(True)
         self._rebuild_right_panel(stage)
 
@@ -439,8 +446,7 @@ class StageMotionEditor(QWidget):
             return
         self._result['stages'].pop(idx)
         self._current_stage_idx = -1
-        self._placeholder.setText(ui_text("ui_stageinfo_select_a_stage"))
-        self._placeholder.setVisible(True)
+        self._show_placeholder(ui_text("ui_stageinfo_select_a_stage"))
         self._editor_scroll.setVisible(False)
         self._rebuild_stage_list()
         self._mark_dirty()
@@ -451,20 +457,18 @@ class StageMotionEditor(QWidget):
         _clear_layout(self._editor_layout)
 
         # Stage Header card
-        hdr_card = _card_frame()
-        hdr_inner = QWidget(hdr_card)
-        hdr_inner.setStyleSheet("background: transparent;")
-        hdr_grid = QGridLayout(hdr_inner)
-        hdr_grid.setContentsMargins(0, 4, 0, 0)
-        hdr_grid.setHorizontalSpacing(16)
-        hdr_grid.setVerticalSpacing(8)
-        hdr_main = QVBoxLayout(hdr_card)
-        hdr_main.setContentsMargins(12, 12, 12, 12)
-        hdr_main.setSpacing(8)
-        _add_card_section_title(hdr_main, ui_text("ui_stagemotion_stage_header"))
-        hdr_main.addWidget(hdr_inner)
+        hdr_card, hdr_grid = make_editor_grid_card(
+            title=ui_text("ui_stagemotion_stage_header"),
+            icon_name="fa6s.sliders",
+            subtitle=stage.get('stage_id', ''),
+            grid_margins=(0, 4, 0, 0),
+            vertical_spacing=8,
+        )
 
-        fw0, f_sid = _make_field(ui_text("ui_stagemotion_stage_id_max_31_chars"), stage.get('stage_id', ''))
+        fw0, f_sid = _make_field(
+            ui_text("ui_mainmodeparam_stage_id"),
+            stage.get('stage_id', ''),
+        )
         fw1, f_nut = _make_field(ui_text("ui_stagemotion_nut_type"), stage.get('nut_type', 'PL_ANM_NUT'))
         fw2, f_flg = _make_field(ui_text("ui_stagemotion_id_flag"), stage.get('id_flag', 0))
 
@@ -497,7 +501,7 @@ class StageMotionEditor(QWidget):
         ent_bar_lay = QVBoxLayout(ent_bar)
         ent_bar_lay.setContentsMargins(12, 12, 12, 12)
         ent_bar_lay.setSpacing(8)
-        self._entry_section_lbl = _add_card_section_title(ent_bar_lay, f"Entries  ({len(entries)})")
+        self._entry_section_lbl = add_editor_card_title(ent_bar_lay, f"Entries  ({len(entries)})", "fa6s.list")
 
         ent_buttons = QHBoxLayout()
         ent_buttons.setContentsMargins(0, 0, 0, 0)
@@ -517,7 +521,7 @@ class StageMotionEditor(QWidget):
 
         # Entry cards container
         self._entries_container = QWidget()
-        self._entries_container.setStyleSheet("background: transparent;")
+        self._entries_container.setStyleSheet(ss_transparent())
         self._entries_layout = QVBoxLayout(self._entries_container)
         self._entries_layout.setContentsMargins(0, 8, 0, 0)
         self._entries_layout.setSpacing(8)
@@ -529,7 +533,7 @@ class StageMotionEditor(QWidget):
 
         spacer = QWidget()
         spacer.setFixedHeight(20)
-        spacer.setStyleSheet("background: transparent;")
+        spacer.setStyleSheet(ss_transparent())
         self._editor_layout.addWidget(spacer)
         self._editor_layout.addStretch()
 

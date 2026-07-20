@@ -13,12 +13,15 @@ from PyQt6.QtGui import QFont
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_toolbar, ss_sep, ss_accent_sep, ss_input, ss_panel,
-    ss_scrollarea, ss_scrollarea_transparent, ss_section_label, ss_field_label,
-    ss_placeholder, ss_file_label,
+    make_empty_state,
+    make_editor_field_shell,
+    make_editor_grid_card,
+    ss_btn, ss_sep, ss_accent_sep, ss_input, ss_search,
+    ss_scrollarea, ss_scrollarea_transparent, ss_sidebar_btn,
+    ss_file_label, ss_transparent,
+    ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
-from core.utils.ui_helpers import _add_card_section_title
 from core.editor_file_state import set_file_label
 from parsers.charviewer_parser import (
     parse_charviewer_xfbin,
@@ -58,7 +61,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -117,7 +123,7 @@ class CharViewerEditor(QWidget):
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
-        self._editor_widget.setStyleSheet(f"background-color: {P['bg_dark']};")
+        self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
         self._editor_layout.setContentsMargins(0, 0, 0, 0)
         self._editor_layout.setSpacing(0)
@@ -127,12 +133,12 @@ class CharViewerEditor(QWidget):
         root.addWidget(main, 1)
 
         self._show_placeholder(ui_text("ui_charviewer_open_a_charviewerparam_bin_xfbin_file_to_begin_editing"))
-        self.setStyleSheet(f"background-color: {P['bg_dark']}; color: {P['text_main']};")
+        self.setStyleSheet(ss_bg_dark() + f" color: {P['text_main']};")
 
     def _build_top_bar(self) -> QFrame:
         bar = QFrame()
         bar.setFixedHeight(TOOLBAR_H)
-        bar.setStyleSheet(f"background-color: {P['bg_panel']};")
+        bar.setStyleSheet(ss_bg_panel())
 
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(12, 8, 12, 8)
@@ -155,7 +161,7 @@ class CharViewerEditor(QWidget):
 
         self._lbl_file = QLabel(ui_text("xfa_no_file"))
         self._lbl_file.setFont(QFont("Consolas", 12))
-        self._lbl_file.setStyleSheet(f"color: {P['text_dim']}; background: transparent; text-decoration: none;")
+        self._lbl_file.setStyleSheet(ss_file_label())
         layout.addWidget(self._lbl_file)
         layout.addStretch()
 
@@ -164,7 +170,7 @@ class CharViewerEditor(QWidget):
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()
         sidebar.setFixedWidth(260)
-        sidebar.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; }}")
+        sidebar.setStyleSheet(ss_sidebar_frame())
 
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(8, 8, 8, 4)
@@ -175,17 +181,13 @@ class CharViewerEditor(QWidget):
         self._search_box.setPlaceholderText(ui_text("search_placeholder"))
         self._search_box.setFixedHeight(32)
         self._search_box.setFont(QFont("Segoe UI", 13))
-        self._search_box.setStyleSheet(
-            f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-            f"color: {P['text_main']}; padding: 2px 6px; border-radius: 4px; }}"
-            f"QLineEdit:focus {{ border: 1px solid {P['accent']}; }}"
-        )
+        self._search_box.setStyleSheet(ss_search())
         self._search_box.textChanged.connect(self._on_filter_changed)
         layout.addWidget(self._search_box)
 
         # Action buttons
         btn_row = QWidget()
-        btn_row.setStyleSheet("background: transparent;")
+        btn_row.setStyleSheet(ss_transparent())
         btn_layout = QHBoxLayout(btn_row)
         btn_layout.setContentsMargins(0, 2, 0, 4)
         btn_layout.setSpacing(4)
@@ -222,8 +224,10 @@ class CharViewerEditor(QWidget):
         self._list_scroll.setWidgetResizable(True)
         self._list_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._list_scroll.setStyleSheet(ss_scrollarea_transparent())
+        self._list_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._list_widget = QWidget()
-        self._list_widget.setStyleSheet("background-color: transparent;")
+        self._list_widget.setMinimumWidth(0)
+        self._list_widget.setStyleSheet(ss_transparent())
         self._list_layout = QVBoxLayout(self._list_widget)
         self._list_layout.setContentsMargins(0, 0, 0, 0)
         self._list_layout.setSpacing(1)
@@ -237,19 +241,24 @@ class CharViewerEditor(QWidget):
 
     def _show_placeholder(self, text: str = ui_text("ui_dictionaryparam_select_an_entry_to_edit")):
         self._clear_editor()
-        lbl = QLabel(text)
-        lbl.setFont(QFont("Segoe UI", 16))
-        lbl.setStyleSheet(ss_placeholder())
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl.setContentsMargins(0, 60, 0, 60)
-        self._editor_layout.addWidget(lbl)
+        card = make_empty_state(
+            self._editor_widget,
+            title=ui_text("no_file_loaded"),
+            text=text,
+            icon_name="fa6s.eye",
+        )
+        self._editor_layout.addStretch()
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     def _clear_editor(self):
         while self._editor_layout.count():
             item = self._editor_layout.takeAt(0)
             if item.widget():
-                item.widget().deleteLater()
+                widget = item.widget()
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
 
     # List management
 
@@ -278,11 +287,7 @@ class CharViewerEditor(QWidget):
         btn = QPushButton()
         btn.setFixedHeight(44)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet(
-            f"QPushButton {{ background-color: {P['bg_card'] if selected else 'transparent'}; "
-            f"border-radius: 6px; text-align: left; padding: 0px; border: none; }}"
-            f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
-        )
+        btn.setStyleSheet(ss_sidebar_btn(selected=selected))
 
         btn_layout = QVBoxLayout(btn)
         btn_layout.setContentsMargins(10, 3, 10, 3)
@@ -291,6 +296,7 @@ class CharViewerEditor(QWidget):
         vid_lbl = QLabel(e["viewer_id"] or e["char_viewer_id"])
         vid_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         vid_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        vid_lbl.setMinimumWidth(0)
         vid_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         btn_layout.addWidget(vid_lbl)
 
@@ -302,6 +308,7 @@ class CharViewerEditor(QWidget):
         code_lbl = QLabel(sub_text)
         code_lbl.setFont(QFont("Consolas", 11))
         code_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        code_lbl.setMinimumWidth(0)
         code_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         btn_layout.addWidget(code_lbl)
 
@@ -312,18 +319,10 @@ class CharViewerEditor(QWidget):
         self._current_idx = idx
         for btn, bi in self._entry_buttons:
             if bi == idx:
-                btn.setStyleSheet(
-                    f"QPushButton {{ background-color: {P['bg_card']}; border-radius: 6px; "
-                    f"text-align: left; padding: 0px; border: none; }}"
-                    f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
-                )
+                btn.setStyleSheet(ss_sidebar_btn(selected=True))
                 self._list_scroll.ensureWidgetVisible(btn)
             else:
-                btn.setStyleSheet(
-                    f"QPushButton {{ background-color: transparent; border-radius: 6px; "
-                    f"text-align: left; padding: 0px; border: none; }}"
-                    f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
-                )
+                btn.setStyleSheet(ss_sidebar_btn())
         self._btn_dup.setEnabled(True)
         self._btn_del.setEnabled(True)
         self._build_editor(self._entries[idx])
@@ -338,26 +337,13 @@ class CharViewerEditor(QWidget):
         self._pending_section_title = title
 
     def _add_card(self) -> tuple[QFrame, QGridLayout]:
-        card = QFrame()
-        card.setStyleSheet(ss_panel())
-        inner = QWidget(card)
-        inner.setStyleSheet("background: transparent;")
-        grid = QGridLayout(inner)
-        grid.setContentsMargins(12, 12, 12, 12)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(8)
-        outer = QVBoxLayout(card)
         section_title = getattr(self, "_pending_section_title", None)
         self._pending_section_title = None
-        if section_title:
-            outer.setContentsMargins(12, 12, 12, 12)
-            outer.setSpacing(8)
-            grid.setContentsMargins(0, 4, 0, 0)
-            _add_card_section_title(outer, section_title)
-        else:
-            outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(inner)
-        return card, grid
+        return make_editor_grid_card(
+            title=section_title,
+            icon_name="fa6s.sliders",
+            vertical_spacing=10,
+        )
 
     def _add_le(self, grid: QGridLayout, row: int, col: int,
                 label: str, value: str, key: str) -> QLineEdit:
@@ -365,17 +351,13 @@ class CharViewerEditor(QWidget):
         le.setFixedHeight(30)
         le.setFont(QFont("Consolas", 13))
         le.setStyleSheet(ss_input())
-        le.setText(str(value))
+        le.setMinimumWidth(0)
+        text = str(value)
+        le.setText(text)
+        le.setCursorPosition(next((i for i, ch in enumerate(text) if ch.isprintable() and ord(ch) >= 32 and ch not in {"\u25a1", "\ufffd"}), 0))
 
-        container = QWidget()
-        container.setStyleSheet("background: transparent;")
-        cl = QVBoxLayout(container)
-        cl.setContentsMargins(0, 0, 0, 0)
-        cl.setSpacing(2)
-        lbl = QLabel(label)
-        lbl.setFont(QFont("Segoe UI", 12))
-        lbl.setStyleSheet(ss_field_label())
-        cl.addWidget(lbl)
+        container, cl, _label, _hint = make_editor_field_shell(label)
+        container.setMinimumWidth(0)
         cl.addWidget(le)
 
         grid.addWidget(container, row, col)
@@ -389,6 +371,9 @@ class CharViewerEditor(QWidget):
         cb = QComboBox()
         cb.setFixedHeight(30)
         cb.setStyleSheet(ss_input())
+        cb.setMinimumWidth(0)
+        cb.setMinimumContentsLength(1)
+        cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         for v, n in options.items():
             cb.addItem(n, v)
         for i in range(cb.count()):
@@ -396,15 +381,8 @@ class CharViewerEditor(QWidget):
                 cb.setCurrentIndex(i)
                 break
 
-        container = QWidget()
-        container.setStyleSheet("background: transparent;")
-        cl = QVBoxLayout(container)
-        cl.setContentsMargins(0, 0, 0, 0)
-        cl.setSpacing(2)
-        lbl = QLabel(label)
-        lbl.setFont(QFont("Segoe UI", 12))
-        lbl.setStyleSheet(ss_field_label())
-        cl.addWidget(lbl)
+        container, cl, _label, _hint = make_editor_field_shell(label)
+        container.setMinimumWidth(0)
         cl.addWidget(cb)
 
         grid.addWidget(container, row, col)

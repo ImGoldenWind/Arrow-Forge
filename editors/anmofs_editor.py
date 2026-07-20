@@ -11,7 +11,6 @@ from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -36,20 +35,21 @@ from core.style_helpers import (
     ss_bg_panel,
     ss_btn,
     ss_dim_label,
-    ss_editor_card,
     ss_error_label,
-    ss_field_label,
     ss_file_label,
     ss_input,
     ss_main_label,
-    ss_placeholder,
     ss_scrollarea,
     ss_scrollarea_transparent,
     ss_search,
     ss_sep,
     ss_sidebar_btn,
+    ss_sidebar_frame,
     ss_table,
     ss_transparent,
+    ss_bg_dark,
+    make_editor_card, make_empty_state, make_editor_field_shell, make_editor_grid_card,
+    add_editor_card_title,
 )
 from core.undo_redo import EditorHistory
 from parsers.anmofs_parser import (
@@ -73,6 +73,8 @@ def _clear_layout(layout):
         widget = item.widget()
         child_layout = item.layout()
         if widget is not None:
+            widget.hide()
+            widget.setParent(None)
             widget.deleteLater()
         elif child_layout is not None:
             _clear_layout(child_layout)
@@ -163,7 +165,7 @@ class AnmofsEditor(QWidget):
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
-        self._editor_widget.setStyleSheet(ss_transparent())
+        self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
         self._editor_layout.setContentsMargins(12, 12, 12, 12)
         self._editor_layout.setSpacing(10)
@@ -176,7 +178,7 @@ class AnmofsEditor(QWidget):
     def _build_sidebar(self, parent, main_layout):
         side = QFrame(parent)
         side.setFixedWidth(260)
-        side.setStyleSheet(ss_bg_panel())
+        side.setStyleSheet(ss_sidebar_frame())
         side_layout = QVBoxLayout(side)
         side_layout.setContentsMargins(8, 8, 8, 4)
         side_layout.setSpacing(4)
@@ -190,7 +192,7 @@ class AnmofsEditor(QWidget):
         side_layout.addWidget(self._search)
 
         actions = QWidget(side)
-        actions.setStyleSheet("QWidget { background: transparent; border: none; }")
+        actions.setStyleSheet(ss_transparent())
         actions_layout = QHBoxLayout(actions)
         actions_layout.setContentsMargins(0, 2, 0, 4)
         actions_layout.setSpacing(4)
@@ -215,7 +217,9 @@ class AnmofsEditor(QWidget):
         self._chunk_scroll.setWidgetResizable(True)
         self._chunk_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._chunk_scroll.setStyleSheet(ss_scrollarea_transparent())
+        self._chunk_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._chunk_list_widget = QWidget()
+        self._chunk_list_widget.setMinimumWidth(0)
         self._chunk_list_widget.setStyleSheet(ss_transparent())
         self._chunk_list_layout = QVBoxLayout(self._chunk_list_widget)
         self._chunk_list_layout.setContentsMargins(0, 0, 0, 0)
@@ -229,11 +233,15 @@ class AnmofsEditor(QWidget):
         _clear_layout(self._editor_layout)
         self._fields = {}
         self._editor_layout.setContentsMargins(12, 12, 12, 12)
-        label = QLabel(self.t("ui_anmofs_open_file_to_begin_editing"), self._editor_widget)
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setFont(QFont("Segoe UI", 16))
-        label.setStyleSheet(ss_placeholder())
-        self._editor_layout.addWidget(label, 1)
+        card = make_empty_state(
+            self._editor_widget,
+            title=self.t("no_file_loaded"),
+            text=self.t("ui_anmofs_open_file_to_begin_editing"),
+            icon_name="fa6s.film",
+        )
+        self._editor_layout.addStretch(1)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
+        self._editor_layout.addStretch(1)
 
     def _load_file(self, path=None):
         if path is not None and not isinstance(path, (str, os.PathLike)):
@@ -336,10 +344,12 @@ class AnmofsEditor(QWidget):
             title = QLabel(item.chunk_name or self.t("ui_anmofs_unnamed_chunk"), btn)
             title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
             title.setStyleSheet(ss_main_label())
+            title.setMinimumWidth(0)
             title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             subtitle = QLabel(item.characode, btn)
             subtitle.setFont(QFont("Consolas", 11))
             subtitle.setStyleSheet(ss_dim_label())
+            subtitle.setMinimumWidth(0)
             subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             layout.addWidget(title)
             layout.addWidget(subtitle)
@@ -387,28 +397,11 @@ class AnmofsEditor(QWidget):
         self._sync_name_warning()
 
     def _make_editor_card(self, margins=(16, 14, 16, 14), spacing=10):
-        card = QFrame(self._editor_widget)
-        card.setObjectName("EditorCard")
-        card.setStyleSheet(ss_editor_card())
-        inner = QWidget(card)
-        inner.setStyleSheet(ss_transparent())
-        layout = QVBoxLayout(inner)
-        layout.setContentsMargins(*margins)
-        layout.setSpacing(spacing)
-        outer = QVBoxLayout(card)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(inner)
-        return card, layout
+        return make_editor_card(self._editor_widget, margins=margins, spacing=spacing)
 
     def _make_editor_field(self, label_text, value, key, *, value_font=None, height=30, width=None):
-        wrap = QWidget(self._editor_widget)
-        wrap.setStyleSheet(ss_transparent())
-        layout = QVBoxLayout(wrap)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        label = QLabel(label_text, wrap)
-        label.setFont(QFont("Segoe UI", 12))
-        label.setStyleSheet(ss_field_label())
+        wrap, layout, _label, _hint = make_editor_field_shell(label_text)
+        wrap.setParent(self._editor_widget)
         edit = QLineEdit(wrap)
         edit.setText(str(value))
         edit.setFixedHeight(height)
@@ -416,37 +409,56 @@ class AnmofsEditor(QWidget):
             edit.setFixedWidth(width)
         edit.setFont(value_font or QFont("Consolas", 13))
         edit.setStyleSheet(ss_input())
+        edit.setMinimumWidth(0)
+        edit.setCursorPosition(0)
         edit.textEdited.connect(self._on_meta_changed)
-        layout.addWidget(label)
         layout.addWidget(edit)
         self._fields[key] = edit
         return wrap, edit
 
     def _build_metadata_panel(self, item):
-        panel, layout = self._make_editor_card(margins=(16, 14, 16, 14), spacing=10)
+        panel, grid = make_editor_grid_card(
+            self._editor_widget,
+            title=self.t("ui_anmofs_chunk_name"),
+            icon_name="fa6s.film",
+            subtitle=item.characode,
+            grid_margins=(0, 2, 0, 0),
+            vertical_spacing=10,
+        )
 
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(10)
-        layout.addLayout(grid)
-
-        self._add_line_field(grid, 0, 0, "chunk_name", self.t("ui_anmofs_chunk_name"), item.chunk_name)
-        self._add_line_field(grid, 0, 1, "file_path", self.t("ui_anmofs_file_path"), item.file_path)
-        self._add_line_field(grid, 1, 0, "anm_name", self.t("ui_anmofs_animation_name"), item.anm_name)
-        self._add_line_field(grid, 1, 1, "characode", self.t("ui_anmofs_characode"), item.characode)
-        self._add_line_field(grid, 1, 2, "reserved", self.t("ui_anmofs_reserved"), str(item.reserved), width=120)
+        fields = [
+            ("chunk_name", self.t("ui_anmofs_chunk_name"), item.chunk_name, None),
+            ("file_path", self.t("ui_anmofs_file_path"), item.file_path, None),
+            ("anm_name", self.t("ui_anmofs_animation_name"), item.anm_name, None),
+            ("characode", self.t("ui_anmofs_characode"), item.characode, None),
+            ("reserved", self.t("ui_anmofs_reserved"), str(item.reserved), 120),
+        ]
+        if self.width() < 900:
+            for row, (key, label, value, width) in enumerate(fields):
+                self._add_line_field(grid, row, 0, key, label, value, width=width)
+            warning_row = len(fields)
+        else:
+            for row, col, (key, label, value, width) in [
+                (0, 0, fields[0]),
+                (0, 1, fields[1]),
+                (1, 0, fields[2]),
+                (1, 1, fields[3]),
+                (1, 2, fields[4]),
+            ]:
+                self._add_line_field(grid, row, col, key, label, value, width=width)
+            warning_row = 2
 
         self._name_warning = QLabel("", panel)
         self._name_warning.setWordWrap(True)
         self._name_warning.setFont(QFont("Segoe UI", 10))
         self._name_warning.setStyleSheet(ss_error_label())
-        layout.addWidget(self._name_warning)
+        grid.addWidget(self._name_warning, warning_row, 0, 1, 3)
 
         self._editor_layout.addWidget(panel)
 
     def _build_entries_panel(self, item):
         panel, layout = self._make_editor_card(margins=(16, 14, 16, 14), spacing=10)
+        add_editor_card_title(layout, self.t("ui_anmofs_col_frame"), "fa6s.table")
 
         header = QWidget(panel)
         header.setStyleSheet(ss_transparent())

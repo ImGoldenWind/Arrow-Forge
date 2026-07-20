@@ -15,7 +15,7 @@ from core.editor_diff import ChangeItem
 from core.file_drop import install_file_drop
 from core.qol_state import with_recent_file, with_workspace
 from core.settings import save_settings
-from core.style_helpers import ss_dialog
+from core.style_helpers import polish_widget_tree, ss_bg_panel, ss_dialog, ss_embedded_tool_surface, ss_menu
 from core.themes import P
 from core.translations import ui_text
 from core.utils.ui_helpers import _make_styled_btn
@@ -633,6 +633,8 @@ class EditorPanelMixin:
         self._hide_char_panel()
 
         tool_frame = QWidget()
+        tool_frame.setObjectName("EmbeddedToolFrame")
+        tool_frame.setStyleSheet(ss_embedded_tool_surface())
         tool_layout = QVBoxLayout(tool_frame)
         tool_layout.setContentsMargins(0, 0, 0, 0)
         tool_layout.setSpacing(0)
@@ -640,8 +642,9 @@ class EditorPanelMixin:
 
         # Top bar
         bar = QFrame()
+        bar.setObjectName("EmbeddedToolHeader")
         bar.setFixedHeight(44)
-        bar.setStyleSheet(f"background-color: {P.get('toolbar_bg', P['bg_panel'])};")
+        bar.setStyleSheet(ss_bg_panel())
         self._tool_bar = bar
         bar_layout = QHBoxLayout(bar)
         bar_layout.setContentsMargins(12, 7, 12, 7)
@@ -664,6 +667,8 @@ class EditorPanelMixin:
 
         # Body
         body = QWidget()
+        body.setObjectName("EmbeddedToolBody")
+        body.setStyleSheet(ss_embedded_tool_surface())
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
@@ -833,6 +838,7 @@ class EditorPanelMixin:
         recent_entries = self._settings.get("recent_files_by_tool", {}).get(tool_id, [])
         if recent_entries:
             recent_menu = QMenu(self)
+            recent_menu.setStyleSheet(ss_menu())
             for entry in recent_entries:
                 path = entry.get("path", "")
                 action = recent_menu.addAction(entry.get("name") or path)
@@ -1054,8 +1060,10 @@ class EditorPanelMixin:
 
     def _add_embedded_editor(self, editor, layout):
         self._embedded_editor = editor
+        editor.setObjectName("EmbeddedToolEditor")
         editor._tool_id = getattr(self, "_current_tool_id", None)
         install_file_drop(editor)
+        polish_widget_tree(editor)
         layout.addWidget(editor, 1)
         self._install_embedded_editor_save_summary(editor)
 

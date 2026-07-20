@@ -42,6 +42,8 @@ from core.settings import create_backup_on_open, game_files_dialog_dir
 from core.style_helpers import (
     TOOLBAR_BTN_H,
     TOOLBAR_H,
+    add_editor_card_title,
+    make_empty_state,
     ss_accent_label,
     ss_accent_sep,
     ss_blocking_overlay,
@@ -56,10 +58,9 @@ from core.style_helpers import (
     ss_icon_tool_btn,
     ss_main_label,
     ss_menu,
-    ss_panel,
+    ss_editor_card,
     ss_panel_menu_button,
     ss_panel_title,
-    ss_placeholder,
     ss_progressbar,
     ss_scrollarea,
     ss_scrollarea_transparent,
@@ -71,7 +72,6 @@ from core.style_helpers import (
     ss_toggle_btn,
     ss_transparent,
 )
-from core.utils.ui_helpers import _add_card_section_title
 from core.themes import P
 from core.translations import ui_text
 from editors.sound_editor import _decode_audio_to_wav
@@ -577,7 +577,8 @@ def _generate_lip_keys_from_audio(samples: list[float], sample_rate: int) -> lis
 
 def _card() -> QFrame:
     frame = QFrame()
-    frame.setStyleSheet(ss_panel())
+    frame.setObjectName("EditorCard")
+    frame.setStyleSheet(ss_editor_card())
     return frame
 
 
@@ -1868,11 +1869,13 @@ class LipSyncEditor(QWidget):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
-        self._placeholder = QLabel(ui_text("ui_lipsync_open_lip_xfbin_to_begin_editing"))
-        self._placeholder.setFont(QFont("Segoe UI", 16))
-        self._placeholder.setStyleSheet(ss_placeholder())
-        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        right_layout.addWidget(self._placeholder, 1)
+        self._placeholder = make_empty_state(
+            right,
+            title=ui_text("no_file_loaded"),
+            text=ui_text("ui_lipsync_open_lip_xfbin_to_begin_editing"),
+            icon_name="fa6s.wave-square",
+        )
+        right_layout.addWidget(self._placeholder, 1, Qt.AlignmentFlag.AlignCenter)
 
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
@@ -2649,7 +2652,7 @@ class LipSyncEditor(QWidget):
         meta_outer = QVBoxLayout(meta)
         meta_outer.setContentsMargins(12, 12, 12, 12)
         meta_outer.setSpacing(8)
-        _add_card_section_title(meta_outer, ui_text("ui_lipsync_clip_metadata"))
+        add_editor_card_title(meta_outer, ui_text("ui_lipsync_clip_metadata"), "fa6s.file-lines")
         meta_inner = QWidget(meta)
         meta_inner.setStyleSheet(ss_transparent())
         meta_layout = QGridLayout(meta_inner)

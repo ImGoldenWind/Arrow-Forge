@@ -22,6 +22,9 @@ from core.settings import create_backup_on_open, game_files_dialog_dir
 from core.style_helpers import (
     TOOLBAR_BTN_H,
     TOOLBAR_H,
+    make_empty_state,
+    make_editor_field_shell,
+    make_editor_grid_card,
     ss_bg_dark,
     ss_bg_panel,
     ss_btn,
@@ -42,7 +45,6 @@ from core.style_helpers import (
     ss_sidebar_frame,
     ss_transparent,
 )
-from core.utils.ui_helpers import _add_card_section_title
 from core.translations import ui_text
 from parsers.termlistparam_parser import (
     make_default_entry,
@@ -61,7 +63,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -223,12 +228,14 @@ class TermListParamEditor(QWidget):
         _clear_layout(self._editor_layout)
         self._fields = {}
         self._entry_count_label = None
-        label = QLabel(text)
-        label.setFont(QFont("Segoe UI", 16))
-        label.setStyleSheet(ss_placeholder())
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = make_empty_state(
+            self._editor_widget,
+            title=ui_text("no_file_loaded"),
+            text=text,
+            icon_name="fa6s.folder-open",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(label)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     def _do_open(self):
@@ -408,20 +415,19 @@ class TermListParamEditor(QWidget):
         self._loading_detail = True
         entry = self._entries[idx]
 
-        header = QFrame()
-        header.setStyleSheet(ss_panel())
-        header_layout = QGridLayout(header)
-        header_layout.setContentsMargins(16, 14, 16, 14)
-        header_layout.setHorizontalSpacing(16)
-        header_layout.setVerticalSpacing(8)
+        header, header_layout = make_editor_grid_card(
+            grid_margins=(0, 0, 0, 0),
+            vertical_spacing=8,
+        )
 
         self._add_text_field(header_layout, 0, 0, "title_key", ui_text("ui_termlistparam_title_key"), entry.get("title_key", ""), big=True)
         self._add_uint_field(header_layout, 0, 1, "group_id", ui_text("ui_termlistparam_group_id"), entry.get("group_id", 0), 0, _UINT64_MAX, big=True)
         self._add_uint_field(header_layout, 0, 2, "unknown_16", ui_text("ui_termlistparam_unknown_16"), entry.get("unknown_16", 0), 0, _UINT64_MAX, big=True)
         self._add_hint(header_layout, 1, 1, ui_text("ui_termlistparam_group_id_hint"))
         self._add_hint(header_layout, 1, 2, ui_text("ui_termlistparam_unknown_16_hint"))
-        for col in range(3):
-            header_layout.setColumnStretch(col, 1)
+        header_layout.setColumnStretch(0, 3)
+        header_layout.setColumnStretch(1, 2)
+        header_layout.setColumnStretch(2, 2)
         self._editor_layout.addWidget(header)
 
         self._add_section(ui_text("ui_termlistparam_text_keys"))
@@ -466,41 +472,21 @@ class TermListParamEditor(QWidget):
         self._pending_section_title = title
 
     def _make_card(self) -> QFrame:
-        card = QFrame()
-        card.setStyleSheet(ss_panel())
+        section_title = getattr(self, "_pending_section_title", None)
+        self._pending_section_title = None
+        card, grid = make_editor_grid_card(
+            title=section_title,
+            icon_name="fa6s.sliders",
+            vertical_spacing=10,
+        )
+        card._editor_grid = grid
         return card
 
     def _card_grid(self, card: QFrame) -> QGridLayout:
-        inner = QWidget(card)
-        inner.setStyleSheet(ss_transparent())
-        grid = QGridLayout(inner)
-        grid.setContentsMargins(12, 12, 12, 12)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(8)
-        layout = QVBoxLayout(card)
-        section_title = getattr(self, "_pending_section_title", None)
-        self._pending_section_title = None
-        if section_title:
-            layout.setContentsMargins(12, 12, 12, 12)
-            layout.setSpacing(8)
-            grid.setContentsMargins(0, 4, 0, 0)
-            _add_card_section_title(layout, section_title)
-        else:
-            layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(inner)
-        return grid
+        return card._editor_grid
 
     def _field_shell(self, label: str) -> tuple[QWidget, QVBoxLayout]:
-        frame = QWidget()
-        frame.setStyleSheet(ss_transparent())
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-
-        label_widget = QLabel(label)
-        label_widget.setFont(QFont("Segoe UI", 12))
-        label_widget.setStyleSheet(ss_field_label())
-        layout.addWidget(label_widget)
+        frame, layout, _label, _hint = make_editor_field_shell(label)
         return frame, layout
 
     def _add_hint(self, grid, row, col, text, colspan=1):

@@ -4,7 +4,7 @@ import os
 
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea, QFileDialog, QMessageBox,
+    QVBoxLayout, QHBoxLayout, QScrollArea, QFileDialog, QMessageBox,
     QLineEdit,
 )
 from PyQt6.QtCore import Qt
@@ -12,11 +12,14 @@ from PyQt6.QtGui import QFont
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_sep, ss_accent_sep, ss_search, ss_file_label, ss_section_label,
-    ss_panel, ss_scrollarea, ss_placeholder, ss_dim_label, ss_input,
+    make_empty_state,
+    make_editor_field_shell,
+    make_editor_grid_card,
+    ss_btn, ss_sep, ss_accent_sep, ss_search, ss_file_label,
+    ss_scrollarea, ss_dim_label, ss_input, ss_transparent,
+    ss_bg_dark, ss_bg_panel,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
-from core.utils.ui_helpers import _add_card_section_title
 from core.editor_file_state import set_file_label
 from parsers.btladjprm_parser import parse_btladjprm_xfbin, save_btladjprm_xfbin
 from core.translations import ui_text
@@ -119,7 +122,11 @@ _GROUP_NAMES = {
     6: ui_text("ui_btladjprm_team_bonus"),
 }
 
-_COLS = 3  # parameters per row inside a group card
+_COLS = 2  # long technical parameter names need room to breathe
+
+
+def _display_param_name(name: str) -> str:
+    return str(name).replace("_", "_ ")
 
 
 class BtlAdjPrmEditor(QWidget):
@@ -145,7 +152,7 @@ class BtlAdjPrmEditor(QWidget):
         # Toolbar
         top = QFrame()
         top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(f"background-color: {P['bg_panel']};")
+        top.setStyleSheet(ss_bg_panel())
         lo = QHBoxLayout(top)
         lo.setContentsMargins(12, 8, 12, 8)
         lo.setSpacing(4)
@@ -181,7 +188,7 @@ class BtlAdjPrmEditor(QWidget):
 
         # Body
         body = QWidget()
-        body.setStyleSheet(f"background-color: {P['bg_dark']};")
+        body.setStyleSheet(ss_bg_dark())
         bl = QVBoxLayout(body)
         bl.setContentsMargins(16, 10, 16, 12)
         bl.setSpacing(8)
@@ -212,7 +219,7 @@ class BtlAdjPrmEditor(QWidget):
         self._scroll.setStyleSheet(ss_scrollarea())
 
         self._cards_widget = QWidget()
-        self._cards_widget.setStyleSheet(f"background-color: {P['bg_dark']};")
+        self._cards_widget.setStyleSheet(ss_bg_dark())
         self._cards_layout = QVBoxLayout(self._cards_widget)
         self._cards_layout.setContentsMargins(0, 0, 12, 0)
         self._cards_layout.setSpacing(0)
@@ -230,20 +237,24 @@ class BtlAdjPrmEditor(QWidget):
         while self._cards_layout.count():
             item = self._cards_layout.takeAt(0)
             if item.widget():
-                item.widget().deleteLater()
+                widget = item.widget()
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
 
     def _show_placeholder(self):
         self._clear_cards()
         self._param_inputs.clear()
         self._count_lbl.setText("")
 
-        ph = QLabel(ui_text("ui_btladjprm_open_a_btladjprm_bin_xfbin_file_to_begin_editing"))
-        ph.setFont(QFont("Segoe UI", 16))
-        ph.setStyleSheet(ss_placeholder())
-        ph.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
+        card = make_empty_state(
+            self._cards_widget,
+            title=ui_text("no_file_loaded"),
+            text=ui_text("ui_btladjprm_open_a_btladjprm_bin_xfbin_file_to_begin_editing"),
+            icon_name="fa6s.sliders",
+        )
         self._cards_layout.addStretch()
-        self._cards_layout.addWidget(ph)
+        self._cards_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._cards_layout.addStretch()
 
     def _add_section(self, title):
@@ -276,47 +287,27 @@ class BtlAdjPrmEditor(QWidget):
 
             self._add_section(_GROUP_NAMES.get(gid, ui_text("ui_btladjprm_misc")))
 
-            card = QFrame()
-            card.setStyleSheet(ss_panel())
-            card_vl = QVBoxLayout(card)
             section_title = getattr(self, "_pending_section_title", None)
             self._pending_section_title = None
-            if section_title:
-                card_vl.setContentsMargins(12, 12, 12, 12)
-                card_vl.setSpacing(8)
-                _add_card_section_title(card_vl, section_title)
-            else:
-                card_vl.setContentsMargins(0, 0, 0, 0)
-
-            inner = QWidget()
-            inner.setStyleSheet("background: transparent;")
-            grid = QGridLayout(inner)
-            if section_title:
-                grid.setContentsMargins(0, 4, 0, 0)
-            else:
-                grid.setContentsMargins(12, 12, 12, 12)
-            grid.setHorizontalSpacing(16)
-            grid.setVerticalSpacing(8)
-            card_vl.addWidget(inner)
+            card, grid = make_editor_grid_card(
+                title=section_title,
+                icon_name="fa6s.sliders",
+                vertical_spacing=10,
+            )
 
             for i, e in enumerate(group_entries):
                 row, col = divmod(i, _COLS)
                 name = e['name']
 
-                cell = QWidget()
-                cell.setStyleSheet("background: transparent;")
-                cell_vl = QVBoxLayout(cell)
-                cell_vl.setContentsMargins(0, 0, 0, 0)
-                cell_vl.setSpacing(2)
-
-                lbl = QLabel(name)
-                lbl.setFont(QFont("Segoe UI", 10))
-                lbl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
-                lbl.setWordWrap(True)
-                cell_vl.addWidget(lbl)
+                cell, cell_vl, _label, _hint = make_editor_field_shell(
+                    _display_param_name(name),
+                    label_font_size=10,
+                    spacing=3,
+                )
 
                 inp = QLineEdit()
                 inp.setFixedHeight(30)
+                inp.setMinimumWidth(0)
                 inp.setFont(QFont("Consolas", 13))
                 inp.setStyleSheet(ss_input())
                 inp.setText(ui_text("ui_btladjprm_value", p0=e['value']))

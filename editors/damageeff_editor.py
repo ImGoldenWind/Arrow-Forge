@@ -8,7 +8,7 @@ import os
 
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea,
+    QVBoxLayout, QHBoxLayout, QScrollArea,
     QFileDialog, QMessageBox, QLineEdit, QSizePolicy,
 )
 from PyQt6.QtCore import Qt
@@ -17,8 +17,11 @@ from PyQt6.QtGui import QFont
 from core.themes import P
 from core.style_helpers import (
     ss_btn, ss_sep, ss_accent_sep, ss_input, ss_search, ss_scrollarea,
-    ss_scrollarea_transparent, ss_field_label, ss_sidebar_btn,
-    ss_file_label, TOOLBAR_H, TOOLBAR_BTN_H,
+    ss_scrollarea_transparent, ss_sidebar_btn,
+    ss_file_label, ss_transparent,
+    ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
+    make_empty_state, make_editor_field_shell, make_editor_grid_card,
+    TOOLBAR_H, TOOLBAR_BTN_H,
 )
 from core.editor_file_state import set_file_label
 from parsers.damageeff_parser import parse_damageeff_xfbin, save_damageeff_xfbin, _NONE_VAL
@@ -67,6 +70,8 @@ def _clear_layout(layout):
         item = layout.takeAt(0)
         w = item.widget()
         if w:
+            w.hide()
+            w.setParent(None)
             w.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
@@ -99,7 +104,7 @@ class DamageEffEditor(QWidget):
 
         top = QFrame()
         top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(f"background-color: {P['bg_panel']};")
+        top.setStyleSheet(ss_bg_panel())
         self._build_toolbar_content(top)
         root.addWidget(top)
 
@@ -115,7 +120,7 @@ class DamageEffEditor(QWidget):
 
         sidebar = QFrame()
         sidebar.setFixedWidth(260)
-        sidebar.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; }}")
+        sidebar.setStyleSheet(ss_sidebar_frame())
         self._build_sidebar(sidebar)
         body.addWidget(sidebar)
 
@@ -128,7 +133,7 @@ class DamageEffEditor(QWidget):
         self._main_scroll.setWidgetResizable(True)
         self._main_scroll.setStyleSheet(ss_scrollarea())
         self._main_inner = QWidget()
-        self._main_inner.setStyleSheet(f"background-color: {P['bg_dark']};")
+        self._main_inner.setStyleSheet(ss_bg_dark())
         self._main_layout = QVBoxLayout(self._main_inner)
         self._main_layout.setContentsMargins(20, 16, 20, 20)
         self._main_layout.setSpacing(12)
@@ -228,7 +233,7 @@ class DamageEffEditor(QWidget):
         self._sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._sidebar_inner = QWidget()
-        self._sidebar_inner.setStyleSheet("background: transparent;")
+        self._sidebar_inner.setStyleSheet(ss_transparent())
         self._sidebar_list = QVBoxLayout(self._sidebar_inner)
         self._sidebar_list.setContentsMargins(0, 0, 0, 0)
         self._sidebar_list.setSpacing(2)
@@ -247,7 +252,7 @@ class DamageEffEditor(QWidget):
 
         inner = QWidget()
         inner.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        inner.setStyleSheet("background: transparent;")
+        inner.setStyleSheet(ss_transparent())
         vl = QVBoxLayout(inner)
         vl.setContentsMargins(10, 4, 10, 4)
         vl.setSpacing(1)
@@ -275,6 +280,8 @@ class DamageEffEditor(QWidget):
             item = self._sidebar_list.takeAt(0)
             w = item.widget()
             if w:
+                w.hide()
+                w.setParent(None)
                 w.deleteLater()
 
         self._entry_buttons = []
@@ -297,81 +304,67 @@ class DamageEffEditor(QWidget):
     def _show_placeholder(self):
         _clear_layout(self._main_layout)
         self._field_widgets = {}
-        lbl = QLabel(ui_text("ui_damageeff_open_a_damageeff_bin_xfbin_file_to_begin_editing"))
-        lbl.setFont(QFont("Segoe UI", 14))
-        lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = make_empty_state(
+            self._main_inner,
+            title=ui_text("no_file_loaded"),
+            text=ui_text("ui_damageeff_open_a_damageeff_bin_xfbin_file_to_begin_editing"),
+            icon_name="fa6s.wand-magic-sparkles",
+        )
         self._main_layout.addStretch(1)
-        self._main_layout.addWidget(lbl, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._main_layout.addWidget(card, alignment=Qt.AlignmentFlag.AlignCenter)
         self._main_layout.addStretch(1)
 
     def _show_empty_selection(self):
         _clear_layout(self._main_layout)
         self._field_widgets = {}
-        lbl = QLabel(ui_text("ui_damageeff_select_an_entry_from_the_sidebar"))
-        lbl.setFont(QFont("Segoe UI", 14))
-        lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = make_empty_state(
+            self._main_inner,
+            title=ui_text("ui_model_viewer_select_item"),
+            text=ui_text("ui_damageeff_select_an_entry_from_the_sidebar"),
+            icon_name="fa6s.list",
+        )
         self._main_layout.addStretch(1)
-        self._main_layout.addWidget(lbl, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._main_layout.addWidget(card, alignment=Qt.AlignmentFlag.AlignCenter)
         self._main_layout.addStretch(1)
 
     def _build_editor(self, entry):
         _clear_layout(self._main_layout)
         self._field_widgets = {}
 
-        hdr = QLabel(ui_text("ui_damageeff_damage_effect_slot_value", p0=entry['entry_id']))
-        hdr.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
-        hdr.setStyleSheet(f"color: {P['accent']}; background: transparent;")
-        self._main_layout.addWidget(hdr)
-
-        if not self._effprm_map:
-            notice = QLabel(ui_text("ui_damageeff_load_effectprm_bin_xfbin_to_see_effect_names"))
-            notice.setFont(QFont("Segoe UI", 10))
-            notice.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-            self._main_layout.addWidget(notice)
-
-        card = QFrame()
-        card.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
-        card_inner = QWidget()
-        card_inner.setStyleSheet("background: transparent;")
-        grid = QGridLayout(card_inner)
-        grid.setContentsMargins(12, 12, 12, 12)
-        grid.setHorizontalSpacing(20)
-        grid.setVerticalSpacing(4)
+        subtitle = (
+            ui_text("ui_damageeff_load_effectprm_bin_xfbin_to_see_effect_names")
+            if not self._effprm_map else None
+        )
+        card, grid = make_editor_grid_card(
+            title=ui_text("ui_damageeff_damage_effect_slot_value", p0=entry['entry_id']),
+            icon_name="fa6s.wand-magic-sparkles",
+            subtitle=subtitle,
+            grid_margins=(0, 2, 0, 0),
+            horizontal_spacing=16,
+            vertical_spacing=10,
+        )
 
         for i, (fkey, fname, nullable, tip) in enumerate(_FIELDS):
-            col  = i % 2
-            vrow = i // 2
-            gr   = vrow * 3
-
             lbl_text = fname + (ui_text("ui_damageeff_nullable") if nullable else "")
-            lbl = QLabel(lbl_text)
-            lbl.setFont(QFont("Segoe UI", 12))
-            lbl.setStyleSheet(ss_field_label())
-            lbl.setToolTip(tip)
-            grid.addWidget(lbl, gr, col)
-
             val = entry[fkey]
+            resolved = self._eff_name(val, nullable)
+            field, field_layout, label, name_lbl = make_editor_field_shell(lbl_text, resolved or " ")
+            label.setToolTip(tip)
+
             inp = QLineEdit(_fmt(val, nullable))
             inp.setFixedHeight(30)
             inp.setFont(QFont("Consolas", 13))
             inp.setStyleSheet(ss_input())
             inp.setToolTip(tip)
+            inp.setMinimumWidth(0)
             inp.textEdited.connect(lambda _, fk=fkey: self._mark_dirty())
-            grid.addWidget(inp, gr + 1, col)
+            field_layout.addWidget(inp)
 
-            resolved = self._eff_name(val, nullable)
-            name_lbl = QLabel(resolved or "")
-            name_lbl.setFont(QFont("Consolas", 10))
-            name_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-            grid.addWidget(name_lbl, gr + 2, col)
-
+            row, col = divmod(i, 2)
+            grid.addWidget(field, row, col)
+            grid.setColumnStretch(col, 1)
             self._field_widgets[fkey] = (inp, name_lbl)
 
-        card_lo = QVBoxLayout(card)
-        card_lo.setContentsMargins(0, 0, 0, 0)
-        card_lo.addWidget(card_inner)
         self._main_layout.addWidget(card)
         self._main_layout.addStretch(1)
 
@@ -473,7 +466,10 @@ class DamageEffEditor(QWidget):
         self._field_widgets = {}
 
         self._populate_sidebar()
-        self._show_empty_selection()
+        if self._result.get('entries'):
+            self._select_entry(0)
+        else:
+            self._show_empty_selection()
 
         set_file_label(self._file_lbl, filepath)
         self._btn_save.setEnabled(True)

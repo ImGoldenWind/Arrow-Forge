@@ -21,6 +21,8 @@ from core.settings import create_backup_on_open, game_files_dialog_dir
 from core.style_helpers import (
     TOOLBAR_BTN_H,
     TOOLBAR_H,
+    add_editor_card_title,
+    make_empty_state,
     ss_accent_sep,
     ss_bg_dark,
     ss_bg_panel,
@@ -40,7 +42,6 @@ from core.style_helpers import (
     ss_sidebar_frame,
     ss_transparent,
 )
-from core.utils.ui_helpers import _add_card_section_title
 from core.translations import ui_text
 from parsers.asb_acf_parser import (
     DT_VLDATA,
@@ -61,7 +62,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -191,7 +195,7 @@ class AsbAcfEditor(QWidget):
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
         self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_widget)
         main_layout.addWidget(self._editor_scroll, 1)
@@ -213,12 +217,14 @@ class AsbAcfEditor(QWidget):
         _clear_layout(self._editor_layout)
         self._fields = {}
         self._row_cards = []
-        label = QLabel(text)
-        label.setFont(QFont("Segoe UI", 16))
-        label.setStyleSheet(ss_placeholder())
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = make_empty_state(
+            self._editor_widget,
+            title=ui_text("no_file_loaded"),
+            text=text,
+            icon_name="fa6s.folder-open",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(label)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     def _do_open(self):
@@ -408,9 +414,11 @@ class AsbAcfEditor(QWidget):
         section_titles = getattr(self, "_pending_section_titles", [])
         self._pending_section_titles = []
         for section_title in section_titles:
-            _add_card_section_title(layout, section_title)
+            add_editor_card_title(layout, section_title, "fa6s.table")
 
         header = QLabel(ui_text(category_key))
+        header.setMinimumWidth(0)
+        header.setWordWrap(True)
         header.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         header.setStyleSheet(ss_main_label())
         layout.addWidget(header)
@@ -489,18 +497,22 @@ class AsbAcfEditor(QWidget):
 
     def _field_widget(self, table: AcfUtfTable, row_idx: int, column: AcfColumn, value) -> QWidget:
         frame = QWidget()
+        frame.setMinimumWidth(0)
         frame.setStyleSheet(ss_transparent())
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
         label = QLabel(ui_text("ui_asb_acf_column_header", name=column.name, type=column.type_name))
+        label.setMinimumWidth(0)
+        label.setWordWrap(True)
         label.setFont(QFont("Segoe UI", 12))
         label.setStyleSheet(ss_field_label())
         layout.addWidget(label)
 
         edit = QLineEdit()
         edit.setFixedHeight(30)
+        edit.setMinimumWidth(0)
         edit.setFont(QFont("Consolas", 13))
         edit.setStyleSheet(ss_input())
         edit.setText(self._format_value(value))
@@ -534,8 +546,10 @@ class AsbAcfEditor(QWidget):
         self._update_actions()
 
     def _refresh_row_card_styles(self):
+        table = self._selected_table()
+        show_selection = bool(table is not None and len(table.rows) > 1)
         for card, row_idx in self._row_cards:
-            selected = row_idx == self._current_row_idx
+            selected = show_selection and row_idx == self._current_row_idx
             card.setStyleSheet(ss_editor_card(selected=selected))
 
     def _on_text_edited(self, row_idx: int):

@@ -26,6 +26,9 @@ from core.settings import create_backup_on_open, game_files_dialog_dir
 from core.style_helpers import (
     TOOLBAR_BTN_H,
     TOOLBAR_H,
+    add_editor_card_title,
+    make_empty_state,
+    make_editor_field_shell,
     ss_accent_sep,
     ss_bg_dark,
     ss_bg_panel,
@@ -36,7 +39,6 @@ from core.style_helpers import (
     ss_file_label,
     ss_input,
     ss_main_label,
-    ss_panel,
     ss_placeholder,
     ss_scrollarea,
     ss_scrollarea_transparent,
@@ -47,9 +49,9 @@ from core.style_helpers import (
     ss_textedit,
     ss_transparent,
     ss_viewport_panel,
+    ss_editor_card,
 )
 from core.translations import ui_text
-from core.utils.ui_helpers import _add_card_section_title
 from parsers.font_xfbin_parser import (
     ICONFONT_RECORD_SIZE,
     NFH_GLYPH_RECORD_SIZE,
@@ -72,7 +74,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -569,12 +574,14 @@ class FontEditor(QWidget):
     def _show_placeholder(self, text: str):
         _clear_layout(self._editor_layout)
         self._fields = {}
-        label = QLabel(text)
-        label.setFont(QFont("Segoe UI", 16))
-        label.setStyleSheet(ss_placeholder())
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = make_empty_state(
+            self._editor_widget,
+            title=ui_text("no_file_loaded"),
+            text=text,
+            icon_name="fa6s.folder-open",
+        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(label)
+        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     def _add_section(self, title: str):
@@ -582,7 +589,8 @@ class FontEditor(QWidget):
 
     def _make_card(self) -> QFrame:
         card = QFrame()
-        card.setStyleSheet(ss_panel())
+        card.setObjectName("EditorCard")
+        card.setStyleSheet(ss_editor_card())
         return card
 
     def _card_grid(self, card: QFrame) -> QGridLayout:
@@ -598,7 +606,7 @@ class FontEditor(QWidget):
         section_title = getattr(self, "_pending_section_title", None)
         self._pending_section_title = None
         if section_title:
-            _add_card_section_title(layout, section_title)
+            add_editor_card_title(layout, section_title, "fa6s.font")
         layout.addWidget(inner)
         return grid
 
@@ -609,24 +617,17 @@ class FontEditor(QWidget):
         section_title = getattr(self, "_pending_section_title", None)
         self._pending_section_title = None
         if section_title:
-            _add_card_section_title(layout, section_title)
+            add_editor_card_title(layout, section_title, "fa6s.font")
         return layout
 
     def _field_shell(self, label: str) -> tuple[QWidget, QVBoxLayout]:
-        frame = QWidget()
-        frame.setStyleSheet(ss_transparent())
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-        label_widget = QLabel(label)
-        label_widget.setFont(QFont("Segoe UI", 12))
-        label_widget.setStyleSheet(ss_field_label())
-        layout.addWidget(label_widget)
+        frame, layout, _label, _hint = make_editor_field_shell(label)
         return frame, layout
 
     def _add_info(self, grid, row: int, col: int, label: str, value: str, colspan: int = 1):
         frame, layout = self._field_shell(label)
         value_widget = QLabel(value)
+        value_widget.setMinimumWidth(0)
         value_widget.setWordWrap(True)
         value_widget.setFont(QFont("Consolas", 11))
         value_widget.setStyleSheet(ss_main_label())
@@ -637,6 +638,7 @@ class FontEditor(QWidget):
         frame, layout = self._field_shell(label)
         edit = QLineEdit()
         edit.setFixedHeight(30)
+        edit.setMinimumWidth(0)
         edit.setFont(QFont("Consolas", 13))
         edit.setStyleSheet(ss_input())
         edit.setText(value)
@@ -651,6 +653,7 @@ class FontEditor(QWidget):
         edit.setValidator(self._uint32_validator)
         edit.setMaxLength(10)
         edit.setFixedHeight(30)
+        edit.setMinimumWidth(0)
         edit.setFont(QFont("Consolas", 13))
         edit.setStyleSheet(ss_input())
         edit.setText(str(int(value)))
@@ -664,6 +667,7 @@ class FontEditor(QWidget):
         edit = QTextEdit()
         edit.setAcceptRichText(False)
         edit.setFixedHeight(74)
+        edit.setMinimumWidth(0)
         edit.setFont(QFont("Consolas", 11))
         edit.setStyleSheet(ss_textedit())
         edit.setText(value)

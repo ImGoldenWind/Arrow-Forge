@@ -16,7 +16,11 @@ from PyQt6.QtGui import QFont
 
 from core.themes import P
 from core.style_helpers import (
-    ss_btn, ss_sep, ss_accent_sep, ss_scrollarea, ss_scrollarea_transparent,
+    ss_btn, ss_sep, ss_accent_sep, ss_search, ss_sidebar_btn,
+    ss_scrollarea, ss_scrollarea_transparent, ss_input, ss_file_label,
+    ss_transparent, ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
+    make_editor_card, make_editor_field_shell, make_editor_grid_card,
+    make_empty_state,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
 from core.editor_file_state import set_file_label
@@ -33,7 +37,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -105,37 +112,21 @@ class _SkillTable(QWidget):
         root.setSpacing(0)
 
         # Skill Properties Card
-        card = QFrame()
-        card.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
-        card_inner = QWidget(card)
-        card_inner.setStyleSheet("background: transparent;")
-        card_grid = QGridLayout(card_inner)
-        card_grid.setContentsMargins(16, 12, 16, 12)
-        card_grid.setHorizontalSpacing(16)
-        card_grid.setVerticalSpacing(4)
-        card_main = QVBoxLayout(card)
-        card_main.setContentsMargins(0, 0, 0, 0)
-        card_main.addWidget(card_inner)
+        card, card_grid = make_editor_grid_card(
+            title=ui_text("ui_projectile_skill_id"),
+            icon_name="fa6s.crosshairs",
+            grid_margins=(0, 2, 0, 0),
+            vertical_spacing=10,
+        )
 
         self._id_fld = self._type_fld = self._det_fld = None
         for col, label_text in enumerate((ui_text("ui_projectile_skill_id"), ui_text("ui_dlcinfoparam_type"), ui_text("ui_projectile_details"))):
-            f = QWidget()
-            f.setStyleSheet("background: transparent;")
-            fl = QVBoxLayout(f)
-            fl.setContentsMargins(0, 0, 0, 0)
-            fl.setSpacing(2)
-            lbl = QLabel(label_text)
-            lbl.setFont(QFont("Segoe UI", 12))
-            lbl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
-            fl.addWidget(lbl)
+            f, fl, _label, _hint = make_editor_field_shell(label_text)
             fld = QLineEdit()
             fld.setFixedHeight(30)
             fld.setFont(QFont("Consolas", 13))
-            fld.setStyleSheet(
-                f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-                f"color: {P['text_main']}; padding: 2px 6px; border-radius: 4px; }}"
-                f"QLineEdit:focus {{ border: 1px solid {P['accent']}; }}"
-            )
+            fld.setStyleSheet(ss_input())
+            fld.setMinimumWidth(0)
             fl.addWidget(fld)
             card_grid.addWidget(f, 0, col)
             card_grid.setColumnStretch(col, 1)
@@ -150,7 +141,7 @@ class _SkillTable(QWidget):
 
         # Add Action button
         add_bar = QWidget()
-        add_bar.setStyleSheet("background: transparent;")
+        add_bar.setStyleSheet(ss_transparent())
         add_bar_layout = QHBoxLayout(add_bar)
         add_bar_layout.setContentsMargins(20, 8, 12, 4)
         add_bar_layout.setSpacing(4)
@@ -171,7 +162,7 @@ class _SkillTable(QWidget):
         self._cards_scroll.setStyleSheet(ss_scrollarea())
 
         self._cards_widget = QWidget()
-        self._cards_widget.setStyleSheet(f"background-color: {P['bg_dark']};")
+        self._cards_widget.setStyleSheet(ss_bg_dark())
         self._cards_layout = QVBoxLayout(self._cards_widget)
         self._cards_layout.setContentsMargins(0, 4, 0, 8)
         self._cards_layout.setSpacing(8)
@@ -232,17 +223,11 @@ class _SkillTable(QWidget):
         self._blocked = False
 
     def _make_action_card(self, action_el, idx):
-        card = QFrame()
-        card.setStyleSheet(
-            f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}"
-        )
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(12, 10, 12, 12)
-        card_layout.setSpacing(6)
+        card, card_layout = make_editor_card(margins=(12, 10, 12, 12), spacing=8)
 
         # Card header: "Action N" + inline Dup/Delete
         hdr = QWidget()
-        hdr.setStyleSheet("background: transparent;")
+        hdr.setStyleSheet(ss_transparent())
         hdr_layout = QHBoxLayout(hdr)
         hdr_layout.setContentsMargins(0, 0, 0, 0)
         hdr_layout.setSpacing(4)
@@ -255,7 +240,7 @@ class _SkillTable(QWidget):
 
         btn_font = QFont("Segoe UI", 9)
 
-        dup_btn = QPushButton(self.t("btn_duplicate"))
+        dup_btn = QPushButton(self.t("btn_dup_short"))
         dup_btn.setFixedHeight(24)
         dup_btn.setFont(btn_font)
         dup_btn.setStyleSheet(ss_btn())
@@ -273,7 +258,7 @@ class _SkillTable(QWidget):
 
         # Fields grid
         inner = QWidget()
-        inner.setStyleSheet("background: transparent;")
+        inner.setStyleSheet(ss_transparent())
         grid = QGridLayout(inner)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(12)
@@ -288,25 +273,13 @@ class _SkillTable(QWidget):
                 sub_el = action_el.find(tag)
                 value = sub_el.get(attr, '') if sub_el is not None else ''
 
-            f = QWidget()
-            f.setStyleSheet("background: transparent;")
-            fl = QVBoxLayout(f)
-            fl.setContentsMargins(0, 0, 0, 0)
-            fl.setSpacing(2)
-
-            lbl = QLabel(label_text)
-            lbl.setFont(QFont("Segoe UI", 12))
-            lbl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
-            fl.addWidget(lbl)
+            f, fl, _label, _hint = make_editor_field_shell(label_text)
 
             fld = QLineEdit()
             fld.setFixedHeight(30)
             fld.setFont(QFont("Consolas", 13))
-            fld.setStyleSheet(
-                f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-                f"color: {P['text_main']}; padding: 2px 6px; border-radius: 4px; }}"
-                f"QLineEdit:focus {{ border: 1px solid {P['accent']}; }}"
-            )
+            fld.setStyleSheet(ss_input())
+            fld.setMinimumWidth(0)
             fld.setText(value)
             fld.textChanged.connect(self._make_field_updater(action_el, tag, attr))
             fl.addWidget(fld)
@@ -424,7 +397,7 @@ class ProjectileEditor(QWidget):
         # Top bar
         top = QFrame()
         top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(f"background-color: {P['bg_panel']};")
+        top.setStyleSheet(ss_bg_panel())
         tl = QHBoxLayout(top)
         tl.setContentsMargins(12, 8, 12, 8)
         tl.setSpacing(4)
@@ -446,7 +419,7 @@ class ProjectileEditor(QWidget):
 
         self._file_lbl = QLabel(self.t("no_file_loaded"))
         self._file_lbl.setFont(QFont("Consolas", 12))
-        self._file_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        self._file_lbl.setStyleSheet(ss_file_label())
         tl.addWidget(self._file_lbl)
 
         tl.addStretch()
@@ -466,7 +439,7 @@ class ProjectileEditor(QWidget):
         # Left sidebar
         left_frame = QFrame()
         left_frame.setFixedWidth(260)
-        left_frame.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; }}")
+        left_frame.setStyleSheet(ss_sidebar_frame())
         lf_layout = QVBoxLayout(left_frame)
         lf_layout.setContentsMargins(8, 8, 8, 4)
         lf_layout.setSpacing(4)
@@ -475,15 +448,12 @@ class ProjectileEditor(QWidget):
         self._search_entry.setPlaceholderText(self.t("search_placeholder"))
         self._search_entry.setFixedHeight(32)
         self._search_entry.setFont(QFont("Segoe UI", 13))
-        self._search_entry.setStyleSheet(
-            f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-            f"color: {P['text_main']}; padding: 2px 6px; border-radius: 4px; }}"
-        )
+        self._search_entry.setStyleSheet(ss_search())
         self._search_entry.textChanged.connect(self._filter_skill_list)
         lf_layout.addWidget(self._search_entry)
 
         actions_frame = QWidget()
-        actions_frame.setStyleSheet("background: transparent;")
+        actions_frame.setStyleSheet(ss_transparent())
         actions_layout = QHBoxLayout(actions_frame)
         actions_layout.setContentsMargins(0, 2, 0, 4)
         actions_layout.setSpacing(4)
@@ -521,7 +491,7 @@ class ProjectileEditor(QWidget):
         self._skill_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._skill_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._skill_list_widget = QWidget()
-        self._skill_list_widget.setStyleSheet("background-color: transparent;")
+        self._skill_list_widget.setStyleSheet(ss_transparent())
         self._skill_list_layout = QVBoxLayout(self._skill_list_widget)
         self._skill_list_layout.setContentsMargins(0, 0, 0, 0)
         self._skill_list_layout.setSpacing(1)
@@ -533,21 +503,30 @@ class ProjectileEditor(QWidget):
 
         divider = QFrame()
         divider.setFixedWidth(1)
-        divider.setStyleSheet(f"background-color: {P['mid']};")
+        divider.setStyleSheet(ss_sep())
         main_layout.addWidget(divider)
 
         # Right: placeholder OR skill editor
         right_frame = QFrame()
-        right_frame.setStyleSheet(f"QFrame {{ background-color: {P['bg_dark']}; }}")
+        right_frame.setStyleSheet(ss_bg_dark())
         right_layout = QVBoxLayout(right_frame)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
-        self._placeholder = QLabel(ui_text("ui_projectile_open_a_projectile_xfbin_file_to_begin_editing"))
-        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._placeholder.setFont(QFont("Segoe UI", 16))
-        self._placeholder.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        right_layout.addWidget(self._placeholder, 1)
+        self._placeholder_wrap = QWidget(right_frame)
+        self._placeholder_wrap.setStyleSheet(ss_transparent())
+        placeholder_layout = QVBoxLayout(self._placeholder_wrap)
+        placeholder_layout.setContentsMargins(0, 0, 0, 0)
+        placeholder_layout.addStretch()
+        self._placeholder = make_empty_state(
+            self._placeholder_wrap,
+            title=self.t("no_file_loaded"),
+            text=ui_text("ui_projectile_open_a_projectile_xfbin_file_to_begin_editing"),
+            icon_name="fa6s.crosshairs",
+        )
+        placeholder_layout.addWidget(self._placeholder, 0, Qt.AlignmentFlag.AlignCenter)
+        placeholder_layout.addStretch()
+        right_layout.addWidget(self._placeholder_wrap, 1)
 
         self._skill_table = _SkillTable(lang_func=self.t)
         self._skill_table.setVisible(False)
@@ -573,7 +552,7 @@ class ProjectileEditor(QWidget):
         self._filepath = path
         name = os.path.basename(path)
         self._file_lbl.setText(ui_text("ui_customcardparam_value_value", p0=self.t('loading'), p1=name))
-        self._file_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        self._file_lbl.setStyleSheet(ss_file_label())
 
         def _worker():
             try:
@@ -594,7 +573,7 @@ class ProjectileEditor(QWidget):
 
         set_file_label(self._file_lbl, path)
 
-        self._placeholder.setVisible(False)
+        self._placeholder_wrap.setVisible(False)
         self._skill_table.setVisible(True)
 
         self._save_btn.setEnabled(True)
@@ -605,10 +584,10 @@ class ProjectileEditor(QWidget):
         self._populate_skill_list()
 
     def _on_load_error(self, msg):
-        self._placeholder.setVisible(True)
+        self._placeholder_wrap.setVisible(True)
         self._skill_table.setVisible(False)
         self._file_lbl.setText(self.t("no_file_loaded"))
-        self._file_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        self._file_lbl.setStyleSheet(ss_file_label())
         QMessageBox.critical(self, ui_text("ui_charviewer_load_error"), msg)
 
     # Skill list
@@ -631,13 +610,9 @@ class ProjectileEditor(QWidget):
 
     def _make_skill_button(self, chunk):
         btn = QPushButton()
-        btn.setFixedHeight(36)
+        btn.setFixedHeight(40)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet(
-            f"QPushButton {{ background-color: transparent; border-radius: 6px; "
-            f"text-align: left; padding: 0px; border: none; }} "
-            f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
-        )
+        btn.setStyleSheet(ss_sidebar_btn())
         btn_layout = QVBoxLayout(btn)
         btn_layout.setContentsMargins(10, 4, 10, 4)
         btn_layout.setSpacing(0)
@@ -645,6 +620,7 @@ class ProjectileEditor(QWidget):
         name_lbl = QLabel(chunk['skill_id'])
         name_lbl.setFont(QFont("Consolas", 12, QFont.Weight.Bold))
         name_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        name_lbl.setMinimumWidth(0)
         name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         btn_layout.addWidget(name_lbl)
 
@@ -662,18 +638,7 @@ class ProjectileEditor(QWidget):
 
         for btn, c in self._skill_buttons:
             try:
-                if c is chunk:
-                    btn.setStyleSheet(
-                        f"QPushButton {{ background-color: {P['bg_card']}; border-radius: 6px; "
-                        f"text-align: left; padding: 0px; border: none; }} "
-                        f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
-                    )
-                else:
-                    btn.setStyleSheet(
-                        f"QPushButton {{ background-color: transparent; border-radius: 6px; "
-                        f"text-align: left; padding: 0px; border: none; }} "
-                        f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
-                    )
+                btn.setStyleSheet(ss_sidebar_btn(selected=(c is chunk)))
             except Exception:
                 pass
 
