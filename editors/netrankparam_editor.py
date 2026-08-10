@@ -1,7 +1,7 @@
 import copy
 import os
 
-from PyQt6.QtCore import QRegularExpression, Qt
+from PyQt6.QtCore import QRegularExpression, Qt, QTimer
 from PyQt6.QtGui import QFont, QRegularExpressionValidator
 from PyQt6.QtWidgets import (
     QFileDialog,
@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -66,6 +67,11 @@ def _clear_layout(layout):
             _clear_layout(item.layout())
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
+
+
 class NetRankParamEditor(QWidget):
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
@@ -81,6 +87,8 @@ class NetRankParamEditor(QWidget):
         self._fields: dict[str, QLineEdit] = {}
         self._dirty = False
         self._loading_detail = False
+        self._last_compact: bool | None = None
+        self._active_grid_columns = 3
 
         self._uint32_validator = QRegularExpressionValidator(QRegularExpression(r"\d{0,10}"), self)
 
@@ -167,8 +175,10 @@ class NetRankParamEditor(QWidget):
         self._entry_scroll = QScrollArea()
         self._entry_scroll.setWidgetResizable(True)
         self._entry_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._entry_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._entry_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._entry_list_widget = QWidget()
+        self._entry_list_widget.setMinimumWidth(0)
         self._entry_list_widget.setStyleSheet(ss_transparent())
         self._entry_list_layout = QVBoxLayout(self._entry_list_widget)
         self._entry_list_layout.setContentsMargins(0, 0, 0, 0)
@@ -186,12 +196,13 @@ class NetRankParamEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_widget)
         main_layout.addWidget(self._editor_scroll, 1)
 
@@ -299,6 +310,8 @@ class NetRankParamEditor(QWidget):
     def _make_entry_button(self, idx: int, entry: dict) -> QPushButton:
         btn = QPushButton()
         btn.setFixedHeight(44)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(ss_sidebar_btn(selected=idx == self._current_idx))
 
@@ -306,18 +319,36 @@ class NetRankParamEditor(QWidget):
         layout.setContentsMargins(10, 3, 10, 3)
         layout.setSpacing(0)
 
-        title = QLabel(self._entry_title(idx, entry))
+        title_text = self._entry_title(idx, entry)
+        subtitle_text = self._entry_subtitle(entry)
+
+        title = QLabel(_truncate(title_text, 24))
         title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         title.setStyleSheet(ss_main_label())
+        title.setMinimumWidth(0)
+        title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        title.setToolTip(title_text)
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(title)
+
+        subtitle = QLabel(_truncate(subtitle_text, 28))
+        subtitle.setFont(QFont("Consolas", 11))
+        subtitle.setStyleSheet(ss_field_label())
+        subtitle.setMinimumWidth(0)
+        subtitle.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        subtitle.setToolTip(subtitle_text)
+        subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout.addWidget(subtitle)
 
         btn.clicked.connect(lambda checked=False, i=idx: self._select_entry(i))
         return btn
 
     def _entry_title(self, idx: int, entry: dict) -> str:
         return ui_text("ui_netrankparam_entry_title", rank=idx + 1)
+
+    def _entry_subtitle(self, entry: dict) -> str:
+        return f"ID {entry.get('rank_id', 0)} / {entry.get('required_points', 0)} pts"
 
     def _filter_list(self):
         query = self._search.text().lower().strip()
@@ -351,7 +382,13 @@ class NetRankParamEditor(QWidget):
                 continue
             labels = btn.findChildren(QLabel)
             if labels:
-                labels[0].setText(self._entry_title(idx, self._entries[idx]))
+                title_text = self._entry_title(idx, self._entries[idx])
+                labels[0].setText(_truncate(title_text, 24))
+                labels[0].setToolTip(title_text)
+            if len(labels) >= 2:
+                subtitle_text = self._entry_subtitle(self._entries[idx])
+                labels[1].setText(_truncate(subtitle_text, 28))
+                labels[1].setToolTip(subtitle_text)
             break
         self._filter_list()
 
@@ -368,19 +405,20 @@ class NetRankParamEditor(QWidget):
         self._fields = {}
         self._loading_detail = True
         entry = self._entries[idx]
+        self._last_compact = self._is_compact_editor()
 
         header, header_layout = make_editor_grid_card(
+            self._editor_widget,
             title=ui_text("ui_netrankparam_rank_parameters"),
             icon_name="fa6s.medal",
             grid_margins=(0, 0, 0, 0),
             vertical_spacing=8,
         )
+        self._prep_card(header)
+        self._active_grid_columns = 3
         self._add_uint_field(header_layout, 0, 0, "rank_id", ui_text("ui_netrankparam_rank_id"), entry.get("rank_id", 0), big=True)
         self._add_uint_field(header_layout, 0, 1, "required_points", ui_text("ui_netrankparam_required_points"), entry.get("required_points", 0), big=True)
         self._add_text_field(header_layout, 0, 2, "name_key", ui_text("ui_netrankparam_name_key"), entry.get("name_key", ""), big=True)
-        header_layout.setColumnStretch(0, 1)
-        header_layout.setColumnStretch(1, 1)
-        header_layout.setColumnStretch(2, 2)
         self._editor_layout.addWidget(header)
 
         spacer = QWidget()
@@ -389,6 +427,36 @@ class NetRankParamEditor(QWidget):
         self._editor_layout.addWidget(spacer)
         self._editor_layout.addStretch()
         self._loading_detail = False
+
+    def _is_compact_editor(self) -> bool:
+        if not hasattr(self, "_editor_scroll"):
+            return False
+        return self._editor_scroll.viewport().width() < 780
+
+    def _grid_columns(self, max_columns: int) -> int:
+        width = self._editor_scroll.viewport().width()
+        if width < 780:
+            return 1
+        if width < 1080:
+            return min(2, max_columns)
+        return max_columns
+
+    def _field_position(self, row: int, col: int, max_columns: int) -> tuple[int, int]:
+        columns = self._grid_columns(max_columns)
+        logical_index = row * max_columns + col
+        return divmod(logical_index, columns)
+
+    def _prep_card(self, card: QFrame):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(980)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _prep_field_widget(self, frame: QWidget, editor: QWidget):
+        frame.setMinimumWidth(0)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        editor.setMinimumWidth(0)
+        editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
     def _field_shell(self, label: str) -> tuple[QWidget, QVBoxLayout]:
         frame, layout, _label, _hint = make_editor_field_shell(label)
@@ -401,10 +469,15 @@ class NetRankParamEditor(QWidget):
         edit.setFont(QFont("Consolas", 16 if big else 13))
         edit.setStyleSheet(ss_input())
         edit.setMinimumWidth(0)
+        edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         edit.setText(str(value))
+        edit.setCursorPosition(0)
         edit.textChanged.connect(lambda _text, k=key: self._on_text_changed(k))
         layout.addWidget(edit)
-        grid.addWidget(frame, row, col)
+        self._prep_field_widget(frame, edit)
+        mapped_row, mapped_col = self._field_position(row, col, getattr(self, "_active_grid_columns", 3))
+        grid.addWidget(frame, mapped_row, mapped_col)
+        grid.setColumnStretch(mapped_col, 1)
         self._fields[key] = edit
 
     def _add_uint_field(self, grid, row, col, key, label, value, big=False):
@@ -416,12 +489,30 @@ class NetRankParamEditor(QWidget):
         edit.setFont(QFont("Consolas", 16 if big else 13))
         edit.setStyleSheet(ss_input())
         edit.setMinimumWidth(0)
+        edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         edit.setText(str(int(value)))
+        edit.setCursorPosition(0)
         edit.textChanged.connect(self._on_numeric_text_changed)
         edit.editingFinished.connect(lambda k=key: self._on_uint_finished(k))
         layout.addWidget(edit)
-        grid.addWidget(frame, row, col)
+        self._prep_field_widget(frame, edit)
+        mapped_row, mapped_col = self._field_position(row, col, getattr(self, "_active_grid_columns", 3))
+        grid.addWidget(frame, mapped_row, mapped_col)
+        grid.setColumnStretch(mapped_col, 1)
         self._fields[key] = edit
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_idx is not None and self._last_compact is not None:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+
+    def _maybe_rebuild_for_compact(self):
+        if self._current_idx is None or self._loading_detail:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_compact:
+            return
+        self._build_editor(self._current_idx)
 
     def _on_text_changed(self, key: str):
         if self._loading_detail or self._current_idx is None:

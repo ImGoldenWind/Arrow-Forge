@@ -11,15 +11,15 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QScrollArea,
     QFileDialog, QMessageBox, QLineEdit, QSizePolicy,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 
-from core.themes import P
 from core.style_helpers import (
     ss_btn, ss_sep, ss_accent_sep, ss_input, ss_search, ss_scrollarea,
     ss_scrollarea_transparent, ss_sidebar_btn,
     ss_file_label, ss_transparent,
     ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
+    ss_accent_label, ss_dim_label, ss_main_label,
     make_empty_state, make_editor_field_shell, make_editor_grid_card,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
@@ -77,6 +77,11 @@ def _clear_layout(layout):
             _clear_layout(item.layout())
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[:max(1, limit - 1)] + "..."
+
+
 # Main editor widget
 
 class DamageEffEditor(QWidget):
@@ -91,6 +96,7 @@ class DamageEffEditor(QWidget):
         self._effprm_map  = {}
         self._current_idx = -1
         self._entry_buttons = []
+        self._last_compact: bool | None = None
         self._field_widgets = {}  # key → (QLineEdit, name_label)
 
         self._build_ui()
@@ -131,12 +137,14 @@ class DamageEffEditor(QWidget):
 
         self._main_scroll = QScrollArea()
         self._main_scroll.setWidgetResizable(True)
+        self._main_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._main_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._main_scroll.setStyleSheet(ss_scrollarea())
         self._main_inner = QWidget()
         self._main_inner.setStyleSheet(ss_bg_dark())
         self._main_layout = QVBoxLayout(self._main_inner)
-        self._main_layout.setContentsMargins(20, 16, 20, 20)
-        self._main_layout.setSpacing(12)
+        self._main_layout.setContentsMargins(12, 12, 12, 12)
+        self._main_layout.setSpacing(8)
         self._main_scroll.setWidget(self._main_inner)
         body.addWidget(self._main_scroll, 1)
 
@@ -233,6 +241,7 @@ class DamageEffEditor(QWidget):
         self._sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._sidebar_inner = QWidget()
+        self._sidebar_inner.setMinimumWidth(0)
         self._sidebar_inner.setStyleSheet(ss_transparent())
         self._sidebar_list = QVBoxLayout(self._sidebar_inner)
         self._sidebar_list.setContentsMargins(0, 0, 0, 0)
@@ -247,6 +256,7 @@ class DamageEffEditor(QWidget):
     def _make_entry_button(self, entry, idx):
         btn = QPushButton()
         btn.setFixedHeight(44)
+        btn.setMinimumWidth(0)
         btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setStyleSheet(ss_sidebar_btn(selected=(idx == self._current_idx)))
 
@@ -257,14 +267,22 @@ class DamageEffEditor(QWidget):
         vl.setContentsMargins(10, 4, 10, 4)
         vl.setSpacing(1)
 
-        name_lbl = QLabel(ui_text("ui_damageeff_entry_value", p0=entry['entry_id']))
+        name_text = ui_text("ui_damageeff_entry_value", p0=entry['entry_id'])
+        name_lbl = QLabel(_truncate(name_text, 24))
         name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        name_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        name_lbl.setStyleSheet(ss_main_label())
+        name_lbl.setMinimumWidth(0)
+        name_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        name_lbl.setToolTip(name_text)
         vl.addWidget(name_lbl)
 
-        id_lbl = QLabel(ui_text("ui_damageeff_slot_value", p0=entry['entry_id']))
+        id_text = ui_text("ui_damageeff_slot_value", p0=entry['entry_id'])
+        id_lbl = QLabel(_truncate(id_text, 28))
         id_lbl.setFont(QFont("Consolas", 11))
-        id_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        id_lbl.setStyleSheet(ss_dim_label())
+        id_lbl.setMinimumWidth(0)
+        id_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        id_lbl.setToolTip(id_text)
         vl.addWidget(id_lbl)
 
         ol = QHBoxLayout(btn)
@@ -327,15 +345,45 @@ class DamageEffEditor(QWidget):
         self._main_layout.addWidget(card, alignment=Qt.AlignmentFlag.AlignCenter)
         self._main_layout.addStretch(1)
 
+    def _is_compact_editor(self) -> bool:
+        if not hasattr(self, "_main_scroll"):
+            return False
+        return self._main_scroll.viewport().width() < 780
+
+    def _grid_columns(self, max_columns: int) -> int:
+        width = self._main_scroll.viewport().width()
+        if width < 780:
+            return 1
+        if width < 1080:
+            return min(2, max_columns)
+        return max_columns
+
+    def _prep_card(self, card: QFrame):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(980)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _prep_field_widget(self, widget: QWidget):
+        widget.setMinimumWidth(0)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return widget
+
+    def _add_editor_card(self, card: QFrame):
+        self._main_layout.addWidget(card)
+
     def _build_editor(self, entry):
         _clear_layout(self._main_layout)
         self._field_widgets = {}
+        self._last_compact = self._is_compact_editor()
+        columns = self._grid_columns(2)
 
         subtitle = (
             ui_text("ui_damageeff_load_effectprm_bin_xfbin_to_see_effect_names")
             if not self._effprm_map else None
         )
         card, grid = make_editor_grid_card(
+            self._main_inner,
             title=ui_text("ui_damageeff_damage_effect_slot_value", p0=entry['entry_id']),
             icon_name="fa6s.wand-magic-sparkles",
             subtitle=subtitle,
@@ -343,13 +391,19 @@ class DamageEffEditor(QWidget):
             horizontal_spacing=16,
             vertical_spacing=10,
         )
+        self._prep_card(card)
 
         for i, (fkey, fname, nullable, tip) in enumerate(_FIELDS):
             lbl_text = fname + (ui_text("ui_damageeff_nullable") if nullable else "")
             val = entry[fkey]
             resolved = self._eff_name(val, nullable)
             field, field_layout, label, name_lbl = make_editor_field_shell(lbl_text, resolved or " ")
+            self._prep_field_widget(field)
             label.setToolTip(tip)
+            name_lbl.setMinimumWidth(0)
+            name_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            if resolved:
+                name_lbl.setToolTip(resolved)
 
             inp = QLineEdit(_fmt(val, nullable))
             inp.setFixedHeight(30)
@@ -357,16 +411,34 @@ class DamageEffEditor(QWidget):
             inp.setStyleSheet(ss_input())
             inp.setToolTip(tip)
             inp.setMinimumWidth(0)
+            inp.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            inp.setCursorPosition(0)
             inp.textEdited.connect(lambda _, fk=fkey: self._mark_dirty())
             field_layout.addWidget(inp)
 
-            row, col = divmod(i, 2)
+            row, col = divmod(i, columns)
             grid.addWidget(field, row, col)
             grid.setColumnStretch(col, 1)
             self._field_widgets[fkey] = (inp, name_lbl)
 
-        self._main_layout.addWidget(card)
+        self._add_editor_card(card)
         self._main_layout.addStretch(1)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_idx >= 0 and self._last_compact is not None:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+
+    def _maybe_rebuild_for_compact(self):
+        if self._current_idx < 0 or self._result is None:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_compact:
+            return
+        self._apply_fields()
+        entries = self._result.get('entries') or []
+        if 0 <= self._current_idx < len(entries):
+            self._build_editor(entries[self._current_idx])
 
     def _mark_dirty(self):
         self._dirty = True
@@ -437,7 +509,7 @@ class DamageEffEditor(QWidget):
 
         count = len(self._effprm_map)
         self._effprm_lbl.setText(ui_text("ui_damageeff_value_effects_loaded", p0=count))
-        self._effprm_lbl.setStyleSheet(f"color: {P['secondary']}; background: transparent;")
+        self._effprm_lbl.setStyleSheet(ss_accent_label())
         self._btn_effprm.setText(ui_text("ui_damageeff_reload_effectprm"))
 
         if self._result and 0 <= self._current_idx < len(self._result['entries']):

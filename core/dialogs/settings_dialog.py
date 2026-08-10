@@ -1112,6 +1112,9 @@ class SettingsDialogMixin:
         card_layout.addWidget(_credit_entry("Al-Hydra", [
             ("GitHub",    "https://github.com/Al-Hydra"),
         ], desc="for his texture editor, which I used as a base for the editor in this toolbox"))
+        card_layout.addWidget(_credit_entry("Leafpenguins", [
+            ("NexusMods", "https://www.nexusmods.com/profile/Leafpenguins"),
+        ], desc=self.t("credit_leaf_desc")))
         card_layout.addWidget(_credit_entry("LazyBone152", [
             ("GitHub",    "https://github.com/LazyBone152"),
         ], desc="for the 'ACE' program, the code of which I used as the basis for the built-in editor in this toolbox"))

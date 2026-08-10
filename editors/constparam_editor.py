@@ -5,16 +5,15 @@ import copy
 
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QScrollArea,
-    QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox,
+    QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 
-from core.themes import P
 from core.style_helpers import (
     ss_btn, ss_sep, ss_accent_sep, ss_input, ss_search, ss_scrollarea, ss_scrollarea_transparent,
     ss_sidebar_btn, ss_file_label, ss_transparent,
-    ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
+    ss_bg_dark, ss_bg_panel, ss_sidebar_frame, ss_main_label,
     make_empty_state, make_editor_field_shell, make_editor_grid_card,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
@@ -38,6 +37,11 @@ def _clear_layout(layout):
             _clear_layout(item.layout())
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
+
+
 class ConstParamEditor(QWidget):
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
@@ -51,10 +55,16 @@ class ConstParamEditor(QWidget):
         self._param_buttons = []
         self._name_field = None
         self._value_field = None
+        self._last_compact = None
+        self._active_grid_columns = 2
 
         self._build_ui()
 
     # UI construction
+
+    def _tr(self, key, fallback):
+        value = self._t(key)
+        return fallback if value == key else value
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -69,14 +79,14 @@ class ConstParamEditor(QWidget):
         tl.setContentsMargins(12, 8, 12, 8)
         tl.setSpacing(4)
 
-        self._btn_open = QPushButton(self._t("btn_open_file"))
+        self._btn_open = QPushButton(self._tr("btn_open_file", ui_text("btn_open_file")))
         self._btn_open.setFixedHeight(TOOLBAR_BTN_H)
         self._btn_open.setFont(QFont("Segoe UI", 10))
         self._btn_open.setStyleSheet(ss_btn(accent=True))
         self._btn_open.clicked.connect(self._on_open)
         tl.addWidget(self._btn_open)
 
-        self._btn_save = QPushButton(self._t("btn_save_file"))
+        self._btn_save = QPushButton(self._tr("btn_save_file", ui_text("btn_save_file")))
         self._btn_save.setFixedHeight(TOOLBAR_BTN_H)
         self._btn_save.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self._btn_save.setStyleSheet(ss_btn(accent=True))
@@ -84,7 +94,7 @@ class ConstParamEditor(QWidget):
         self._btn_save.clicked.connect(self._on_save)
         tl.addWidget(self._btn_save)
 
-        self._file_lbl = QLabel(self._t("no_file_loaded"))
+        self._file_lbl = QLabel(self._tr("no_file_loaded", ui_text("cpk_no_file")))
         self._file_lbl.setFont(QFont("Consolas", 12))
         self._file_lbl.setStyleSheet(ss_file_label())
         tl.addWidget(self._file_lbl)
@@ -112,9 +122,9 @@ class ConstParamEditor(QWidget):
         sl.setSpacing(4)
 
         self._search_entry = QLineEdit()
-        self._search_entry.setPlaceholderText(self._t("search_placeholder"))
+        self._search_entry.setPlaceholderText(self._tr("search_placeholder", ui_text("search_placeholder")))
         self._search_entry.setFixedHeight(32)
-        self._search_entry.setFont(QFont("Segoe UI", 13))
+        self._search_entry.setFont(QFont(P.get("font_ui", "Segoe UI"), 13))
         self._search_entry.setStyleSheet(ss_search())
         self._search_entry.textChanged.connect(self._filter_list)
         sl.addWidget(self._search_entry)
@@ -124,9 +134,9 @@ class ConstParamEditor(QWidget):
         abl = QHBoxLayout(abf)
         abl.setContentsMargins(0, 2, 0, 4)
         abl.setSpacing(4)
-        bf = QFont("Segoe UI", 10)
+        bf = QFont(P.get("font_ui", "Segoe UI"), 10)
 
-        self._btn_add = QPushButton(self._t("btn_new"))
+        self._btn_add = QPushButton(self._tr("btn_new", ui_text("btn_new")))
         self._btn_add.setFixedHeight(28)
         self._btn_add.setFont(bf)
         self._btn_add.setEnabled(False)
@@ -134,7 +144,7 @@ class ConstParamEditor(QWidget):
         self._btn_add.clicked.connect(self._on_add)
         abl.addWidget(self._btn_add, 1)
 
-        self._btn_dup = QPushButton(self._t("btn_duplicate"))
+        self._btn_dup = QPushButton(self._tr("btn_duplicate", ui_text("btn_duplicate")))
         self._btn_dup.setFixedHeight(28)
         self._btn_dup.setFont(bf)
         self._btn_dup.setEnabled(False)
@@ -142,7 +152,7 @@ class ConstParamEditor(QWidget):
         self._btn_dup.clicked.connect(self._on_dup)
         abl.addWidget(self._btn_dup, 1)
 
-        self._btn_del = QPushButton(self._t("btn_delete"))
+        self._btn_del = QPushButton(self._tr("btn_delete", ui_text("btn_delete")))
         self._btn_del.setFixedHeight(28)
         self._btn_del.setFont(bf)
         self._btn_del.setEnabled(False)
@@ -155,8 +165,10 @@ class ConstParamEditor(QWidget):
         self._param_scroll = QScrollArea()
         self._param_scroll.setWidgetResizable(True)
         self._param_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._param_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._param_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._param_list_widget = QWidget()
+        self._param_list_widget.setMinimumWidth(0)
         self._param_list_widget.setStyleSheet(ss_transparent())
         self._param_list_layout = QVBoxLayout(self._param_list_widget)
         self._param_list_layout.setContentsMargins(0, 0, 0, 0)
@@ -176,11 +188,12 @@ class ConstParamEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
         self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_widget)
 
@@ -193,7 +206,7 @@ class ConstParamEditor(QWidget):
 
     def _set_editor_placeholder(self, text):
         _clear_layout(self._editor_layout)
-        title = self._t("no_file_loaded") if self._filepath is None else ui_text("ui_model_viewer_select_item")
+        title = self._tr("no_file_loaded", ui_text("no_file_loaded")) if self._filepath is None else ui_text("ui_model_viewer_select_item")
         card = make_empty_state(
             self._editor_widget,
             title=title,
@@ -242,16 +255,22 @@ class ConstParamEditor(QWidget):
         self._param_list_layout.addStretch()
 
     def _make_param_button(self, p, idx):
+        name = p['name']
         btn = QPushButton()
         btn.setFixedHeight(36)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(ss_sidebar_btn(selected=(idx == self._current_idx)))
         bl = QVBoxLayout(btn)
         bl.setContentsMargins(10, 4, 10, 4)
         bl.setSpacing(0)
-        lbl = QLabel(p['name'])
-        lbl.setFont(QFont("Consolas", 12, QFont.Weight.Bold))
-        lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        lbl = QLabel(_truncate(name, 16))
+        lbl.setFont(QFont(P.get("font_ui", "Segoe UI"), 12, QFont.Weight.Bold))
+        lbl.setStyleSheet(ss_main_label())
+        lbl.setMinimumWidth(0)
+        lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        lbl.setToolTip(name)
         lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         bl.addWidget(lbl)
         btn.clicked.connect(lambda checked=False, i=idx: self._select_param(i))
@@ -270,6 +289,35 @@ class ConstParamEditor(QWidget):
             btn.setStyleSheet(ss_sidebar_btn(selected=(i == idx)))
         self._build_editor(idx)
 
+    def _is_compact_editor(self) -> bool:
+        if not hasattr(self, "_editor_scroll"):
+            return False
+        return self._editor_scroll.viewport().width() < 780
+
+    def _grid_columns(self, max_columns: int) -> int:
+        width = self._editor_scroll.viewport().width()
+        if width < 780:
+            return 1
+        if width < 1080:
+            return min(2, max_columns)
+        return max_columns
+
+    def _prep_card(self, card: QFrame):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(980)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _prep_field_widget(self, widget: QWidget):
+        widget.setMinimumWidth(0)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return widget
+
+    def _field_position(self, row: int, col: int, max_columns: int) -> tuple[int, int]:
+        columns = self._grid_columns(max_columns)
+        logical_index = row * max_columns + col
+        return divmod(logical_index, columns)
+
     def _build_editor(self, idx):
         _clear_layout(self._editor_layout)
         if idx < 0 or idx >= len(self._params):
@@ -285,41 +333,67 @@ class ConstParamEditor(QWidget):
             return
 
         p = self._params[idx]
+        self._last_compact = self._is_compact_editor()
+        card_title = _truncate(p['name'], 24 if self._last_compact else 72)
 
         card, grid = make_editor_grid_card(
-            title=p['name'],
+            self._editor_widget,
+            title=card_title,
             icon_name="fa6s.sliders",
             subtitle=ui_text("ui_constparam_value"),
             grid_margins=(0, 2, 0, 0),
             vertical_spacing=10,
         )
+        self._prep_card(card)
+        self._active_grid_columns = 2
 
         # Name field
         nf, nfl, _label, _hint = make_editor_field_shell(ui_text("bone_col_name"))
+        self._prep_field_widget(nf)
         self._name_field = QLineEdit(p['name'])
         self._name_field.setFixedHeight(30)
         self._name_field.setFont(QFont("Consolas", 13))
         self._name_field.setStyleSheet(ss_input())
         self._name_field.setMinimumWidth(0)
+        self._name_field.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._name_field.setCursorPosition(0)
         self._name_field.editingFinished.connect(lambda i=idx: self._commit_name(i))
         nfl.addWidget(self._name_field)
-        grid.addWidget(nf, 0, 0)
-        grid.setColumnStretch(0, 1)
+        row, col = self._field_position(0, 0, self._active_grid_columns)
+        grid.addWidget(nf, row, col)
+        grid.setColumnStretch(col, 1)
 
         # Value field
         vf, vfl, _label, _hint = make_editor_field_shell(ui_text("ui_constparam_value"))
+        self._prep_field_widget(vf)
         self._value_field = QLineEdit(p['value'])
         self._value_field.setFixedHeight(30)
         self._value_field.setFont(QFont("Consolas", 13))
         self._value_field.setStyleSheet(ss_input())
         self._value_field.setMinimumWidth(0)
+        self._value_field.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._value_field.setCursorPosition(0)
         self._value_field.editingFinished.connect(lambda i=idx: self._commit_value(i))
         vfl.addWidget(self._value_field)
-        grid.addWidget(vf, 0, 1)
-        grid.setColumnStretch(1, 1)
+        row, col = self._field_position(0, 1, self._active_grid_columns)
+        grid.addWidget(vf, row, col)
+        grid.setColumnStretch(col, 1)
 
         self._editor_layout.addWidget(card)
         self._editor_layout.addStretch()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_idx >= 0 and self._last_compact is not None:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+
+    def _maybe_rebuild_for_compact(self):
+        if self._current_idx < 0:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_compact:
+            return
+        self._build_editor(self._current_idx)
 
     def _commit_name(self, idx):
         if self._name_field is None or idx < 0 or idx >= len(self._params):
@@ -330,7 +404,8 @@ class ConstParamEditor(QWidget):
             if i == idx:
                 lbls = btn.findChildren(QLabel)
                 if lbls:
-                    lbls[0].setText(new_name)
+                    lbls[0].setText(_truncate(new_name, 16))
+                    lbls[0].setToolTip(new_name)
                 break
         self._mark_dirty()
 

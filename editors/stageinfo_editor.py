@@ -4,11 +4,12 @@ import copy
 import os
 import struct
 
+import qtawesome as qta
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit,
     QVBoxLayout, QHBoxLayout, QScrollArea,
     QFileDialog, QMessageBox,
-    QTabWidget, QGridLayout, QColorDialog,
+    QTabWidget, QGridLayout, QColorDialog, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QColor
@@ -17,7 +18,8 @@ from core.themes import P
 from core.style_helpers import (
     add_editor_card_title, make_editor_field, make_empty_state,
     make_editor_field_shell, make_editor_grid_card,
-    ss_accent_sep, ss_bg_dark, ss_bg_panel, ss_btn, ss_input,
+    ss_accent_label, ss_accent_sep, ss_bg_dark, ss_bg_panel, ss_btn, ss_dim_label,
+    ss_input, ss_main_label,
     ss_sidebar_btn, ss_search, ss_scrollarea, ss_scrollarea_transparent,
     ss_editor_card, ss_file_label, ss_sep,
     ss_sidebar_frame, ss_tab_widget, ss_transparent,
@@ -60,27 +62,61 @@ def _card_frame():
     return card
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[:max(1, limit - 1)] + "..."
+
+
 def _make_field(label_text, value_text):
-    return make_editor_field(label_text, value_text)
+    field, edit = make_editor_field(label_text, value_text)
+    field.setMinimumWidth(0)
+    field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    edit.setMinimumWidth(0)
+    edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+    return field, edit
+
+
+def _color_preview_style(rgba=None, *, invalid=False):
+    if invalid:
+        bg = P.get("input_bg", P["bg_card"])
+        border = P.get("danger", P.get("accent_dim", P["accent"]))
+    else:
+        r, g, b, a = rgba
+        bg = f"rgba({r}, {g}, {b}, {a})"
+        border = P["border"]
+    return (
+        f"QPushButton {{ background-color: {bg}; border: 1px solid {border}; border-radius: 5px; }}"
+        f"QPushButton:hover {{ border: 1px solid {P['accent']}; }}"
+    )
 
 
 def _entry_btn(title, subtitle, selected, on_click):
     btn = QPushButton()
     btn.setFixedHeight(44)
+    btn.setMinimumWidth(0)
+    btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
     btn.setStyleSheet(ss_sidebar_btn(selected=selected))
     bl = QVBoxLayout(btn)
     bl.setContentsMargins(10, 3, 10, 3)
     bl.setSpacing(0)
-    name_lbl = QLabel(title)
+    title_text = str(title)
+    name_lbl = QLabel(_truncate(title_text, 24))
     name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-    name_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+    name_lbl.setStyleSheet(ss_main_label())
+    name_lbl.setMinimumWidth(0)
+    name_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+    name_lbl.setToolTip(title_text)
     name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
     bl.addWidget(name_lbl)
     if subtitle:
-        sub_lbl = QLabel(subtitle)
+        subtitle_text = str(subtitle)
+        sub_lbl = QLabel(_truncate(subtitle_text, 28))
         sub_lbl.setFont(QFont("Segoe UI", 11))
-        sub_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        sub_lbl.setStyleSheet(ss_dim_label())
+        sub_lbl.setMinimumWidth(0)
+        sub_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        sub_lbl.setToolTip(subtitle_text)
         sub_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         bl.addWidget(sub_lbl)
     btn.clicked.connect(on_click)
@@ -91,11 +127,12 @@ def _right_scroll():
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     scroll.setStyleSheet(ss_scrollarea())
     inner = QWidget()
     inner.setStyleSheet(ss_bg_dark())
     layout = QVBoxLayout(inner)
-    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setContentsMargins(12, 12, 12, 12)
     layout.setSpacing(8)
     scroll.setWidget(inner)
     return scroll, layout
@@ -169,16 +206,10 @@ class _ColorWidget(QWidget):
             r, g, b, a = (int(self._edits[i].text() or '0', 16) & 0xFF for i in range(4))
         except ValueError:
             self._preview.setStyleSheet(
-                f"QPushButton {{ background-color: {P['bg_card']}; "
-                f"border: 1px solid {P.get('danger', P.get('accent_dim', P['accent']))}; "
-                f"border-radius: 5px; }}"
+                _color_preview_style(None, invalid=True)
             )
             return
-        self._preview.setStyleSheet(
-            f"QPushButton {{ background-color: rgba({r}, {g}, {b}, {a}); "
-            f"border: 1px solid {P['border']}; border-radius: 5px; }}"
-            f"QPushButton:hover {{ border: 1px solid {P['accent']}; }}"
-        )
+        self._preview.setStyleSheet(_color_preview_style((r, g, b, a)))
 
     def get_bytes(self):
         out = []
@@ -216,11 +247,12 @@ class _GeneralTab(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setStyleSheet(ss_scrollarea())
         inner = QWidget()
         inner.setStyleSheet(ss_bg_dark())
         root = QVBoxLayout(inner)
-        root.setContentsMargins(0, 8, 0, 8)
+        root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(8)
 
         # Stage Code card
@@ -238,6 +270,10 @@ class _GeneralTab(QWidget):
         self._code_edit.setStyleSheet(ss_input())
         self._code_edit.editingFinished.connect(self._on_change)
         code_field, code_lay, _label, _hint = make_editor_field_shell(ui_text("ui_stageinfo_code"))
+        code_field.setMinimumWidth(0)
+        code_field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._code_edit.setMinimumWidth(0)
+        self._code_edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         code_lay.addWidget(self._code_edit)
         code_grid.addWidget(code_field, 0, 0)
         code_grid.setColumnStretch(0, 1)
@@ -291,6 +327,8 @@ class _GeneralTab(QWidget):
         e.setFixedHeight(30)
         e.setFont(QFont("Consolas", 13))
         e.setStyleSheet(ss_input())
+        e.setMinimumWidth(0)
+        e.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         e.editingFinished.connect(self._on_change)
         return e
 
@@ -374,11 +412,12 @@ class _ParamsTab(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setStyleSheet(ss_scrollarea())
         inner = QWidget()
         inner.setStyleSheet(ss_bg_dark())
         root = QVBoxLayout(inner)
-        root.setContentsMargins(0, 8, 0, 8)
+        root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(8)
 
         # Colours card
@@ -392,6 +431,8 @@ class _ParamsTab(QWidget):
 
         for idx, (off, lbl_text) in enumerate(zip(self._COLOR_OFFSETS, self._COLOR_LABELS)):
             fw, fl, _label, _hint = make_editor_field_shell(lbl_text)
+            fw.setMinimumWidth(0)
+            fw.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             cw = _ColorWidget()
             cw.changed.connect(self._on_change)
             fl.addWidget(cw)
@@ -431,10 +472,14 @@ class _ParamsTab(QWidget):
             (96, 40, ui_text("ui_stageinfo_reserved_2_96_40_bytes")),
         ]):
             fw, fl, _label, _hint = make_editor_field_shell(lbl_text)
+            fw.setMinimumWidth(0)
+            fw.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             e = QLineEdit()
             e.setFixedHeight(30)
             e.setFont(QFont("Consolas", 13))
             e.setStyleSheet(ss_input())
+            e.setMinimumWidth(0)
+            e.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             e.editingFinished.connect(self._on_change)
             fl.addWidget(e)
             res_grid.addWidget(fw, 0, ci)
@@ -453,10 +498,14 @@ class _ParamsTab(QWidget):
         fw, fl, _label, _hint = make_editor_field_shell(
             ui_text("ui_stageinfo_value_value", p0=lbl_text, p1=off)
         )
+        fw.setMinimumWidth(0)
+        fw.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         w = QLineEdit()
         w.setFixedHeight(30)
         w.setFont(QFont("Consolas", 13))
         w.setStyleSheet(ss_input())
+        w.setMinimumWidth(0)
+        w.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         w.editingFinished.connect(self._on_change)
         fl.addWidget(w)
         self._scalar_widgets[off] = (w, is_float)
@@ -510,7 +559,11 @@ class _ClumpsTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._stage = None
+        self._last_compact = None
         self._build_ui()
+
+    def _is_compact(self):
+        return self.width() < 760
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -565,26 +618,46 @@ class _ClumpsTab(QWidget):
         _clear_layout(self._cards_layout)
         if self._stage is None:
             return
+        self._last_compact = self._is_compact()
         for i, c in enumerate(self._stage['clumps']):
             self._cards_layout.addWidget(self._make_card(i, c))
         self._cards_layout.addStretch()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._stage is None or self._last_compact is None:
+            return
+        compact = self._is_compact()
+        if compact != self._last_compact:
+            self._rebuild()
+
     def _make_card(self, idx, c):
         skip_flag  = clump_get_skip_flag(c['skip_data'])
         skip_float = clump_get_skip_float(c['skip_data'])
+        compact = self._is_compact()
 
         card = _card_frame()
+        card.setMinimumWidth(0)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         cl = QVBoxLayout(card)
         cl.setContentsMargins(12, 12, 12, 12)
         cl.setSpacing(8)
 
-        hdr = QLabel(ui_text("ui_mainmodeparam_value_value", p0=idx, p1=c['clump_name']))
-        hdr.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        hdr.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
-        cl.addWidget(hdr)
+        title_text = ui_text("ui_mainmodeparam_value_value", p0=idx, p1=c['clump_name'])
+        subtitle_text = c.get("xfbin_path", "")
+        _row, hdr, _subtitle = add_editor_card_title(
+            cl,
+            _truncate(title_text, 38 if compact else 92),
+            "fa6s.cubes",
+            _truncate(subtitle_text, 46 if compact else 92),
+        )
+        hdr.setToolTip(title_text)
+        if _subtitle is not None:
+            _subtitle.setToolTip(subtitle_text)
 
         grid = QGridLayout()
-        grid.setSpacing(8)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(8)
         grid.setContentsMargins(0, 0, 0, 0)
 
         fw0, f_path  = _make_field(ui_text("ui_effect_xfbin_path"),  c['xfbin_path'])
@@ -596,14 +669,19 @@ class _ClumpsTab(QWidget):
         fw6, f_val1  = _make_field(ui_text("ui_stageinfo_val1_hex"),  f"{c['val1']:02X}")
         fw7, f_val2  = _make_field(ui_text("ui_stageinfo_val2_hex"),  f"{c['val2']:02X}")
 
-        grid.addWidget(fw0, 0, 0); grid.setColumnStretch(0, 2)
-        grid.addWidget(fw1, 0, 1); grid.setColumnStretch(1, 2)
-        grid.addWidget(fw2, 1, 0)
-        grid.addWidget(fw3, 1, 1)
-        grid.addWidget(fw4, 2, 0); grid.setColumnStretch(0, 1)
-        grid.addWidget(fw5, 2, 1); grid.setColumnStretch(1, 1)
-        grid.addWidget(fw6, 2, 2); grid.setColumnStretch(2, 1)
-        grid.addWidget(fw7, 2, 3); grid.setColumnStretch(3, 1)
+        if compact:
+            for row, fw in enumerate((fw0, fw1, fw2, fw3, fw4, fw5, fw6, fw7)):
+                grid.addWidget(fw, row, 0)
+            grid.setColumnStretch(0, 1)
+        else:
+            grid.addWidget(fw0, 0, 0); grid.setColumnStretch(0, 2)
+            grid.addWidget(fw1, 0, 1); grid.setColumnStretch(1, 2)
+            grid.addWidget(fw2, 1, 0)
+            grid.addWidget(fw3, 1, 1)
+            grid.addWidget(fw4, 2, 0); grid.setColumnStretch(0, 1)
+            grid.addWidget(fw5, 2, 1); grid.setColumnStretch(1, 1)
+            grid.addWidget(fw6, 2, 2); grid.setColumnStretch(2, 1)
+            grid.addWidget(fw7, 2, 3); grid.setColumnStretch(3, 1)
 
         cl.addLayout(grid)
 
@@ -632,7 +710,9 @@ class _ClumpsTab(QWidget):
                 c['val2'] = int(f_val2.text(), 16)
             except ValueError:
                 pass
-            hdr.setText(ui_text("ui_mainmodeparam_value_value", p0=idx, p1=c['clump_name']))
+            title_text = ui_text("ui_mainmodeparam_value_value", p0=idx, p1=c['clump_name'])
+            hdr.setText(_truncate(title_text, 38 if self._is_compact() else 92))
+            hdr.setToolTip(title_text)
             self.changed.emit()
 
         for field in (f_path, f_clump, f_unk, f_unk2, f_flag, f_float, f_val1, f_val2):
@@ -790,7 +870,9 @@ class StageInfoEditor(QWidget):
         self._list_scroll.setWidgetResizable(True)
         self._list_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._list_scroll.setStyleSheet(ss_scrollarea_transparent())
+        self._list_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._list_widget = QWidget()
+        self._list_widget.setMinimumWidth(0)
         self._list_widget.setStyleSheet(ss_transparent())
         self._list_layout = QVBoxLayout(self._list_widget)
         self._list_layout.setContentsMargins(0, 0, 0, 0)
@@ -841,6 +923,9 @@ class StageInfoEditor(QWidget):
         self._tabs.addTab(self._tab_general, ui_text("ui_stageinfo_general"))
         self._tabs.addTab(self._tab_params,  ui_text("ui_stageinfo_params"))
         self._tabs.addTab(self._tab_clumps,  ui_text("ui_stageinfo_clumps"))
+        self._tabs.setTabIcon(0, qta.icon("fa6s.circle-info", color=P["accent"]))
+        self._tabs.setTabIcon(1, qta.icon("fa6s.sliders", color=P["accent"]))
+        self._tabs.setTabIcon(2, qta.icon("fa6s.cubes", color=P["accent"]))
 
         right_lay.addWidget(self._tabs, 1)
 
@@ -962,7 +1047,8 @@ class StageInfoEditor(QWidget):
                 lbls = btn.findChildren(QLabel)
                 if lbls:
                     label = stage['code'] if stage['code'] else f"Stage {i:02d}"
-                    lbls[0].setText(label)
+                    lbls[0].setText(_truncate(label, 24))
+                    lbls[0].setToolTip(label)
                 break
 
     def _add_stage(self):

@@ -6,7 +6,7 @@ Each entry defines one track or voice line in the in-game Sound Test menu.
 import copy
 import os
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QFileDialog,
@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -80,6 +81,11 @@ def _clear_layout(layout):
             _clear_layout(item.layout())
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
+
+
 class SoundTestParamEditor(QWidget):
     """Embedded Sound Test editor styled like CharacterStatsEditor."""
 
@@ -97,6 +103,8 @@ class SoundTestParamEditor(QWidget):
         self._fields: dict[str, QWidget] = {}
         self._dirty = False
         self._block_detail = False
+        self._last_compact: bool | None = None
+        self._active_grid_columns = 3
 
         self._build_ui()
 
@@ -205,9 +213,11 @@ class SoundTestParamEditor(QWidget):
         self._entry_scroll = QScrollArea()
         self._entry_scroll.setWidgetResizable(True)
         self._entry_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._entry_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._entry_scroll.setStyleSheet(ss_scrollarea_transparent())
 
         self._entry_list_widget = QWidget()
+        self._entry_list_widget.setMinimumWidth(0)
         self._entry_list_widget.setStyleSheet(ss_transparent())
         self._entry_list_layout = QVBoxLayout(self._entry_list_widget)
         self._entry_list_layout.setContentsMargins(0, 0, 0, 0)
@@ -226,13 +236,14 @@ class SoundTestParamEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
 
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_widget)
         self._show_placeholder(ui_text("ui_soundtestparam_open_a_soundtestparam_xfbin_file_to_begin_editing"))
 
@@ -331,6 +342,8 @@ class SoundTestParamEditor(QWidget):
     def _make_entry_button(self, idx: int, entry: dict) -> QPushButton:
         btn = QPushButton()
         btn.setFixedHeight(44)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(ss_sidebar_btn(selected=idx == self._current_idx))
 
@@ -338,15 +351,24 @@ class SoundTestParamEditor(QWidget):
         btn_layout.setContentsMargins(10, 3, 10, 3)
         btn_layout.setSpacing(0)
 
-        name_lbl = QLabel(self._entry_title(idx))
+        title_text = self._entry_title(idx)
+        subtitle_text = self._entry_subtitle(entry)
+
+        name_lbl = QLabel(_truncate(title_text, 24))
         name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         name_lbl.setStyleSheet(ss_main_label())
+        name_lbl.setMinimumWidth(0)
+        name_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        name_lbl.setToolTip(title_text)
         name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         btn_layout.addWidget(name_lbl)
 
-        id_lbl = QLabel(self._entry_subtitle(entry))
+        id_lbl = QLabel(_truncate(subtitle_text, 28))
         id_lbl.setFont(QFont("Consolas", 11))
         id_lbl.setStyleSheet(ss_dim_label())
+        id_lbl.setMinimumWidth(0)
+        id_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        id_lbl.setToolTip(subtitle_text)
         id_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         btn_layout.addWidget(id_lbl)
 
@@ -395,8 +417,12 @@ class SoundTestParamEditor(QWidget):
                 continue
             labels = btn.findChildren(QLabel)
             if len(labels) >= 2:
-                labels[0].setText(self._entry_title(idx))
-                labels[1].setText(self._entry_subtitle(self._entries[idx]))
+                title_text = self._entry_title(idx)
+                subtitle_text = self._entry_subtitle(self._entries[idx])
+                labels[0].setText(_truncate(title_text, 24))
+                labels[0].setToolTip(title_text)
+                labels[1].setText(_truncate(subtitle_text, 28))
+                labels[1].setToolTip(subtitle_text)
             break
         self._filter_list()
 
@@ -428,21 +454,23 @@ class SoundTestParamEditor(QWidget):
         self._fields = {}
         entry = self._entries[idx]
         self._block_detail = True
+        self._last_compact = self._is_compact_editor()
+        subtitle = _truncate(self._entry_subtitle(entry), 54 if self._last_compact else 92)
 
         hdr, hdr_layout = make_editor_grid_card(
+            self._editor_widget,
             title=self._entry_title(idx),
             icon_name="fa6s.music",
-            subtitle=self._entry_subtitle(entry),
+            subtitle=subtitle,
             grid_margins=(0, 2, 0, 0),
             vertical_spacing=8,
         )
+        self._prep_card(hdr)
+        self._active_grid_columns = 3
 
-        self._add_field(hdr_layout, 1, 0, "bgm_id", "BGM_ID", entry.get("bgm_id", ""), maxlen=64, big=True)
-        self._add_field(hdr_layout, 1, 1, "chara_code", ui_text("ui_soundtestparam_characode"), entry.get("chara_code", ""), maxlen=32, big=True)
-        self._add_spin_field(hdr_layout, 1, 2, "index", ui_text("ui_dictionaryparam_index"), int(entry.get("index", 0)), 0, 0x7FFFFFFF, big=True)
-        hdr_layout.setColumnStretch(0, 2)
-        hdr_layout.setColumnStretch(1, 1)
-        hdr_layout.setColumnStretch(2, 1)
+        self._add_field(hdr_layout, 0, 0, "bgm_id", "BGM_ID", entry.get("bgm_id", ""), maxlen=64, big=True)
+        self._add_field(hdr_layout, 0, 1, "chara_code", ui_text("ui_soundtestparam_characode"), entry.get("chara_code", ""), maxlen=32, big=True)
+        self._add_spin_field(hdr_layout, 0, 2, "index", ui_text("ui_dictionaryparam_index"), int(entry.get("index", 0)), 0, 0x7FFFFFFF, big=True)
         self._editor_layout.addWidget(hdr)
 
         self._add_section(ui_text("ui_soundtestparam_audio_cues"))
@@ -457,6 +485,7 @@ class SoundTestParamEditor(QWidget):
             entry.get("sound_str1", ""),
             maxlen=64,
             hint=ui_text("ui_soundtestparam_audio_cue_for_title_cursor_playback"),
+            max_columns=2,
         )
         self._add_field(
             cue_grid,
@@ -467,14 +496,14 @@ class SoundTestParamEditor(QWidget):
             entry.get("sound_str2", ""),
             maxlen=64,
             hint=ui_text("ui_soundtestparam_audio_cue_for_hover_selection_playback"),
+            max_columns=2,
         )
-        cue_grid.setColumnStretch(0, 1)
-        cue_grid.setColumnStretch(1, 1)
         self._editor_layout.addWidget(cue)
 
         self._add_section(ui_text("ui_soundtestparam_unlock_pricing"))
         unlock = self._make_card()
         unlock_grid = self._card_grid(unlock)
+        self._active_grid_columns = 3
         self._add_unlock_field(unlock_grid, 0, 0, int(entry.get("unlock_cond", 1)))
         self._add_spin_field(
             unlock_grid,
@@ -498,8 +527,6 @@ class SoundTestParamEditor(QWidget):
             0x7FFFFFFF,
             hint=ui_text("ui_soundtestparam_shop_price_in_g"),
         )
-        for col in range(3):
-            unlock_grid.setColumnStretch(col, 1)
         self._editor_layout.addWidget(unlock)
 
         self._add_section(ui_text("ui_soundtestparam_reserved_fields"))
@@ -508,8 +535,6 @@ class SoundTestParamEditor(QWidget):
         self._add_field(reserved_grid, 0, 0, "unk1", "unk1", entry.get("unk1", ""), maxlen=64)
         self._add_field(reserved_grid, 0, 1, "unk2", "unk2", entry.get("unk2", ""), maxlen=64)
         self._add_field(reserved_grid, 0, 2, "unk3", "unk3", entry.get("unk3", ""), maxlen=64)
-        for col in range(3):
-            reserved_grid.setColumnStretch(col, 1)
         self._editor_layout.addWidget(reserved)
 
         spacer = QWidget()
@@ -520,6 +545,36 @@ class SoundTestParamEditor(QWidget):
 
         self._block_detail = False
 
+    def _is_compact_editor(self) -> bool:
+        if not hasattr(self, "_editor_scroll"):
+            return False
+        return self._editor_scroll.viewport().width() < 780
+
+    def _grid_columns(self, max_columns: int) -> int:
+        width = self._editor_scroll.viewport().width()
+        if width < 780:
+            return 1
+        if width < 1080:
+            return min(2, max_columns)
+        return max_columns
+
+    def _field_position(self, row: int, col: int, max_columns: int) -> tuple[int, int]:
+        columns = self._grid_columns(max_columns)
+        logical_index = row * max_columns + col
+        return divmod(logical_index, columns)
+
+    def _prep_card(self, card: QFrame):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(980)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _prep_field_widget(self, frame: QWidget, editor: QWidget):
+        frame.setMinimumWidth(0)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        editor.setMinimumWidth(0)
+        editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+
     def _add_section(self, title: str):
         self._pending_section_title = title
 
@@ -527,10 +582,12 @@ class SoundTestParamEditor(QWidget):
         section_title = getattr(self, "_pending_section_title", None)
         self._pending_section_title = None
         card, grid = make_editor_grid_card(
+            self._editor_widget,
             title=section_title,
             icon_name="fa6s.music",
             vertical_spacing=10,
         )
+        self._prep_card(card)
         card._editor_grid = grid
         return card
 
@@ -552,6 +609,7 @@ class SoundTestParamEditor(QWidget):
         maxlen: int = 64,
         hint: str = "",
         big: bool = False,
+        max_columns: int | None = None,
     ):
         frame, layout = self._field_shell(label, hint)
         edit = QLineEdit()
@@ -560,9 +618,15 @@ class SoundTestParamEditor(QWidget):
         edit.setFont(QFont("Consolas", 16 if big else 13))
         edit.setStyleSheet(ss_input())
         edit.setText(str(value))
+        edit.setCursorPosition(0)
+        edit.setMinimumWidth(0)
+        edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         edit.textChanged.connect(lambda _text, k=key: self._on_field_changed(k))
         layout.addWidget(edit)
-        grid.addWidget(frame, row, col)
+        self._prep_field_widget(frame, edit)
+        mapped_row, mapped_col = self._field_position(row, col, max_columns or self._active_grid_columns)
+        grid.addWidget(frame, mapped_row, mapped_col)
+        grid.setColumnStretch(mapped_col, 1)
         self._fields[key] = edit
 
     def _add_spin_field(
@@ -577,6 +641,7 @@ class SoundTestParamEditor(QWidget):
         max_value: int,
         hint: str = "",
         big: bool = False,
+        max_columns: int | None = None,
     ):
         frame, layout = self._field_shell(label, hint)
         spin = QSpinBox()
@@ -586,12 +651,17 @@ class SoundTestParamEditor(QWidget):
         spin.setStyleSheet(ss_input())
         spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         spin.setValue(value)
+        spin.setMinimumWidth(0)
+        spin.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         spin.valueChanged.connect(lambda _value, k=key: self._on_field_changed(k))
         layout.addWidget(spin)
-        grid.addWidget(frame, row, col)
+        self._prep_field_widget(frame, spin)
+        mapped_row, mapped_col = self._field_position(row, col, max_columns or self._active_grid_columns)
+        grid.addWidget(frame, mapped_row, mapped_col)
+        grid.setColumnStretch(mapped_col, 1)
         self._fields[key] = spin
 
-    def _add_unlock_field(self, grid: QGridLayout, row: int, col: int, value: int):
+    def _add_unlock_field(self, grid: QGridLayout, row: int, col: int, value: int, max_columns: int | None = None):
         frame, layout = self._field_shell(
             ui_text("ui_soundtestparam_unlockcond"),
             ui_text("ui_soundtestparam_1_default_4_shop_6_character_specific"),
@@ -602,14 +672,32 @@ class SoundTestParamEditor(QWidget):
         combo.setFixedHeight(30)
         combo.setFont(QFont("Segoe UI", 12))
         combo.setStyleSheet(ss_input())
+        combo.setMinimumWidth(0)
+        combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         for idx in range(combo.count()):
             if combo.itemData(idx) == value:
                 combo.setCurrentIndex(idx)
                 break
         combo.currentIndexChanged.connect(lambda _idx: self._on_field_changed("unlock_cond"))
         layout.addWidget(combo)
-        grid.addWidget(frame, row, col)
+        self._prep_field_widget(frame, combo)
+        mapped_row, mapped_col = self._field_position(row, col, max_columns or self._active_grid_columns)
+        grid.addWidget(frame, mapped_row, mapped_col)
+        grid.setColumnStretch(mapped_col, 1)
         self._fields["unlock_cond"] = combo
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_idx is not None and self._last_compact is not None:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+
+    def _maybe_rebuild_for_compact(self):
+        if self._current_idx is None or self._block_detail:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_compact:
+            return
+        self._build_editor(self._current_idx)
 
     def _on_field_changed(self, key: str):
         if self._block_detail or self._current_idx is None:

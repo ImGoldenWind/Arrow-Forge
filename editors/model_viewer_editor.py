@@ -68,6 +68,7 @@ class ModelViewerEditor(QWidget):
         self._model_variants: list[_CharacterModelVariant] = []
         self._current_variant_index = -1
         self._current_palette_index = -1
+        self._compact_layout = None
         self.setStyleSheet(ss_bg_dark())
         self._build_ui()
 
@@ -82,6 +83,7 @@ class ModelViewerEditor(QWidget):
         toolbar_lay = QHBoxLayout(toolbar)
         toolbar_lay.setContentsMargins(10, 6, 10, 6)
         toolbar_lay.setSpacing(6)
+        self._toolbar_buttons = []
 
         self._open_btn = self._tool_btn("ui_model_viewer_open_model", accent=True)
         self._open_btn.clicked.connect(self._open_model_dialog)
@@ -109,9 +111,9 @@ class ModelViewerEditor(QWidget):
 
         toolbar_lay.addStretch()
 
-        model_lbl = QLabel(self.t("ui_model_viewer_model_variant"))
-        model_lbl.setStyleSheet(ss_dim_label())
-        toolbar_lay.addWidget(model_lbl)
+        self._model_lbl = QLabel(self.t("ui_model_viewer_model_variant"))
+        self._model_lbl.setStyleSheet(ss_dim_label())
+        toolbar_lay.addWidget(self._model_lbl)
         self._model_combo = QComboBox()
         self._model_combo.setFixedHeight(32)
         self._model_combo.setMinimumWidth(150)
@@ -121,9 +123,9 @@ class ModelViewerEditor(QWidget):
         self._model_combo.currentIndexChanged.connect(self._on_model_variant_changed)
         toolbar_lay.addWidget(self._model_combo)
 
-        palette_lbl = QLabel(self.t("ui_model_viewer_color_scheme"))
-        palette_lbl.setStyleSheet(ss_dim_label())
-        toolbar_lay.addWidget(palette_lbl)
+        self._palette_lbl = QLabel(self.t("ui_model_viewer_color_scheme"))
+        self._palette_lbl.setStyleSheet(ss_dim_label())
+        toolbar_lay.addWidget(self._palette_lbl)
         self._palette_combo = QComboBox()
         self._palette_combo.setFixedHeight(32)
         self._palette_combo.setMinimumWidth(110)
@@ -159,6 +161,7 @@ class ModelViewerEditor(QWidget):
         main.addWidget(left_divider)
 
         center = QWidget()
+        self._center_panel = center
         center.setStyleSheet(ss_bg_dark())
         center_lay = QVBoxLayout(center)
         center_lay.setContentsMargins(0, 0, 0, 8)
@@ -216,13 +219,55 @@ class ModelViewerEditor(QWidget):
         self._inspector = _InspectorPanel(self)
         self._inspector.value_changed.connect(self._on_value_changed)
         main.addWidget(self._inspector, 0)
+        self._apply_responsive_layout()
 
     def _tool_btn(self, key: str, accent: bool = False) -> QPushButton:
-        btn = QPushButton(self.t(key))
+        text = self.t(key)
+        btn = QPushButton(text)
         btn.setFixedHeight(TOOLBAR_BTN_H)
         btn.setFont(QFont("Segoe UI", 10))
+        icon_name = {
+            "ui_model_viewer_open_model": "fa6s.folder-open",
+            "ui_model_viewer_add_textures": "fa6s.images",
+            "ui_model_viewer_save": "fa6s.floppy-disk",
+            "ui_model_viewer_snapshot": "fa6s.camera",
+            "ui_model_viewer_reset_camera": "fa6s.rotate-left",
+        }.get(key, "fa6s.cube")
+        btn.setIcon(_themed_icon(icon_name, color=P.get("button_text", P["text_main"]), size=14))
+        btn.setIconSize(QSize(14, 14))
+        btn.setToolTip(text)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         btn.setStyleSheet(ss_btn(accent=accent))
+        btn._model_viewer_text = text
+        self._toolbar_buttons.append(btn)
         return btn
+
+    def _apply_responsive_layout(self):
+        if not hasattr(self, "_sidebar"):
+            return
+        compact = self.width() < 1040
+        if compact == self._compact_layout:
+            return
+        self._compact_layout = compact
+        for btn in self._toolbar_buttons:
+            btn.setText("" if compact else btn._model_viewer_text)
+            btn.setFixedWidth(38 if compact else btn.sizeHint().width())
+        self._model_lbl.setVisible(not compact)
+        self._palette_lbl.setVisible(not compact)
+        self._model_combo.setMinimumWidth(128 if compact else 150)
+        self._model_combo.setMaximumWidth(156 if compact else 220)
+        self._palette_combo.setMinimumWidth(118 if compact else 110)
+        self._palette_combo.setMaximumWidth(128 if compact else 150)
+        self._sidebar.set_panel_width(220 if compact else 260)
+        self._inspector.set_panel_width(270 if compact else 320)
+        self._center_panel.setMinimumWidth(220 if compact else 300)
+        self._viewport.setMinimumSize(220 if compact else 320, 220)
+        self._viewport_frame.setMinimumSize(220 if compact else 260, 220)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_responsive_layout()
 
     def _open_model_dialog(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -730,7 +775,8 @@ class _ModelSidebar(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._doc = None
-        self.setFixedWidth(260)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.set_panel_width(260)
         self.setStyleSheet(ss_sidebar_frame())
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 4)
@@ -761,6 +807,11 @@ class _ModelSidebar(QFrame):
         self._tree.setStyleSheet(ss_sidebar_treewidget())
         self._tree.itemSelectionChanged.connect(self._selection_changed)
         root.addWidget(self._tree, 1)
+
+    def set_panel_width(self, width: int):
+        width = max(200, width)
+        self.setMinimumWidth(width)
+        self.setMaximumWidth(width)
 
     def load(self, doc):
         self._doc = doc
@@ -837,7 +888,8 @@ class _InspectorPanel(QFrame):
         super().__init__(parent)
         self._doc = None
         self._obj = None
-        self.setFixedWidth(320)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.set_panel_width(320)
         self.setStyleSheet(ss_sidebar_frame())
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 4)
@@ -858,6 +910,11 @@ class _InspectorPanel(QFrame):
         self._tabs = QTabWidget()
         self._tabs.setStyleSheet(ss_tab_widget())
         root.addWidget(self._tabs, 1)
+
+    def set_panel_width(self, width: int):
+        width = max(250, width)
+        self.setMinimumWidth(width)
+        self.setMaximumWidth(width)
 
     def set_context(self, doc, obj):
         self._doc = doc

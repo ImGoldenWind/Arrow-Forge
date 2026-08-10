@@ -6,17 +6,17 @@ import copy
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QComboBox,
     QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QMessageBox,
-    QScrollArea,
+    QScrollArea, QSizePolicy,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 
-from core.themes import P
 from core.style_helpers import (
     make_empty_state,
     make_editor_field_shell,
     make_editor_grid_card,
     ss_btn, ss_sep, ss_accent_sep, ss_input, ss_search,
+    ss_dim_label, ss_main_label,
     ss_scrollarea, ss_scrollarea_transparent, ss_sidebar_btn,
     ss_file_label, ss_transparent,
     ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
@@ -69,6 +69,11 @@ def _clear_layout(layout):
             _clear_layout(item.layout())
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[:max(1, limit - 1)] + "..."
+
+
 class CharViewerEditor(QWidget):
     """Embedded editor for CharViewerParam.bin.xfbin."""
 
@@ -88,6 +93,8 @@ class CharViewerEditor(QWidget):
         self._current_idx: int = -1
         self._entry_buttons: list[tuple[QPushButton, int]] = []
         self._detail_widgets: dict = {}
+        self._last_compact: bool | None = None
+        self._editor_columns = 3
 
         self._build_ui()
 
@@ -121,19 +128,20 @@ class CharViewerEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_widget)
         main_layout.addWidget(self._editor_scroll, 1)
 
         root.addWidget(main, 1)
 
         self._show_placeholder(ui_text("ui_charviewer_open_a_charviewerparam_bin_xfbin_file_to_begin_editing"))
-        self.setStyleSheet(ss_bg_dark() + f" color: {P['text_main']};")
+        self.setStyleSheet(ss_bg_dark())
 
     def _build_top_bar(self) -> QFrame:
         bar = QFrame()
@@ -286,6 +294,8 @@ class CharViewerEditor(QWidget):
         selected = (idx == self._current_idx)
         btn = QPushButton()
         btn.setFixedHeight(44)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(ss_sidebar_btn(selected=selected))
 
@@ -293,10 +303,13 @@ class CharViewerEditor(QWidget):
         btn_layout.setContentsMargins(10, 3, 10, 3)
         btn_layout.setSpacing(0)
 
-        vid_lbl = QLabel(e["viewer_id"] or e["char_viewer_id"])
+        vid_text = e["viewer_id"] or e["char_viewer_id"]
+        vid_lbl = QLabel(_truncate(vid_text, 24))
         vid_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        vid_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        vid_lbl.setStyleSheet(ss_main_label())
         vid_lbl.setMinimumWidth(0)
+        vid_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        vid_lbl.setToolTip(vid_text)
         vid_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         btn_layout.addWidget(vid_lbl)
 
@@ -305,10 +318,12 @@ class CharViewerEditor(QWidget):
         resolved = self._t(resolved_key)
         sub_text = f"{char_code} • {resolved}" if resolved != resolved_key else char_code
 
-        code_lbl = QLabel(sub_text)
+        code_lbl = QLabel(_truncate(sub_text, 28))
         code_lbl.setFont(QFont("Consolas", 11))
-        code_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        code_lbl.setStyleSheet(ss_dim_label())
         code_lbl.setMinimumWidth(0)
+        code_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        code_lbl.setToolTip(sub_text)
         code_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         btn_layout.addWidget(code_lbl)
 
@@ -333,35 +348,77 @@ class CharViewerEditor(QWidget):
 
     # Editor building
 
-    def _add_section(self, title: str):
+    def _is_compact_editor(self) -> bool:
+        if not hasattr(self, "_editor_scroll"):
+            return False
+        return self._editor_scroll.viewport().width() < 780
+
+    def _grid_columns(self, max_columns: int) -> int:
+        width = self._editor_scroll.viewport().width()
+        if width < 780:
+            return 1
+        if width < 1080:
+            return min(2, max_columns)
+        return max_columns
+
+    def _prep_card(self, card: QFrame):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(980)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _prep_field_widget(self, widget: QWidget):
+        widget.setMinimumWidth(0)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return widget
+
+    def _add_editor_card(self, card: QFrame):
+        self._editor_layout.addWidget(card)
+
+    def _field_position(self, row: int, col: int, col_span: int = 1) -> tuple[int, int, int]:
+        columns = max(1, getattr(self, "_editor_columns", 3))
+        logical_index = row * 3 + col
+        mapped_row, mapped_col = divmod(logical_index, columns)
+        mapped_span = min(max(1, col_span), columns - mapped_col)
+        return mapped_row, mapped_col, mapped_span
+
+    def _add_section(self, title: str, icon_name: str = "fa6s.sliders"):
         self._pending_section_title = title
+        self._pending_section_icon = icon_name
 
     def _add_card(self) -> tuple[QFrame, QGridLayout]:
         section_title = getattr(self, "_pending_section_title", None)
+        section_icon = getattr(self, "_pending_section_icon", "fa6s.sliders")
         self._pending_section_title = None
-        return make_editor_grid_card(
+        self._pending_section_icon = "fa6s.sliders"
+        card, grid = make_editor_grid_card(
+            self._editor_widget,
             title=section_title,
-            icon_name="fa6s.sliders",
+            icon_name=section_icon,
             vertical_spacing=10,
         )
+        self._prep_card(card)
+        return card, grid
 
     def _add_le(self, grid: QGridLayout, row: int, col: int,
-                label: str, value: str, key: str) -> QLineEdit:
+                label: str, value: str, key: str, col_span: int = 1) -> QLineEdit:
         le = QLineEdit()
         le.setFixedHeight(30)
         le.setFont(QFont("Consolas", 13))
         le.setStyleSheet(ss_input())
         le.setMinimumWidth(0)
+        le.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         text = str(value)
         le.setText(text)
         le.setCursorPosition(next((i for i, ch in enumerate(text) if ch.isprintable() and ord(ch) >= 32 and ch not in {"\u25a1", "\ufffd"}), 0))
 
         container, cl, _label, _hint = make_editor_field_shell(label)
-        container.setMinimumWidth(0)
+        self._prep_field_widget(container)
         cl.addWidget(le)
 
-        grid.addWidget(container, row, col)
-        grid.setColumnStretch(col, 1)
+        mapped_row, mapped_col, mapped_span = self._field_position(row, col, col_span)
+        grid.addWidget(container, mapped_row, mapped_col, 1, mapped_span)
+        grid.setColumnStretch(mapped_col, 1)
         self._detail_widgets[key] = le
         le.textChanged.connect(lambda: None if self._loading_detail else self._save_current_entry())
         return le
@@ -372,6 +429,7 @@ class CharViewerEditor(QWidget):
         cb.setFixedHeight(30)
         cb.setStyleSheet(ss_input())
         cb.setMinimumWidth(0)
+        cb.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         cb.setMinimumContentsLength(1)
         cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         for v, n in options.items():
@@ -382,32 +440,46 @@ class CharViewerEditor(QWidget):
                 break
 
         container, cl, _label, _hint = make_editor_field_shell(label)
-        container.setMinimumWidth(0)
+        self._prep_field_widget(container)
         cl.addWidget(cb)
 
-        grid.addWidget(container, row, col)
-        grid.setColumnStretch(col, 1)
+        mapped_row, mapped_col, mapped_span = self._field_position(row, col)
+        grid.addWidget(container, mapped_row, mapped_col, 1, mapped_span)
+        grid.setColumnStretch(mapped_col, 1)
         self._detail_widgets[key] = cb
         cb.currentIndexChanged.connect(lambda: None if self._loading_detail else self._save_current_entry())
         return cb
+
+    def _add_field_sequence(self, grid: QGridLayout, columns: int, fields):
+        for idx, field in enumerate(fields):
+            row, col = divmod(idx, 3)
+            kind = field[0]
+            if kind == "combo":
+                _kind, label, options, current_val, key = field
+                self._add_combo(grid, row, col, label, options, current_val, key)
+            else:
+                _kind, label, value, key = field
+                self._add_le(grid, row, col, label, value, key)
 
     def _build_editor(self, e: dict):
         self._clear_editor()
         self._detail_widgets = {}
         self._loading_detail = True
+        self._last_compact = self._is_compact_editor()
+        self._editor_columns = self._grid_columns(3)
 
         # Identity
-        self._add_section(ui_text("skill_section_identity"))
+        self._add_section(ui_text("skill_section_identity"), "fa6s.id-card")
         card, g = self._add_card()
         self._add_le(g, 0, 0, ui_text("ui_charviewer_char_viewer_id"),      e["char_viewer_id"],    "char_viewer_id")
         self._add_le(g, 0, 1, ui_text("ui_charviewer_viewer_id"),           e["viewer_id"],         "viewer_id")
         self._add_le(g, 0, 2, ui_text("ui_charviewer_custom_list_title"),   e["custom_list_title"], "custom_list_title")
         self._add_le(g, 1, 0, ui_text("ui_charviewer_character_code"),      e["chara_code"],        "chara_code")
         self._add_le(g, 1, 1, ui_text("ui_charviewer_model_code"),          e["model_code"],        "model_code")
-        self._editor_layout.addWidget(card)
+        self._add_editor_card(card)
 
         # Animations
-        self._add_section(ui_text("skill_filter_anm"))
+        self._add_section(ui_text("skill_filter_anm"), "fa6s.person-running")
         card, g = self._add_card()
         self._add_le(g, 0, 0, ui_text("ui_charviewer_face_animation"),   e["face_anim"],  "face_anim")
         self._add_le(g, 0, 1, ui_text("ui_charviewer_idle_animation_1"), e["idle_anim1"], "idle_anim1")
@@ -427,10 +499,10 @@ class CharViewerEditor(QWidget):
         self._add_le(g, 8, 1, ui_text("ui_charviewer_model_ids_ref"),  e["anim25_model_ids"],  "anim25_model_ids")
         self._add_le(g, 8, 2, ui_text("ui_charviewer_anim_26"),        e["anim26"],            "anim26")
         self._add_le(g, 9, 0, ui_text("ui_charviewer_anim_27"),        e["anim27"],            "anim27")
-        self._editor_layout.addWidget(card)
+        self._add_editor_card(card)
 
         # Camera
-        self._add_section(ui_text("ui_charviewer_camera"))
+        self._add_section(ui_text("ui_charviewer_camera"), "fa6s.camera")
         card, g = self._add_card()
         self._add_le(g, 0, 0, ui_text("ui_charviewer_starting_zoom"),        f"{e['cam_zoom']:.6g}",      "cam_zoom")
         self._add_le(g, 0, 1, ui_text("ui_charviewer_starting_y"),           f"{e['cam_y']:.6g}",         "cam_y")
@@ -441,10 +513,10 @@ class CharViewerEditor(QWidget):
         self._add_le(g, 2, 0, ui_text("ui_charviewer_starting_z_rotation"),  f"{e['cam_rot_z']:.6g}",     "cam_rot_z")
         self._add_le(g, 2, 1, ui_text("ui_charviewer_zoom_in_limit"),        f"{e['cam_zoom_in']:.6g}",   "cam_zoom_in")
         self._add_le(g, 2, 2, ui_text("ui_charviewer_zoom_out_limit"),       f"{e['cam_zoom_out']:.6g}",  "cam_zoom_out")
-        self._editor_layout.addWidget(card)
+        self._add_editor_card(card)
 
         # DLC / Shop
-        self._add_section(ui_text("ui_charviewer_dlc_shop"))
+        self._add_section(ui_text("ui_charviewer_dlc_shop"), "fa6s.store")
         card, g = self._add_card()
         self._add_le(g, 0, 0, ui_text("ui_charviewer_custom_card_id"),         e["custom_card"],    "custom_card")
         self._add_le(g, 0, 1, ui_text("ui_charviewer_custom_icon_path"),       e["icon_path"],      "icon_path")
@@ -456,10 +528,10 @@ class CharViewerEditor(QWidget):
         self._add_le(g, 2, 2, ui_text("ui_charviewer_shop_price"),             str(e["shop_price"]), "shop_price")
         self._add_combo(g, 3, 0, ui_text("ui_charviewer_unlock_condition"), _UNLOCK_NAMES,
                         e["unlock_condition"], "unlock_condition")
-        self._editor_layout.addWidget(card)
+        self._add_editor_card(card)
 
         # Advanced
-        self._add_section(ui_text("ui_charviewer_advanced"))
+        self._add_section(ui_text("ui_charviewer_advanced"), "fa6s.gear")
         card, g = self._add_card()
         part_opts = {v: f"{v} – {n}" for v, n in _PART_NAMES.items()}
         self._add_combo(g, 0, 0, ui_text("ui_charviewer_part_3d_shop"), part_opts, e["part"], "part")
@@ -469,12 +541,12 @@ class CharViewerEditor(QWidget):
         self._add_le(g, 1, 1, ui_text("ui_charviewer_unk2_uint64"), str(e["unk2"]), "unk2")
         self._add_le(g, 1, 2, ui_text("ui_charviewer_unk3_uint64"), str(e["unk3"]), "unk3")
         self._add_le(g, 2, 0, ui_text("ui_charviewer_unk4_uint32"), str(e["unk4"]), "unk4")
-        self._editor_layout.addWidget(card)
+        self._add_editor_card(card)
 
         # Bottom padding
         spacer = QWidget()
         spacer.setFixedHeight(20)
-        spacer.setStyleSheet("background: transparent;")
+        spacer.setStyleSheet(ss_transparent())
         self._editor_layout.addWidget(spacer)
         self._editor_layout.addStretch()
 
@@ -482,7 +554,24 @@ class CharViewerEditor(QWidget):
 
     # Dynamic save
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_idx >= 0 and self._last_compact is not None:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+
+    def _maybe_rebuild_for_compact(self):
+        if self._current_idx < 0 or self._loading_detail:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_compact:
+            return
+        self._apply_current_entry(mark_dirty=False)
+        self._build_editor(self._entries[self._current_idx])
+
     def _save_current_entry(self):
+        self._apply_current_entry(mark_dirty=True)
+
+    def _apply_current_entry(self, *, mark_dirty: bool):
         if self._current_idx < 0 or self._loading_detail:
             return
         e = self._entries[self._current_idx]
@@ -565,20 +654,24 @@ class CharViewerEditor(QWidget):
         e["unk3"]        = _int("unk3")
         e["unk4"]        = _int("unk4")
 
-        self._mark_dirty()
+        if mark_dirty:
+            self._mark_dirty()
 
         # Refresh the button labels if viewer_id or chara_code changed
         for btn, bi in self._entry_buttons:
             if bi == self._current_idx:
                 labels = btn.findChildren(QLabel)
                 if len(labels) >= 2:
-                    labels[0].setText(e["viewer_id"] or e["char_viewer_id"])
+                    vid_text = e["viewer_id"] or e["char_viewer_id"]
+                    labels[0].setText(_truncate(vid_text, 24))
+                    labels[0].setToolTip(vid_text)
                     char_code = e["chara_code"]
                     resolved_key = f"char_{char_code}"
                     resolved = self._t(resolved_key)
                     sub_text = (f"{char_code} • {resolved}"
                                 if resolved != resolved_key else char_code)
-                    labels[1].setText(sub_text)
+                    labels[1].setText(_truncate(sub_text, 28))
+                    labels[1].setToolTip(sub_text)
                 break
 
     # File operations

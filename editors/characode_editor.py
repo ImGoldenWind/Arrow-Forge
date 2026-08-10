@@ -7,9 +7,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QMessageBox,
     QSizePolicy,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
-from core.themes import P
 from core.style_helpers import (
     add_editor_card_title, make_editor_card, make_editor_field, make_empty_state,
     ss_accent_label, ss_accent_sep, ss_bg_dark, ss_bg_panel, ss_btn, ss_dim_label,
@@ -64,6 +63,7 @@ class CharacodeEditor(QWidget):
         self._fields = {}
         self._filepath = None
         self._dirty = False
+        self._last_editor_compact = None
 
         self._load_done_signal.connect(self._on_load_done)
         self._load_error_signal.connect(self._on_load_error)
@@ -75,6 +75,10 @@ class CharacodeEditor(QWidget):
         self._build_ui(root_layout)
 
     # UI construction
+
+    def _tr(self, key, fallback, **kwargs):
+        value = self.t(key, **kwargs) if kwargs else self.t(key)
+        return fallback if value == key else value
 
     def _build_ui(self, root_layout):
         # Top bar
@@ -99,12 +103,6 @@ class CharacodeEditor(QWidget):
         self._save_btn.setStyleSheet(ss_btn(accent=True))
         self._save_btn.clicked.connect(self._save_file)
         top_layout.addWidget(self._save_btn)
-
-        sep_v = QFrame(top)
-        sep_v.setFixedWidth(1)
-        sep_v.setFixedHeight(26)
-        sep_v.setStyleSheet(ss_sep())
-        top_layout.addWidget(sep_v)
 
         self._file_label = QLabel(self.t("no_file_loaded"), top)
         self._file_label.setFont(QFont("Consolas", 12))
@@ -190,6 +188,7 @@ class CharacodeEditor(QWidget):
         self._entry_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._entry_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._entry_list_widget = QWidget()
+        self._entry_list_widget.setMinimumWidth(0)
         self._entry_list_widget.setStyleSheet(ss_transparent())
         self._entry_list_layout = QVBoxLayout(self._entry_list_widget)
         self._entry_list_layout.setContentsMargins(0, 0, 0, 0)
@@ -215,8 +214,8 @@ class CharacodeEditor(QWidget):
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_widget)
 
         self._show_placeholder()
@@ -229,8 +228,8 @@ class CharacodeEditor(QWidget):
 
     def _show_placeholder(self):
         _clear_layout(self._editor_layout)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         card = make_empty_state(
             self._editor_widget,
             title=self.t("no_file_loaded"),
@@ -277,16 +276,20 @@ class CharacodeEditor(QWidget):
         self._editor_layout.setSpacing(8)
 
         hdr, hdr_inner = make_editor_card(self._editor_widget, margins=(16, 14, 16, 14), spacing=10)
+        self._prep_card(hdr)
         hdr_inner.addWidget(SkeletonBar(hdr, height=36, corner_radius=5))
         self._editor_layout.addWidget(hdr)
 
         sec, sec_lay = make_editor_card(self._editor_widget, margins=(12, 12, 12, 12), spacing=8)
+        self._prep_card(sec)
         g = QWidget(sec)
         g.setStyleSheet(ss_transparent())
         g_layout = QGridLayout(g)
         g_layout.setContentsMargins(0, 0, 0, 0)
         for col in range(3):
             f = QWidget(g)
+            f.setMinimumWidth(0)
+            f.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             f.setStyleSheet(ss_transparent())
             f_layout = QVBoxLayout(f)
             f_layout.setContentsMargins(8, 0, 8, 0)
@@ -354,6 +357,8 @@ class CharacodeEditor(QWidget):
         for entry in sorted_entries:
             btn = QPushButton(self._entry_list_widget)
             btn.setFixedHeight(44)
+            btn.setMinimumWidth(0)
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet(ss_sidebar_btn(False))
             btn.clicked.connect(lambda checked, e=entry: self._select_entry(e))
@@ -366,6 +371,8 @@ class CharacodeEditor(QWidget):
             name_lbl = QLabel(_truncate(name_text, 21))
             name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
             name_lbl.setStyleSheet(ss_main_label())
+            name_lbl.setMinimumWidth(0)
+            name_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             name_lbl.setToolTip(name_text)
             name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             btn_layout.addWidget(name_lbl)
@@ -373,6 +380,8 @@ class CharacodeEditor(QWidget):
             code_lbl = QLabel(_truncate(entry['char_code'], 24))
             code_lbl.setFont(QFont("Consolas", 11))
             code_lbl.setStyleSheet(ss_dim_label())
+            code_lbl.setMinimumWidth(0)
+            code_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             code_lbl.setToolTip(entry['char_code'])
             code_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             btn_layout.addWidget(code_lbl)
@@ -433,16 +442,34 @@ class CharacodeEditor(QWidget):
 
     # Editor panel
 
+    def _is_compact_editor(self) -> bool:
+        if not hasattr(self, "_editor_scroll"):
+            return False
+        return self._editor_scroll.viewport().width() < 780
+
+    def _prep_card(self, card):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(980)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _prep_field(self, frame, editor=None):
+        frame.setMinimumWidth(0)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        if editor is not None:
+            editor.setMinimumWidth(0)
+            editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+
     def _build_editor(self, entry):
         _clear_layout(self._editor_layout)
         self._fields = {}
+        self._last_editor_compact = self._is_compact_editor()
         self._editor_layout.setContentsMargins(12, 12, 12, 12)
         self._editor_layout.setSpacing(8)
 
         # Entry header card
         hdr, hdr_main_layout = make_editor_card(self._editor_widget, margins=(18, 16, 18, 16), spacing=14)
-        hdr.setMaximumWidth(860)
-        hdr.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self._prep_card(hdr)
         add_editor_card_title(
             hdr_main_layout,
             self.t("label_resolved_name"),
@@ -456,10 +483,12 @@ class CharacodeEditor(QWidget):
         hdr_grid.setContentsMargins(0, 0, 0, 0)
         hdr_grid.setHorizontalSpacing(16)
         hdr_grid.setVerticalSpacing(10)
-        compact = self._editor_scroll.viewport().width() < 860
+        compact = self._is_compact_editor()
 
         # Resolved Name (read-only, first and prominent)
         name_frame = QWidget(hdr_inner)
+        name_frame.setMinimumWidth(0)
+        name_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         name_frame.setStyleSheet(ss_transparent())
         name_lay = QVBoxLayout(name_frame)
         name_lay.setContentsMargins(0, 0, 0, 0)
@@ -473,7 +502,25 @@ class CharacodeEditor(QWidget):
         hdr_grid.addWidget(name_frame, 0, 0, 1, 2)
         hdr_grid.setColumnStretch(0, 2)
 
-        # Character Code
+        hdr_main_layout.addWidget(hdr_inner)
+        self._editor_layout.addWidget(hdr)
+
+        assignment, assignment_layout = make_editor_card(self._editor_widget, margins=(18, 16, 18, 16), spacing=14)
+        self._prep_card(assignment)
+        add_editor_card_title(
+            assignment_layout,
+            self._tr("ui_characode_slot_assignment", "Slot Assignment"),
+            "fa6s.sliders",
+            subtitle=f"{entry['char_code']} / slot {entry['slot_index']}",
+            icon_size=20,
+        )
+        assignment_inner = QWidget(assignment)
+        assignment_inner.setStyleSheet(ss_transparent())
+        assignment_grid = QGridLayout(assignment_inner)
+        assignment_grid.setContentsMargins(0, 0, 0, 0)
+        assignment_grid.setHorizontalSpacing(16)
+        assignment_grid.setVerticalSpacing(10)
+
         code_frame, e_code = make_editor_field(
             self.t("label_char_code"),
             entry["char_code"],
@@ -481,12 +528,14 @@ class CharacodeEditor(QWidget):
             value_font=QFont("Consolas", 16),
         )
         e_code.setText(entry['char_code'])
+        e_code.setMinimumWidth(0)
+        e_code.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         e_code.textEdited.connect(self._mark_dirty)
         self._fields['char_code'] = e_code
-        hdr_grid.addWidget(code_frame, 1, 0, 1, 2 if compact else 1)
-        hdr_grid.setColumnStretch(1, 2)
+        self._prep_field(code_frame, e_code)
+        assignment_grid.addWidget(code_frame, 0, 0)
+        assignment_grid.setColumnStretch(0, 2)
 
-        # Slot Index
         slot_frame, e_slot = make_editor_field(
             self.t("label_slot_index"),
             entry["slot_index"],
@@ -494,20 +543,31 @@ class CharacodeEditor(QWidget):
             value_font=QFont("Consolas", 18, QFont.Weight.Bold),
             accent=True,
         )
-        e_slot.setFixedWidth(100)
         e_slot.setText(str(entry['slot_index']))
+        e_slot.setMinimumWidth(0)
+        e_slot.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         e_slot.textEdited.connect(self._mark_dirty)
         self._fields['slot_index'] = e_slot
-        slot_frame.setMinimumWidth(118)
-        hdr_grid.addWidget(slot_frame, 2 if compact else 1, 0 if compact else 1)
-        if compact:
-            hdr_grid.setColumnStretch(1, 0)
-        else:
-            hdr_grid.setColumnStretch(1, 1)
+        self._prep_field(slot_frame, e_slot)
+        assignment_grid.addWidget(slot_frame, 1 if compact else 0, 0 if compact else 1)
+        assignment_grid.setColumnStretch(1, 1)
 
-        hdr_main_layout.addWidget(hdr_inner)
-        self._editor_layout.addWidget(hdr, 0, Qt.AlignmentFlag.AlignLeft)
+        assignment_layout.addWidget(assignment_inner)
+        self._editor_layout.addWidget(assignment)
         self._editor_layout.addStretch()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_entry is not None and self._last_editor_compact is not None:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+
+    def _maybe_rebuild_for_compact(self):
+        if self._current_entry is None:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_editor_compact:
+            return
+        self._build_editor(self._current_entry)
 
     # Add / Duplicate / Delete
 

@@ -6,17 +6,17 @@ import copy
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QComboBox,
     QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QMessageBox,
-    QScrollArea,
+    QScrollArea, QSizePolicy,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 
-from core.themes import P
 from core.style_helpers import (
     make_empty_state,
     make_editor_field_shell,
     make_editor_grid_card,
     ss_btn, ss_sep, ss_accent_sep, ss_input, ss_search,
+    ss_accent_label, ss_dim_label, ss_main_label,
     ss_scrollarea, ss_scrollarea_transparent, ss_sidebar_btn,
     ss_file_label, ss_transparent,
     ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
@@ -62,6 +62,11 @@ def _clear_layout(layout):
             _clear_layout(item.layout())
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[:max(1, limit - 1)] + "..."
+
+
 class GuideCharParamEditor(QWidget):
     """Embedded editor for GuideCharParam.bin.xfbin."""
 
@@ -81,6 +86,7 @@ class GuideCharParamEditor(QWidget):
         self._current_idx: int = -1
         self._entry_buttons: list[tuple[QPushButton, int]] = []
         self._detail_widgets: dict = {}
+        self._last_compact: bool | None = None
 
         self._build_ui()
 
@@ -113,19 +119,20 @@ class GuideCharParamEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_widget)
         main_layout.addWidget(self._editor_scroll, 1)
 
         root.addWidget(main, 1)
 
         self._show_placeholder(ui_text("ui_guidecharparam_open_a_guidecharparam_bin_xfbin_file_to_begin_editing"))
-        self.setStyleSheet(ss_bg_dark() + f" color: {P['text_main']};")
+        self.setStyleSheet(ss_bg_dark())
 
     def _build_top_bar(self) -> QFrame:
         bar = QFrame()
@@ -275,6 +282,8 @@ class GuideCharParamEditor(QWidget):
         selected = (idx == self._current_idx)
         btn = QPushButton()
         btn.setFixedHeight(44)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(ss_sidebar_btn(selected=selected))
 
@@ -282,19 +291,24 @@ class GuideCharParamEditor(QWidget):
         btn_layout.setContentsMargins(10, 3, 10, 3)
         btn_layout.setSpacing(0)
 
-        event_lbl = QLabel(e.get("event", ui_text("ui_guidecharparam_no_event")))
+        event_text = e.get("event", ui_text("ui_guidecharparam_no_event"))
+        event_lbl = QLabel(_truncate(event_text, 24))
         event_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        event_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        event_lbl.setStyleSheet(ss_main_label())
         event_lbl.setMinimumWidth(0)
+        event_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        event_lbl.setToolTip(event_text)
         event_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         btn_layout.addWidget(event_lbl)
 
         char = e.get("character", "")
         char_label = _CHAR_LABELS.get(char, char)
-        sub_lbl = QLabel(char_label)
+        sub_lbl = QLabel(_truncate(char_label, 28))
         sub_lbl.setFont(QFont("Consolas", 11))
-        sub_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        sub_lbl.setStyleSheet(ss_dim_label())
         sub_lbl.setMinimumWidth(0)
+        sub_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        sub_lbl.setToolTip(char_label)
         sub_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         btn_layout.addWidget(sub_lbl)
 
@@ -319,34 +333,61 @@ class GuideCharParamEditor(QWidget):
 
     # Editor building
 
-    def _add_section(self, title: str):
+    def _is_compact_editor(self) -> bool:
+        if not hasattr(self, "_editor_scroll"):
+            return False
+        return self._editor_scroll.viewport().width() < 780
+
+    def _prep_card(self, card: QFrame):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(980)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _add_editor_card(self, card: QFrame):
+        self._editor_layout.addWidget(card)
+
+    def _add_section(self, title: str, icon_name: str = "fa6s.sliders"):
         self._pending_section_title = title
+        self._pending_section_icon = icon_name
 
     def _add_card(self) -> tuple[QFrame, QGridLayout]:
         section_title = getattr(self, "_pending_section_title", None)
+        section_icon = getattr(self, "_pending_section_icon", "fa6s.sliders")
         self._pending_section_title = None
-        return make_editor_grid_card(
+        self._pending_section_icon = "fa6s.sliders"
+        card, grid = make_editor_grid_card(
+            self._editor_widget,
             title=section_title,
-            icon_name="fa6s.sliders",
+            icon_name=section_icon,
             vertical_spacing=10,
         )
+        self._prep_card(card)
+        return card, grid
+
+    def _prep_field_widget(self, widget: QWidget):
+        widget.setMinimumWidth(0)
+        widget.setMinimumHeight(54)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return widget
 
     def _add_le(self, grid: QGridLayout, row: int, col: int,
-                label: str, value: str, key: str) -> QLineEdit:
+                label: str, value: str, key: str, col_span: int = 1) -> QLineEdit:
         le = QLineEdit()
         le.setFixedHeight(30)
         le.setFont(QFont("Consolas", 13))
         le.setStyleSheet(ss_input())
         le.setMinimumWidth(0)
+        le.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         text = str(value)
         le.setText(text)
         le.setCursorPosition(next((i for i, ch in enumerate(text) if ch.isprintable() and ord(ch) >= 32 and ch not in {"\u25a1", "\ufffd"}), 0))
 
         container, cl, _label, _hint = make_editor_field_shell(label)
-        container.setMinimumWidth(0)
+        self._prep_field_widget(container)
         cl.addWidget(le)
 
-        grid.addWidget(container, row, col)
+        grid.addWidget(container, row, col, 1, col_span)
         grid.setColumnStretch(col, 1)
         self._detail_widgets[key] = le
         le.textChanged.connect(lambda: None if self._loading_detail else self._save_current_entry())
@@ -356,20 +397,23 @@ class GuideCharParamEditor(QWidget):
         self._clear_editor()
         self._detail_widgets = {}
         self._loading_detail = True
+        self._last_compact = self._is_compact_editor()
+        compact = self._last_compact
 
         # Identity
-        self._add_section(ui_text("skill_section_identity"))
+        self._add_section(ui_text("skill_section_identity"), "fa6s.id-card")
         card, g = self._add_card()
-        self._add_le(g, 0, 0, ui_text("ui_guidecharparam_event_id"),   e.get("event", ""),     "event")
-        self._add_le(g, 0, 1, ui_text("ui_assist_character"),  e.get("character", ""), "character")
+        self._add_le(g, 0, 0, ui_text("ui_guidecharparam_event_id"), e.get("event", ""), "event", col_span=1 if compact else 2)
+        self._add_le(g, 1, 0, ui_text("ui_assist_character"), e.get("character", ""), "character")
 
         # Quick-pick combo for known characters
         container, cl, _label, _hint = make_editor_field_shell(ui_text("ui_guidecharparam_quick_pick_character"))
-        container.setMinimumWidth(0)
+        self._prep_field_widget(container)
         cb_pick = QComboBox()
         cb_pick.setFixedHeight(30)
         cb_pick.setStyleSheet(ss_input())
         cb_pick.setMinimumWidth(0)
+        cb_pick.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         cb_pick.setMinimumContentsLength(1)
         cb_pick.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         cb_pick.addItem(ui_text("ui_guidecharparam_select"), "")
@@ -381,43 +425,65 @@ class GuideCharParamEditor(QWidget):
                 cb_pick.setCurrentIndex(i)
                 break
         cl.addWidget(cb_pick)
-        g.addWidget(container, 1, 0)
+        g.addWidget(container, 2 if compact else 1, 0 if compact else 1)
         g.setColumnStretch(0, 1)
+        if not compact:
+            g.setColumnStretch(1, 1)
         cb_pick.currentIndexChanged.connect(
             lambda: None if self._loading_detail else self._on_char_picked(cb_pick)
         )
 
-        self._editor_layout.addWidget(card)
+        self._add_editor_card(card)
 
         # Messages
-        self._add_section(ui_text("ui_guidecharparam_message_slots"))
+        self._add_section(ui_text("ui_guidecharparam_message_slots"), "fa6s.comments")
         card, g = self._add_card()
 
         for j in range(5):
-            header_row = j * 2
-            field_row  = j * 2 + 1
+            if compact:
+                header_row = j * 3
+                name_row = header_row + 1
+                message_row = header_row + 2
+                message_col = 0
+            else:
+                header_row = j * 2
+                name_row = header_row + 1
+                message_row = name_row
+                message_col = 1
 
             slot_title = f"Slot {j + 1}" + (ui_text("ui_guidecharparam_reserved") if j == 4 else "")
             slot_lbl = QLabel(slot_title)
             slot_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-            style = f"color: {P['secondary']}; background: transparent;"
-            if j > 0:
-                style += ui_text("ui_guidecharparam_margin_top_6px")
-            slot_lbl.setStyleSheet(style)
-            g.addWidget(slot_lbl, header_row, 0, 1, 2)
+            slot_lbl.setStyleSheet(ss_accent_label())
+            slot_lbl.setContentsMargins(0, 6 if j > 0 else 0, 0, 0)
+            g.addWidget(slot_lbl, header_row, 0, 1, 1 if compact else 2)
 
-            self._add_le(g, field_row, 0, ui_text("ui_guidecharparam_name_id"),    e.get(f"msg{j}_name",   ""), f"msg{j}_name")
-            self._add_le(g, field_row, 1, ui_text("ui_guidecharparam_message_id"), e.get(f"msg{j}_string", ""), f"msg{j}_string")
+            self._add_le(g, name_row, 0, ui_text("ui_guidecharparam_name_id"),    e.get(f"msg{j}_name",   ""), f"msg{j}_name")
+            self._add_le(g, message_row, message_col, ui_text("ui_guidecharparam_message_id"), e.get(f"msg{j}_string", ""), f"msg{j}_string")
 
-        self._editor_layout.addWidget(card)
+        self._add_editor_card(card)
 
         spacer = QWidget()
         spacer.setFixedHeight(20)
-        spacer.setStyleSheet("background: transparent;")
+        spacer.setStyleSheet(ss_transparent())
         self._editor_layout.addWidget(spacer)
         self._editor_layout.addStretch()
 
         self._loading_detail = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_idx >= 0 and self._last_compact is not None:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+
+    def _maybe_rebuild_for_compact(self):
+        if self._current_idx < 0 or self._last_compact is None:
+            return
+        compact = self._is_compact_editor()
+        if compact != self._last_compact:
+            self._apply_current_entry(mark_dirty=False)
+            if 0 <= self._current_idx < len(self._entries):
+                self._build_editor(self._entries[self._current_idx])
 
     def _on_char_picked(self, combo: QComboBox):
         val = combo.currentData()
@@ -429,6 +495,9 @@ class GuideCharParamEditor(QWidget):
     # Dynamic save
 
     def _save_current_entry(self):
+        self._apply_current_entry(mark_dirty=True)
+
+    def _apply_current_entry(self, *, mark_dirty: bool):
         if self._current_idx < 0 or self._loading_detail:
             return
         e = self._entries[self._current_idx]
@@ -443,14 +512,19 @@ class GuideCharParamEditor(QWidget):
             e[f"msg{j}_name"]   = _txt(f"msg{j}_name")
             e[f"msg{j}_string"] = _txt(f"msg{j}_string")
 
-        self._mark_dirty()
+        if mark_dirty:
+            self._mark_dirty()
 
         for btn, bi in self._entry_buttons:
             if bi == self._current_idx:
                 labels = btn.findChildren(QLabel)
                 if len(labels) >= 2:
-                    labels[0].setText(e["event"] or ui_text("ui_guidecharparam_no_event"))
-                    labels[1].setText(_CHAR_LABELS.get(e["character"], e["character"]))
+                    event_text = e["event"] or ui_text("ui_guidecharparam_no_event")
+                    char_text = _CHAR_LABELS.get(e["character"], e["character"])
+                    labels[0].setText(_truncate(event_text, 24))
+                    labels[0].setToolTip(event_text)
+                    labels[1].setText(_truncate(char_text, 28))
+                    labels[1].setToolTip(char_text)
                 break
 
     # File operations

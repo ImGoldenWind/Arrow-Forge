@@ -245,6 +245,7 @@ class NavigationMixin:
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet(ss_home_grid_scrollarea())
         scroll_content = QWidget()
+        scroll_content.setMinimumWidth(0)
         scroll_content.setStyleSheet("background: transparent;")
         grid = QGridLayout(scroll_content)
         grid.setContentsMargins(20, 8, 20, 16)

@@ -7,15 +7,15 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QScrollArea,
     QFileDialog, QMessageBox, QLineEdit, QSizePolicy,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 
-from core.themes import P
 from core.style_helpers import (
     ss_btn, ss_sep, ss_accent_sep, ss_input, ss_search, ss_scrollarea,
     ss_scrollarea_transparent, ss_sidebar_btn,
     ss_file_label, ss_editor_card, ss_transparent,
     ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
+    ss_dim_label, ss_field_label, ss_main_label,
     make_editor_card, make_empty_state, add_editor_card_title,
     make_editor_field_shell, make_editor_grid_card,
     TOOLBAR_H, TOOLBAR_BTN_H,
@@ -66,6 +66,11 @@ def _clear_layout(layout):
             _clear_layout(item.layout())
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[:max(1, limit - 1)] + "..."
+
+
 class DamagePrmEditor(QWidget):
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
@@ -77,6 +82,7 @@ class DamagePrmEditor(QWidget):
         self._dirty       = False
         self._current_idx = -1
         self._entry_buttons = []
+        self._last_compact: bool | None = None
         self._field_widgets = {}  # key → (QLineEdit, hint_label | None)
 
         self._build_ui()
@@ -117,12 +123,14 @@ class DamagePrmEditor(QWidget):
 
         self._main_scroll = QScrollArea()
         self._main_scroll.setWidgetResizable(True)
+        self._main_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._main_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._main_scroll.setStyleSheet(ss_scrollarea())
         self._main_inner = QWidget()
         self._main_inner.setStyleSheet(ss_bg_dark())
         self._main_layout = QVBoxLayout(self._main_inner)
-        self._main_layout.setContentsMargins(20, 16, 20, 20)
-        self._main_layout.setSpacing(12)
+        self._main_layout.setContentsMargins(12, 12, 12, 12)
+        self._main_layout.setSpacing(8)
         self._main_scroll.setWidget(self._main_inner)
         body.addWidget(self._main_scroll, 1)
 
@@ -174,6 +182,7 @@ class DamagePrmEditor(QWidget):
         self._sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._sidebar_inner = QWidget()
+        self._sidebar_inner.setMinimumWidth(0)
         self._sidebar_inner.setStyleSheet(ss_transparent())
         self._sidebar_list = QVBoxLayout(self._sidebar_inner)
         self._sidebar_list.setContentsMargins(0, 0, 0, 0)
@@ -188,6 +197,7 @@ class DamagePrmEditor(QWidget):
     def _make_entry_button(self, entry, idx):
         btn = QPushButton()
         btn.setFixedHeight(44)
+        btn.setMinimumWidth(0)
         btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setStyleSheet(ss_sidebar_btn(selected=(idx == self._current_idx)))
 
@@ -198,14 +208,22 @@ class DamagePrmEditor(QWidget):
         vl.setContentsMargins(10, 4, 10, 4)
         vl.setSpacing(1)
 
-        name_lbl = QLabel(entry['name'])
+        name_text = entry['name']
+        name_lbl = QLabel(_truncate(name_text, 24))
         name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        name_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        name_lbl.setStyleSheet(ss_main_label())
+        name_lbl.setMinimumWidth(0)
+        name_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        name_lbl.setToolTip(name_text)
         vl.addWidget(name_lbl)
 
-        id_lbl = QLabel(ui_text("ui_damageeff_slot_value", p0=entry['idx']))
+        id_text = ui_text("ui_damageeff_slot_value", p0=entry['idx'])
+        id_lbl = QLabel(_truncate(id_text, 28))
         id_lbl.setFont(QFont("Consolas", 11))
-        id_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        id_lbl.setStyleSheet(ss_dim_label())
+        id_lbl.setMinimumWidth(0)
+        id_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        id_lbl.setToolTip(id_text)
         vl.addWidget(id_lbl)
 
         ol = QHBoxLayout(btn)
@@ -268,24 +286,56 @@ class DamagePrmEditor(QWidget):
         self._main_layout.addWidget(card, alignment=Qt.AlignmentFlag.AlignCenter)
         self._main_layout.addStretch(1)
 
+    def _is_compact_editor(self) -> bool:
+        if not hasattr(self, "_main_scroll"):
+            return False
+        return self._main_scroll.viewport().width() < 780
+
+    def _grid_columns(self, max_columns: int) -> int:
+        width = self._main_scroll.viewport().width()
+        if width < 780:
+            return 1
+        if width < 1080:
+            return min(2, max_columns)
+        return max_columns
+
+    def _prep_card(self, card: QFrame):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(980)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _prep_field_widget(self, widget: QWidget):
+        widget.setMinimumWidth(0)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return widget
+
+    def _add_editor_card(self, card: QFrame):
+        self._main_layout.addWidget(card)
+
     def _build_editor(self, entry):
         _clear_layout(self._main_layout)
         self._field_widgets = {}
+        self._last_compact = self._is_compact_editor()
+        columns = self._grid_columns(2)
 
         card, grid = make_editor_grid_card(
-            title=entry['name'],
+            self._main_inner,
+            title=_truncate(entry['name'], 36 if self._last_compact else 60),
             icon_name="fa6s.burst",
             subtitle=ui_text("ui_damageprm_reaction_type_ids"),
             grid_margins=(0, 2, 0, 0),
             horizontal_spacing=16,
             vertical_spacing=10,
         )
+        self._prep_card(card)
 
         for i, (fkey, fname, ftype, tip) in enumerate(_FIELDS):
             val = entry[fkey]
             text = f"{val:.4g}" if ftype == 'float' else str(val)
             hint_text = _REACTION_NAMES.get(val, f"Unknown ({val})") if fkey == 'reaction' else ""
             field, field_layout, label, hint_lbl = make_editor_field_shell(fname, hint_text)
+            self._prep_field_widget(field)
             label.setToolTip(tip)
 
             inp = QLineEdit(text)
@@ -294,24 +344,27 @@ class DamagePrmEditor(QWidget):
             inp.setStyleSheet(ss_input())
             inp.setToolTip(tip)
             inp.setMinimumWidth(0)
+            inp.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            inp.setCursorPosition(0)
             inp.textEdited.connect(lambda _, fk=fkey: self._mark_dirty())
             field_layout.addWidget(inp)
 
-            row, col = divmod(i, 2)
+            row, col = divmod(i, columns)
             grid.addWidget(field, row, col)
             grid.setColumnStretch(col, 1)
             self._field_widgets[fkey] = (inp, hint_lbl)
 
-        self._main_layout.addWidget(card)
+        self._add_editor_card(card)
 
         # Reaction type legend
-        self._main_layout.addWidget(self._build_reaction_legend())
+        self._add_editor_card(self._build_reaction_legend())
         self._main_layout.addStretch(1)
 
     def _build_reaction_legend(self):
         frame = QFrame()
         frame.setObjectName("EditorCard")
         frame.setStyleSheet(ss_editor_card())
+        self._prep_card(frame)
         lo = QVBoxLayout(frame)
         lo.setContentsMargins(16, 12, 16, 14)
         lo.setSpacing(8)
@@ -324,9 +377,13 @@ class DamagePrmEditor(QWidget):
         row_lo.setSpacing(24)
 
         items = sorted(_REACTION_NAMES.items())
-        half = (len(items) + 1) // 2
-        for col_items in [items[:half], items[half:]]:
+        column_count = 1 if self._is_compact_editor() else 2
+        chunk = (len(items) + column_count - 1) // column_count
+        for start in range(0, len(items), chunk):
+            col_items = items[start:start + chunk]
             col_w = QWidget()
+            col_w.setMinimumWidth(0)
+            col_w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             col_w.setStyleSheet(ss_transparent())
             col_l = QVBoxLayout(col_w)
             col_l.setContentsMargins(0, 0, 0, 0)
@@ -334,13 +391,31 @@ class DamagePrmEditor(QWidget):
             for rid, rname in col_items:
                 lbl = QLabel(ui_text("ui_damageprm_value_value", p0=rid, p1=rname))
                 lbl.setFont(QFont("Consolas", 9))
-                lbl.setStyleSheet(f"color: {P['text_sec']}; background: transparent;")
+                lbl.setStyleSheet(ss_field_label())
+                lbl.setMinimumWidth(0)
+                lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
                 col_l.addWidget(lbl)
-            row_lo.addWidget(col_w)
+            row_lo.addWidget(col_w, 1)
 
         row_lo.addStretch()
         lo.addWidget(row_w)
         return frame
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_idx >= 0 and self._last_compact is not None:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+
+    def _maybe_rebuild_for_compact(self):
+        if self._current_idx < 0 or self._result is None:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_compact:
+            return
+        self._apply_fields()
+        entries = self._result.get('entries') or []
+        if 0 <= self._current_idx < len(entries):
+            self._build_editor(entries[self._current_idx])
 
     def _mark_dirty(self):
         self._dirty = True

@@ -59,6 +59,11 @@ from parsers.nus3bank_parser import (
 from core.translations import ui_text
 
 
+def _truncate(text: str, limit: int = 28) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[: max(0, limit - 3)].rstrip() + "..."
+
+
 # Audio format detection
 
 _AUDIO_MATCHERS = [
@@ -741,12 +746,14 @@ class XfbinAudioEditor(QWidget):
         self._save_btn.clicked.connect(self._save_file)
         tl.addWidget(self._save_btn)
         self._file_lbl = QLabel(self.t("no_file_loaded", default=ui_text("cpk_no_file")))
+        self._file_lbl.setMinimumWidth(0)
+        self._file_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self._file_lbl.setFont(QFont("Consolas", 12))
         self._file_lbl.setStyleSheet(ss_file_label())
-        tl.addWidget(self._file_lbl)
-        tl.addStretch()
+        tl.addWidget(self._file_lbl, 1)
         self._bank_combo = QComboBox()
         self._bank_combo.setFixedWidth(200)
+        self._bank_combo.setMinimumWidth(160)
         self._bank_combo.setFont(QFont("Segoe UI", 11))
         self._bank_combo.setStyleSheet(ss_input())
         self._bank_combo.currentIndexChanged.connect(self._on_bank_changed)
@@ -786,7 +793,7 @@ class XfbinAudioEditor(QWidget):
         self._add_btn.setStyleSheet(ss_btn())
         self._add_btn.clicked.connect(self._add_tone)
         actions_layout.addWidget(self._add_btn, 1)
-        self._dup_btn = QPushButton(self.t("btn_duplicate"))
+        self._dup_btn = QPushButton(self.t("btn_dup_short"))
         self._dup_btn.setFixedHeight(28)
         self._dup_btn.setFont(btn_font)
         self._dup_btn.setEnabled(False)
@@ -1012,7 +1019,11 @@ class XfbinAudioEditor(QWidget):
             tcl = QVBoxLayout(tc)
             tcl.setContentsMargins(0, 0, 0, 0)
             tcl.setSpacing(0)
-            nl = QLabel(tone.name or f"tone_{i}")
+            tone_title = tone.name or f"tone_{i}"
+            nl = QLabel(_truncate(tone_title, 24))
+            nl.setToolTip(tone_title)
+            nl.setMinimumWidth(0)
+            nl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             nl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
             nl.setStyleSheet(ss_file_label_loaded())
             nl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -1063,6 +1074,7 @@ class XfbinAudioEditor(QWidget):
     def _build_editor(self, bank_idx: int, tone_idx: int, tone: ToneEntry):
         _clear_layout(self._editor_layout)
         hdr, hl = make_editor_card(margins=(16, 12, 16, 12), spacing=8)
+        self._prep_card(hdr)
         title = tone.name or f"tone_{tone_idx}"
         subtitle = f"Bank {bank_idx} | Tone {tone_idx}"
         add_editor_card_title(hl, title, "fa6s.music", subtitle=subtitle)
@@ -1237,6 +1249,7 @@ class XfbinAudioEditor(QWidget):
 
     def _make_section(self, title):
         sec, sec_layout = make_editor_card(margins=(16, 14, 16, 14), spacing=10)
+        self._prep_card(sec)
         icon_name = "fa6s.sliders"
         text = str(title).lower()
         if "play" in text or "preview" in text:
@@ -1250,6 +1263,11 @@ class XfbinAudioEditor(QWidget):
         add_editor_card_title(sec_layout, title, icon_name)
         self._editor_layout.addWidget(sec)
         return sec
+
+    def _prep_card(self, card: QWidget, *, max_width: int = 1120):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(max_width)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
 
     def _bind_auto_apply(self, bank_idx: int, tone_idx: int):
         self._name_edit.editingFinished.connect(lambda b=bank_idx, t=tone_idx: self._apply_params(b, t, refresh_list=True))

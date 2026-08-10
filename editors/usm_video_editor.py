@@ -12,6 +12,7 @@ from PyQt6.QtGui import QPixmap
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 from PyQt6.QtWidgets import (
+    QBoxLayout,
     QFileDialog,
     QCheckBox,
     QFrame,
@@ -80,6 +81,7 @@ class MediaInfo:
 
 
 PREVIEW_MAX_WIDTH = 640
+PREVIEW_MIN_WIDTH = 220
 MAX_IMPORT_DURATION_SECONDS = 10 * 60
 
 
@@ -126,8 +128,9 @@ class AspectRatioWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._aspect_ratio = 16 / 9
-        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        self.setFixedWidth(PREVIEW_MAX_WIDTH)
+        self.setMinimumWidth(PREVIEW_MIN_WIDTH)
+        self.setMaximumWidth(PREVIEW_MAX_WIDTH)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def set_widescreen_aspect(self):
         self._aspect_ratio = 16 / 9
@@ -144,7 +147,7 @@ class AspectRatioWidget(QWidget):
         return QSize(PREVIEW_MAX_WIDTH, self.heightForWidth(PREVIEW_MAX_WIDTH))
 
     def minimumSizeHint(self) -> QSize:
-        return self.sizeHint()
+        return QSize(PREVIEW_MIN_WIDTH, self.heightForWidth(PREVIEW_MIN_WIDTH))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -209,8 +212,9 @@ class UsmVideoEditor(QWidget):
 
         self._file_label = QLabel(self.t("no_file_loaded"))
         self._file_label.setStyleSheet(ss_file_label())
-        toolbar_layout.addWidget(self._file_label)
-        toolbar_layout.addStretch()
+        self._file_label.setMinimumWidth(0)
+        self._file_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        toolbar_layout.addWidget(self._file_label, 1)
 
         root.addWidget(toolbar)
 
@@ -230,8 +234,12 @@ class UsmVideoEditor(QWidget):
         body_layout.setContentsMargins(14, 14, 14, 14)
         body_layout.setSpacing(14)
         body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._body = body
+        self._body_layout = body_layout
+        self._compact_layout = None
 
         preview = self._panel()
+        self._preview_panel = preview
         preview.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
         preview_layout = QVBoxLayout(preview)
         preview_layout.setContentsMargins(16, 14, 16, 14)
@@ -241,8 +249,9 @@ class UsmVideoEditor(QWidget):
 
         self._preview_inner = QWidget()
         self._preview_inner.setStyleSheet(ss_transparent())
-        self._preview_inner.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
-        self._preview_inner.setFixedWidth(PREVIEW_MAX_WIDTH)
+        self._preview_inner.setMinimumWidth(0)
+        self._preview_inner.setMaximumWidth(PREVIEW_MAX_WIDTH)
+        self._preview_inner.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         preview_inner_layout = QVBoxLayout(self._preview_inner)
         preview_inner_layout.setContentsMargins(0, 0, 0, 0)
         preview_inner_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -315,6 +324,7 @@ class UsmVideoEditor(QWidget):
         body_layout.addWidget(preview, 0, Qt.AlignmentFlag.AlignTop)
 
         summary = self._panel()
+        self._summary_panel = summary
         summary.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         summary_layout = QVBoxLayout(summary)
         summary_layout.setContentsMargins(16, 14, 16, 14)
@@ -341,6 +351,7 @@ class UsmVideoEditor(QWidget):
         root.addWidget(scroll, 1)
         self._build_busy_overlay()
         self._build_preview_player()
+        self._apply_responsive_layout()
 
     def _toolbar_button(self, key: str, *, accent: bool = False) -> QPushButton:
         btn = QPushButton(self.t(key))
@@ -362,6 +373,7 @@ class UsmVideoEditor(QWidget):
     def _value_label(self) -> QLabel:
         label = QLabel(self.t("usm_value_empty"))
         label.setWordWrap(True)
+        label.setMinimumWidth(0)
         label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         label.setStyleSheet(ss_main_label())
         return label
@@ -471,6 +483,36 @@ class UsmVideoEditor(QWidget):
         self._import_value.setText(self._describe_info(self._import_info) if has_import else self.t("usm_value_empty"))
         self._staged_value.setText(os.path.basename(self._staged_path) if has_staged else self.t("usm_value_empty"))
         self._update_preview_controls()
+        self._apply_responsive_layout()
+
+    def _apply_responsive_layout(self):
+        if not hasattr(self, "_body_layout"):
+            return
+        compact = self.width() < 980
+        if compact != self._compact_layout:
+            direction = QBoxLayout.Direction.TopToBottom if compact else QBoxLayout.Direction.LeftToRight
+            self._body_layout.setDirection(direction)
+            self._preview_panel.setSizePolicy(
+                QSizePolicy.Policy.Expanding if compact else QSizePolicy.Policy.Maximum,
+                QSizePolicy.Policy.Preferred,
+            )
+            self._summary_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            self._compact_layout = compact
+
+        margins = self._body_layout.contentsMargins()
+        available = max(0, self.width() - margins.left() - margins.right() - 32)
+        preview_width = min(PREVIEW_MAX_WIDTH, max(PREVIEW_MIN_WIDTH, available))
+        if compact:
+            self._preview_panel.setMaximumWidth(16777215)
+            self._summary_panel.setMaximumWidth(16777215)
+            self._preview_inner.setMaximumWidth(preview_width)
+            self._preview_surface.setMaximumWidth(preview_width)
+            return
+
+        self._preview_panel.setMaximumWidth(PREVIEW_MAX_WIDTH + 32)
+        self._summary_panel.setMaximumWidth(620)
+        self._preview_inner.setMaximumWidth(PREVIEW_MAX_WIDTH)
+        self._preview_surface.setMaximumWidth(PREVIEW_MAX_WIDTH)
 
     def _describe_info(self, info: MediaInfo) -> str:
         if not info.path:
@@ -760,6 +802,7 @@ class UsmVideoEditor(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._apply_responsive_layout()
         if hasattr(self, "_busy_overlay"):
             self._busy_overlay.setGeometry(self.rect())
         self._render_poster_pixmap()

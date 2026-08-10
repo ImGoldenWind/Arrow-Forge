@@ -2,7 +2,7 @@ import copy
 import math
 import os
 
-from PyQt6.QtCore import QRegularExpression, Qt
+from PyQt6.QtCore import QRegularExpression, Qt, QTimer
 from PyQt6.QtGui import QFont, QRegularExpressionValidator
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -70,6 +71,11 @@ def _clear_layout(layout):
             _clear_layout(item.layout())
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
+
+
 class DuelSettingParamEditor(QWidget):
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
@@ -86,6 +92,8 @@ class DuelSettingParamEditor(QWidget):
         self._entry_count_label: QLabel | None = None
         self._dirty = False
         self._loading_detail = False
+        self._last_compact: bool | None = None
+        self._active_grid_columns = 3
 
         self._uint32_validator = QRegularExpressionValidator(QRegularExpression(r"\d{0,10}"), self)
         self._float_validator = QRegularExpressionValidator(
@@ -177,8 +185,10 @@ class DuelSettingParamEditor(QWidget):
         self._entry_scroll = QScrollArea()
         self._entry_scroll.setWidgetResizable(True)
         self._entry_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._entry_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._entry_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._entry_list_widget = QWidget()
+        self._entry_list_widget.setMinimumWidth(0)
         self._entry_list_widget.setStyleSheet(ss_transparent())
         self._entry_list_layout = QVBoxLayout(self._entry_list_widget)
         self._entry_list_layout.setContentsMargins(0, 0, 0, 0)
@@ -196,12 +206,13 @@ class DuelSettingParamEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_widget)
         main_layout.addWidget(self._editor_scroll, 1)
 
@@ -310,6 +321,8 @@ class DuelSettingParamEditor(QWidget):
     def _make_entry_button(self, idx: int, entry: dict) -> QPushButton:
         btn = QPushButton()
         btn.setFixedHeight(44)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(ss_sidebar_btn(selected=idx == self._current_idx))
 
@@ -317,11 +330,26 @@ class DuelSettingParamEditor(QWidget):
         layout.setContentsMargins(10, 3, 10, 3)
         layout.setSpacing(0)
 
-        title = QLabel(self._entry_title(idx, entry))
+        title_text = self._entry_title(idx, entry)
+        subtitle_text = self._entry_subtitle(entry)
+
+        title = QLabel(_truncate(title_text, 24))
         title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         title.setStyleSheet(ss_main_label())
+        title.setMinimumWidth(0)
+        title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        title.setToolTip(title_text)
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(title)
+
+        subtitle = QLabel(_truncate(subtitle_text, 28))
+        subtitle.setFont(QFont("Consolas", 11))
+        subtitle.setStyleSheet(ss_dim_label())
+        subtitle.setMinimumWidth(0)
+        subtitle.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        subtitle.setToolTip(subtitle_text)
+        subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout.addWidget(subtitle)
 
         btn.clicked.connect(lambda checked=False, i=idx: self._select_entry(i))
         return btn
@@ -375,7 +403,13 @@ class DuelSettingParamEditor(QWidget):
                 continue
             labels = btn.findChildren(QLabel)
             if labels:
-                labels[0].setText(self._entry_title(idx, self._entries[idx]))
+                title_text = self._entry_title(idx, self._entries[idx])
+                labels[0].setText(_truncate(title_text, 24))
+                labels[0].setToolTip(title_text)
+            if len(labels) >= 2:
+                subtitle_text = self._entry_subtitle(self._entries[idx])
+                labels[1].setText(_truncate(subtitle_text, 28))
+                labels[1].setToolTip(subtitle_text)
             break
         self._filter_list()
 
@@ -395,14 +429,20 @@ class DuelSettingParamEditor(QWidget):
         self._entry_count_label = None
         self._loading_detail = True
         entry = self._entries[idx]
+        self._last_compact = self._is_compact_editor()
+        title = _truncate(self._entry_title(idx, entry), 30 if self._last_compact else 86)
+        summary = _truncate(self._entry_subtitle(entry), 38 if self._last_compact else 92)
 
         header, header_layout = make_editor_grid_card(
-            title=self._entry_title(idx, entry),
+            self._editor_widget,
+            title=title,
             icon_name="fa6s.flag-checkered",
-            subtitle=self._entry_subtitle(entry),
+            subtitle=summary,
             grid_margins=(0, 2, 0, 0),
             vertical_spacing=8,
         )
+        self._prep_card(header)
+        self._active_grid_columns = 3
 
         self._add_combo_field(header_layout, 0, 0, "type_id", ui_text("ui_duelsettingparam_type_id"), entry.get("type_id", 0), [(str(value), value) for value in range(5)], big=True)
         self._add_uint_field(header_layout, 0, 1, "sequence_id", ui_text("ui_duelsettingparam_sequence_id"), entry.get("sequence_id", 0), big=True)
@@ -410,34 +450,31 @@ class DuelSettingParamEditor(QWidget):
         self._add_hint(header_layout, 1, 0, ui_text("ui_duelsettingparam_type_hint"))
         self._add_hint(header_layout, 1, 1, ui_text("ui_duelsettingparam_sequence_hint"))
         self._add_hint(header_layout, 1, 2, ui_text("ui_duelsettingparam_value_hint"))
-        for col in range(3):
-            header_layout.setColumnStretch(col, 1)
         self._editor_layout.addWidget(header)
 
         self._add_section(ui_text("ui_duelsettingparam_text_keys"))
         text_card = self._make_card()
         text_grid = self._card_grid(text_card)
+        self._active_grid_columns = 3
         self._add_text_field(text_grid, 0, 0, "title_key", ui_text("ui_duelsettingparam_title_key"), entry.get("title_key", ""))
         self._add_text_field(text_grid, 0, 1, "hidden_title_key", ui_text("ui_duelsettingparam_hidden_title_key"), entry.get("hidden_title_key", ""))
         self._add_text_field(text_grid, 0, 2, "hint_key", ui_text("ui_duelsettingparam_hint_key"), entry.get("hint_key", ""))
-        for col in range(3):
-            text_grid.setColumnStretch(col, 1)
         self._editor_layout.addWidget(text_card)
 
         self._add_section(ui_text("ui_duelsettingparam_conditions"))
         cond_card = self._make_card()
         cond_grid = self._card_grid(cond_card)
+        self._active_grid_columns = 2
         self._add_text_field(cond_grid, 0, 0, "condition_id", ui_text("ui_duelsettingparam_condition_id"), entry.get("condition_id", ""))
         self._add_text_field(cond_grid, 0, 1, "target_names", ui_text("ui_duelsettingparam_target_names"), entry.get("target_names", ""))
-        self._add_hint(cond_grid, 1, 0, ui_text("ui_duelsettingparam_condition_hint"), colspan=2)
-        cond_grid.setColumnStretch(0, 1)
-        cond_grid.setColumnStretch(1, 2)
+        self._add_hint(cond_grid, 1, 0, ui_text("ui_duelsettingparam_condition_hint"), colspan=self._grid_columns(2), max_columns=2)
         self._editor_layout.addWidget(cond_card)
 
         if not self._raw_values_are_zero(entry):
             self._add_section(ui_text("ui_duelsettingparam_raw_values"))
             raw_card = self._make_card()
             raw_grid = self._card_grid(raw_card)
+            self._active_grid_columns = 3
             self._add_float_field(raw_grid, 0, 0, "value_2", ui_text("ui_duelsettingparam_value_2"), self._entry_value(entry, 1))
             self._add_float_field(raw_grid, 0, 1, "value_3", ui_text("ui_duelsettingparam_value_3"), self._entry_value(entry, 2))
             self._add_float_field(raw_grid, 0, 2, "value_4", ui_text("ui_duelsettingparam_value_4"), self._entry_value(entry, 3))
@@ -445,8 +482,6 @@ class DuelSettingParamEditor(QWidget):
             self._add_uint_field(raw_grid, 2, 1, "reserved_28", ui_text("ui_duelsettingparam_reserved_28"), entry.get("reserved_28", 0))
             self._add_hint(raw_grid, 1, 0, ui_text("ui_duelsettingparam_value_hint"), colspan=3)
             self._add_hint(raw_grid, 3, 0, ui_text("ui_duelsettingparam_reserved_hint"), colspan=2)
-            for col in range(3):
-                raw_grid.setColumnStretch(col, 1)
             self._editor_layout.addWidget(raw_card)
 
         spacer = QWidget()
@@ -473,14 +508,46 @@ class DuelSettingParamEditor(QWidget):
     def _add_section(self, title: str):
         self._pending_section_title = title
 
+    def _is_compact_editor(self) -> bool:
+        if not hasattr(self, "_editor_scroll"):
+            return False
+        return self._editor_scroll.viewport().width() < 780
+
+    def _grid_columns(self, max_columns: int) -> int:
+        width = self._editor_scroll.viewport().width()
+        if width < 780:
+            return 1
+        if width < 1080:
+            return min(2, max_columns)
+        return max_columns
+
+    def _field_position(self, row: int, col: int, max_columns: int) -> tuple[int, int]:
+        columns = self._grid_columns(max_columns)
+        logical_index = row * max_columns + col
+        return divmod(logical_index, columns)
+
+    def _prep_card(self, card: QFrame):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(980)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _prep_field_widget(self, frame: QWidget, editor: QWidget):
+        frame.setMinimumWidth(0)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        editor.setMinimumWidth(0)
+        editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+
     def _make_card(self) -> QFrame:
         section_title = getattr(self, "_pending_section_title", None)
         self._pending_section_title = None
         card, grid = make_editor_grid_card(
+            self._editor_widget,
             title=section_title,
             icon_name="fa6s.sliders",
             vertical_spacing=10,
         )
+        self._prep_card(card)
         card._editor_grid = grid
         return card
 
@@ -491,12 +558,16 @@ class DuelSettingParamEditor(QWidget):
         frame, layout, _label, _hint = make_editor_field_shell(label)
         return frame, layout
 
-    def _add_hint(self, grid, row: int, col: int, text: str, colspan: int = 1):
+    def _add_hint(self, grid, row: int, col: int, text: str, colspan: int = 1, max_columns: int | None = None):
         hint = QLabel(text)
         hint.setWordWrap(True)
         hint.setFont(QFont("Segoe UI", 9))
         hint.setStyleSheet(ss_dim_label())
-        grid.addWidget(hint, row, col, 1, colspan)
+        hint.setMinimumWidth(0)
+        hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        max_cols = max_columns or getattr(self, "_active_grid_columns", 3)
+        mapped_row, mapped_col = self._field_position(row, col, max_cols)
+        grid.addWidget(hint, mapped_row, mapped_col, 1, colspan)
 
     def _add_text_field(self, grid, row, col, key, label, value, big=False):
         frame, layout = self._field_shell(label)
@@ -504,10 +575,16 @@ class DuelSettingParamEditor(QWidget):
         edit.setFixedHeight(36 if big else 30)
         edit.setFont(QFont("Consolas", 16 if big else 13))
         edit.setStyleSheet(ss_input())
+        edit.setMinimumWidth(0)
+        edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         edit.setText(str(value))
+        edit.setCursorPosition(0)
         edit.textChanged.connect(lambda _text, k=key: self._on_text_changed(k))
         layout.addWidget(edit)
-        grid.addWidget(frame, row, col)
+        self._prep_field_widget(frame, edit)
+        mapped_row, mapped_col = self._field_position(row, col, getattr(self, "_active_grid_columns", 3))
+        grid.addWidget(frame, mapped_row, mapped_col)
+        grid.setColumnStretch(mapped_col, 1)
         self._fields[key] = edit
 
     def _add_uint_field(self, grid, row, col, key, label, value, big=False):
@@ -518,11 +595,17 @@ class DuelSettingParamEditor(QWidget):
         edit.setFixedHeight(36 if big else 30)
         edit.setFont(QFont("Consolas", 16 if big else 13))
         edit.setStyleSheet(ss_input())
+        edit.setMinimumWidth(0)
+        edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         edit.setText(str(int(value)))
+        edit.setCursorPosition(0)
         edit.textChanged.connect(self._on_numeric_text_changed)
         edit.editingFinished.connect(lambda k=key: self._on_uint_finished(k))
         layout.addWidget(edit)
-        grid.addWidget(frame, row, col)
+        self._prep_field_widget(frame, edit)
+        mapped_row, mapped_col = self._field_position(row, col, getattr(self, "_active_grid_columns", 3))
+        grid.addWidget(frame, mapped_row, mapped_col)
+        grid.setColumnStretch(mapped_col, 1)
         self._fields[key] = edit
 
     def _add_combo_field(self, grid, row, col, key, label, value, options, big=False):
@@ -531,13 +614,18 @@ class DuelSettingParamEditor(QWidget):
         combo.setFixedHeight(36 if big else 30)
         combo.setFont(QFont("Consolas", 16 if big else 13))
         combo.setStyleSheet(ss_input())
+        combo.setMinimumWidth(0)
+        combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         for text, data in options:
             combo.addItem(text, data)
         selected = combo.findData(int(value))
         combo.setCurrentIndex(max(0, selected))
         combo.currentIndexChanged.connect(lambda _idx, k=key: self._on_combo_changed(k))
         layout.addWidget(combo)
-        grid.addWidget(frame, row, col)
+        self._prep_field_widget(frame, combo)
+        mapped_row, mapped_col = self._field_position(row, col, getattr(self, "_active_grid_columns", 3))
+        grid.addWidget(frame, mapped_row, mapped_col)
+        grid.setColumnStretch(mapped_col, 1)
         self._fields[key] = combo
 
     def _add_float_field(self, grid, row, col, key, label, value, big=False):
@@ -547,12 +635,31 @@ class DuelSettingParamEditor(QWidget):
         edit.setFixedHeight(36 if big else 30)
         edit.setFont(QFont("Consolas", 16 if big else 13))
         edit.setStyleSheet(ss_input())
+        edit.setMinimumWidth(0)
+        edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         edit.setText(f"{float(value):.9g}")
+        edit.setCursorPosition(0)
         edit.textChanged.connect(self._on_numeric_text_changed)
         edit.editingFinished.connect(lambda k=key: self._on_float_finished(k))
         layout.addWidget(edit)
-        grid.addWidget(frame, row, col)
+        self._prep_field_widget(frame, edit)
+        mapped_row, mapped_col = self._field_position(row, col, getattr(self, "_active_grid_columns", 3))
+        grid.addWidget(frame, mapped_row, mapped_col)
+        grid.setColumnStretch(mapped_col, 1)
         self._fields[key] = edit
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_idx is not None and self._last_compact is not None:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+
+    def _maybe_rebuild_for_compact(self):
+        if self._current_idx is None or self._loading_detail:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_compact:
+            return
+        self._build_editor(self._current_idx)
 
     def _on_text_changed(self, key: str):
         if self._loading_detail or self._current_idx is None:

@@ -3,19 +3,18 @@ import copy
 
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QVBoxLayout, QHBoxLayout,
-    QFileDialog, QMessageBox, QScrollArea,
+    QFileDialog, QMessageBox, QScrollArea, QSizePolicy,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 
-from core.themes import P
 from core.style_helpers import (
     make_empty_state,
     make_editor_field_shell,
     make_editor_grid_card,
     ss_btn, ss_sep, ss_accent_sep, ss_input, ss_search, ss_file_label, ss_sidebar_btn,
     ss_scrollarea, ss_scrollarea_transparent, ss_panel,
-    ss_bg_dark, ss_bg_panel, ss_dim_label,
+    ss_bg_dark, ss_bg_panel, ss_dim_label, ss_main_label,
     ss_placeholder, ss_sidebar_frame, ss_transparent, TOOLBAR_H, TOOLBAR_BTN_H,
 )
 from core.editor_file_state import set_file_label
@@ -43,6 +42,11 @@ def _clear_layout(layout):
             _clear_layout(item.layout())
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[:max(1, limit - 1)] + "..."
+
+
 class CustomizeDefaultParamEditor(QWidget):
     """Embedded editor for CustomizeDefaultParam.bin.xfbin."""
 
@@ -61,6 +65,7 @@ class CustomizeDefaultParamEditor(QWidget):
         self._entry_buttons: list[tuple[QPushButton, int]] = []
         self._fields: dict[str, QLineEdit] = {}
         self._loading_detail = False
+        self._last_compact: bool | None = None
 
         self._build_ui()
 
@@ -164,8 +169,10 @@ class CustomizeDefaultParamEditor(QWidget):
         self._list_scroll = QScrollArea()
         self._list_scroll.setWidgetResizable(True)
         self._list_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._list_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._list_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._list_widget = QWidget()
+        self._list_widget.setMinimumWidth(0)
         self._list_widget.setStyleSheet(ss_transparent())
         self._list_layout = QVBoxLayout(self._list_widget)
         self._list_layout.setContentsMargins(0, 0, 0, 0)
@@ -183,12 +190,13 @@ class CustomizeDefaultParamEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_widget)
         main_l.addWidget(self._editor_scroll, 1)
 
@@ -248,6 +256,8 @@ class CustomizeDefaultParamEditor(QWidget):
 
         btn = QPushButton()
         btn.setFixedHeight(44)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(ss_sidebar_btn(selected=(idx == self._current_index)))
 
@@ -255,15 +265,23 @@ class CustomizeDefaultParamEditor(QWidget):
         bl.setContentsMargins(10, 3, 10, 3)
         bl.setSpacing(0)
 
-        title = QLabel(ui_text("ui_customcardparam_entry_value_2", p0=idx))
+        title_text = ui_text("ui_customcardparam_entry_value_2", p0=idx)
+        title = QLabel(_truncate(title_text, 24))
         title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        title.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        title.setStyleSheet(ss_main_label())
+        title.setMinimumWidth(0)
+        title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        title.setToolTip(title_text)
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         bl.addWidget(title)
 
-        subtitle = QLabel(ui_text("ui_customcardparam_value_value", p0=e.get('char_code', ''), p1=slot_name))
+        subtitle_text = ui_text("ui_customcardparam_value_value", p0=e.get('char_code', ''), p1=slot_name)
+        subtitle = QLabel(_truncate(subtitle_text, 28))
         subtitle.setFont(QFont("Consolas", 11))
         subtitle.setStyleSheet(ss_dim_label())
+        subtitle.setMinimumWidth(0)
+        subtitle.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        subtitle.setToolTip(subtitle_text)
         subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         bl.addWidget(subtitle)
 
@@ -283,27 +301,63 @@ class CustomizeDefaultParamEditor(QWidget):
             btn.setStyleSheet(ss_sidebar_btn(selected=(i == idx)))
         self._build_editor(idx)
 
+    def _is_compact_editor(self) -> bool:
+        if not hasattr(self, "_editor_scroll"):
+            return False
+        return self._editor_scroll.viewport().width() < 780
+
+    def _grid_columns(self, max_columns: int) -> int:
+        width = self._editor_scroll.viewport().width()
+        if width < 780:
+            return 1
+        if width < 1080:
+            return min(2, max_columns)
+        return max_columns
+
+    def _prep_card(self, card: QFrame):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(980)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _prep_field_widget(self, widget: QWidget):
+        widget.setMinimumWidth(0)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return widget
+
+    def _add_editor_card(self, card: QFrame):
+        self._editor_layout.addWidget(card)
+
+    def _field_position(self, row: int, col: int, max_columns: int) -> tuple[int, int]:
+        columns = self._grid_columns(max_columns)
+        logical_index = row * max_columns + col
+        return divmod(logical_index, columns)
+
     def _build_editor(self, idx):
         self._loading_detail = True
         _clear_layout(self._editor_layout)
         self._fields = {}
+        self._last_compact = self._is_compact_editor()
         e = self._entries[idx]
 
         slot_name = SLOT_NAMES.get(e.get("slot", 0), str(e.get("slot", 0)))
         hdr, grid = make_editor_grid_card(
+            self._editor_widget,
             title=ui_text("ui_customcardparam_entry_value", p0=idx),
             icon_name="fa6s.user-gear",
             subtitle=ui_text("ui_customcardparam_value_value", p0=e.get("char_code", ""), p1=slot_name),
             grid_margins=(0, 2, 0, 0),
             vertical_spacing=8,
         )
+        self._prep_card(hdr)
+        self._active_grid_columns = 2
         self._add_field(grid, 0, 0, "char_code", ui_text("ui_customizedefaultparam_char_code"), e["char_code"], wide=True)
         self._add_field(
             grid, 0, 1, "slot",
             self._label_with_hint(ui_text("ui_customizedefaultparam_slot"), SLOT_NAMES, e["slot"]),
             e["slot"],
         )
-        self._editor_layout.addWidget(hdr)
+        self._add_editor_card(hdr)
 
         self._add_section(ui_text("ui_customizedefaultparam_position_scale"))
         self._add_card_grid([
@@ -320,10 +374,23 @@ class CustomizeDefaultParamEditor(QWidget):
 
         spacer = QWidget()
         spacer.setFixedHeight(20)
-        spacer.setStyleSheet("background: transparent;")
+        spacer.setStyleSheet(ss_transparent())
         self._editor_layout.addWidget(spacer)
         self._editor_layout.addStretch()
         self._loading_detail = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_index is not None and self._last_compact is not None:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+
+    def _maybe_rebuild_for_compact(self):
+        if self._current_index is None or self._loading_detail:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_compact:
+            return
+        self._build_editor(self._current_index)
 
     def _fmt_float(self, value, digits):
         try:
@@ -342,19 +409,23 @@ class CustomizeDefaultParamEditor(QWidget):
         section_title = getattr(self, "_pending_section_title", None)
         self._pending_section_title = None
         card, grid = make_editor_grid_card(
+            self._editor_widget,
             title=section_title,
             icon_name="fa6s.sliders",
             vertical_spacing=10,
         )
+        self._prep_card(card)
 
+        self._active_grid_columns = columns
         for i, (key, label, value) in enumerate(fields):
             row, col = divmod(i, columns)
             self._add_field(grid, row, col, key, label, value)
 
-        self._editor_layout.addWidget(card)
+        self._add_editor_card(card)
 
     def _add_field(self, grid, row, col, key, label, value, wide=False):
         f, fl, _label, _hint = make_editor_field_shell(label)
+        self._prep_field_widget(f)
 
         le = QLineEdit()
         text = str(value)
@@ -363,11 +434,14 @@ class CustomizeDefaultParamEditor(QWidget):
         le.setFixedHeight(30 if not wide else 36)
         le.setFont(QFont("Consolas", 13 if not wide else 16))
         le.setStyleSheet(ss_input())
+        le.setMinimumWidth(0)
+        le.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         le.textChanged.connect(lambda text, k=key: self._on_field_changed(k, text))
         fl.addWidget(le)
 
-        grid.addWidget(f, row, col)
-        grid.setColumnStretch(col, 1)
+        mapped_row, mapped_col = self._field_position(row, col, getattr(self, "_active_grid_columns", 3))
+        grid.addWidget(f, mapped_row, mapped_col)
+        grid.setColumnStretch(mapped_col, 1)
         self._fields[key] = le
 
     def _on_field_changed(self, key, text):
@@ -397,8 +471,12 @@ class CustomizeDefaultParamEditor(QWidget):
             if i == self._current_index:
                 labels = btn.findChildren(QLabel)
                 if len(labels) >= 2:
-                    labels[0].setText(ui_text("ui_customcardparam_entry_value_2", p0=i))
-                    labels[1].setText(ui_text("ui_customcardparam_value_value", p0=e.get('char_code', ''), p1=slot_name))
+                    title = ui_text("ui_customcardparam_entry_value_2", p0=i)
+                    subtitle = ui_text("ui_customcardparam_value_value", p0=e.get('char_code', ''), p1=slot_name)
+                    labels[0].setText(_truncate(title, 24))
+                    labels[0].setToolTip(title)
+                    labels[1].setText(_truncate(subtitle, 28))
+                    labels[1].setToolTip(subtitle)
                 break
 
     def _on_filter_changed(self):

@@ -1,6 +1,6 @@
 from PyQt6.QtCore import QPoint, QRectF, QSize, QTimer, Qt
 from PyQt6.QtGui import QCursor
-from PyQt6.QtWidgets import QFrame
+from PyQt6.QtWidgets import QFrame, QSizePolicy
 
 from core.effects.tool_card_effects import ToolCardEffectsMixin
 from core.rendering.theme_rendering import ThemeRenderingMixin
@@ -64,5 +64,7 @@ class ToolCard(
         self.setAutoFillBackground(False)
         self.setMouseTracking(True)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setFixedHeight(125)
         self._position_action_btns()

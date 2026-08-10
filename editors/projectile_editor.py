@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit,
     QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea,
-    QFileDialog, QMessageBox,
+    QFileDialog, QMessageBox, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -20,7 +20,7 @@ from core.style_helpers import (
     ss_scrollarea, ss_scrollarea_transparent, ss_input, ss_file_label,
     ss_transparent, ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
     make_editor_card, make_editor_field_shell, make_editor_grid_card,
-    make_empty_state,
+    make_empty_state, add_editor_card_title,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
 from core.editor_file_state import set_file_label
@@ -43,6 +43,11 @@ def _clear_layout(layout):
             widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
+
+
+def _truncate(text: str, limit: int = 28) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[: max(0, limit - 3)].rstrip() + "..."
 
 
 _DEFAULT_SKILL_XML = (
@@ -104,38 +109,51 @@ class _SkillTable(QWidget):
         self._root_el     = None
         self._blocked     = False
         self._action_cards = []
+        self._header_field_shells = []
+        self._header_grid = None
+        self._last_header_cols = 0
+        self._last_action_cols = 0
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(80)
+        self._resize_timer.timeout.connect(self._handle_resize_layout_change)
         self._build_ui()
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
 
         # Skill Properties Card
         card, card_grid = make_editor_grid_card(
+            self,
             title=ui_text("ui_projectile_skill_id"),
             icon_name="fa6s.crosshairs",
             grid_margins=(0, 2, 0, 0),
             vertical_spacing=10,
         )
+        self._prep_card(card)
+        self._header_grid = card_grid
 
         self._id_fld = self._type_fld = self._det_fld = None
         for col, label_text in enumerate((ui_text("ui_projectile_skill_id"), ui_text("ui_dlcinfoparam_type"), ui_text("ui_projectile_details"))):
             f, fl, _label, _hint = make_editor_field_shell(label_text)
+            self._prep_field_shell(f)
             fld = QLineEdit()
             fld.setFixedHeight(30)
             fld.setFont(QFont("Consolas", 13))
             fld.setStyleSheet(ss_input())
             fld.setMinimumWidth(0)
+            fld.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             fl.addWidget(fld)
-            card_grid.addWidget(f, 0, col)
-            card_grid.setColumnStretch(col, 1)
+            self._header_field_shells.append(f)
             if col == 0:
                 self._id_fld = fld
             elif col == 1:
                 self._type_fld = fld
             else:
                 self._det_fld = fld
+        self._layout_header_fields()
 
         root.addWidget(card)
 
@@ -143,7 +161,7 @@ class _SkillTable(QWidget):
         add_bar = QWidget()
         add_bar.setStyleSheet(ss_transparent())
         add_bar_layout = QHBoxLayout(add_bar)
-        add_bar_layout.setContentsMargins(20, 8, 12, 4)
+        add_bar_layout.setContentsMargins(0, 0, 0, 0)
         add_bar_layout.setSpacing(4)
 
         self._add_btn = QPushButton(self.t("btn_new"))
@@ -159,12 +177,12 @@ class _SkillTable(QWidget):
         self._cards_scroll = QScrollArea()
         self._cards_scroll.setWidgetResizable(True)
         self._cards_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._cards_scroll.setStyleSheet(ss_scrollarea())
+        self._cards_scroll.setStyleSheet(ss_scrollarea_transparent())
 
         self._cards_widget = QWidget()
-        self._cards_widget.setStyleSheet(ss_bg_dark())
+        self._cards_widget.setStyleSheet(ss_transparent())
         self._cards_layout = QVBoxLayout(self._cards_widget)
-        self._cards_layout.setContentsMargins(0, 4, 0, 8)
+        self._cards_layout.setContentsMargins(0, 0, 0, 0)
         self._cards_layout.setSpacing(8)
         self._cards_layout.addStretch()
         self._cards_scroll.setWidget(self._cards_widget)
@@ -173,6 +191,68 @@ class _SkillTable(QWidget):
         self._id_fld.textChanged.connect(self._on_header_changed)
         self._type_fld.textChanged.connect(self._on_header_changed)
         self._det_fld.textChanged.connect(self._on_header_changed)
+
+    def _available_width(self) -> int:
+        if hasattr(self, "_cards_scroll") and self._cards_scroll is not None:
+            return max(0, self._cards_scroll.viewport().width())
+        return max(0, self.width())
+
+    def _header_columns(self) -> int:
+        return 1 if self._available_width() < 640 else 3
+
+    def _action_columns(self) -> int:
+        width = self._available_width()
+        if width < 560:
+            return 2
+        if width < 820:
+            return 3
+        if width < 1080:
+            return 4
+        return 5
+
+    def _prep_card(self, card: QWidget, *, max_width: int = 1120):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(max_width)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+
+    def _prep_field_shell(self, field: QWidget):
+        field.setMinimumWidth(120)
+        field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def _layout_header_fields(self):
+        if self._header_grid is None:
+            return
+        container = self._header_grid.parentWidget()
+        if container is not None:
+            container.setMinimumWidth(0)
+            container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        while self._header_grid.count():
+            item = self._header_grid.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+        cols = self._header_columns()
+        self._last_header_cols = cols
+        for col in range(3):
+            self._header_grid.setColumnStretch(col, 0)
+            self._header_grid.setColumnMinimumWidth(col, 0)
+        if cols == 1:
+            self._header_grid.setColumnMinimumWidth(0, max(180, self._available_width() - 32))
+        for idx, field in enumerate(self._header_field_shells):
+            row, col = divmod(idx, cols)
+            self._header_grid.addWidget(field, row, col)
+            self._header_grid.setColumnStretch(col, 1)
+
+    def _handle_resize_layout_change(self):
+        header_cols = self._header_columns()
+        action_cols = self._action_columns()
+        if header_cols != self._last_header_cols:
+            self._layout_header_fields()
+        if action_cols != self._last_action_cols and self._root_el is not None:
+            self._rebuild_cards()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._resize_timer.start()
 
     # Public
 
@@ -214,6 +294,7 @@ class _SkillTable(QWidget):
         self._action_cards = []
 
         if self._root_el is not None:
+            self._last_action_cols = self._action_columns()
             for idx, action_el in enumerate(list(self._root_el.iter(XML_ACTION))):
                 card = self._make_action_card(action_el, idx)
                 self._cards_layout.addWidget(card)
@@ -223,20 +304,16 @@ class _SkillTable(QWidget):
         self._blocked = False
 
     def _make_action_card(self, action_el, idx):
-        card, card_layout = make_editor_card(margins=(12, 10, 12, 12), spacing=8)
+        card, card_layout = make_editor_card(self._cards_widget, margins=(12, 10, 12, 12), spacing=8)
+        self._prep_card(card)
 
         # Card header: "Action N" + inline Dup/Delete
-        hdr = QWidget()
-        hdr.setStyleSheet(ss_transparent())
-        hdr_layout = QHBoxLayout(hdr)
-        hdr_layout.setContentsMargins(0, 0, 0, 0)
-        hdr_layout.setSpacing(4)
-
-        num_lbl = QLabel(ui_text("ui_projectile_action_value", p0=idx + 1))
-        num_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        num_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
-        hdr_layout.addWidget(num_lbl)
-        hdr_layout.addStretch()
+        hdr, _title_lbl, _subtitle_lbl = add_editor_card_title(
+            card_layout,
+            ui_text("ui_projectile_action_value", p0=idx + 1),
+            "fa6s.bolt",
+        )
+        hdr_layout = hdr.layout()
 
         btn_font = QFont("Segoe UI", 9)
 
@@ -254,8 +331,6 @@ class _SkillTable(QWidget):
         del_btn.clicked.connect(lambda checked=False, el=action_el: self._del_action_el(el))
         hdr_layout.addWidget(del_btn)
 
-        card_layout.addWidget(hdr)
-
         # Fields grid
         inner = QWidget()
         inner.setStyleSheet(ss_transparent())
@@ -264,8 +339,9 @@ class _SkillTable(QWidget):
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(8)
 
+        cols = self._action_columns()
         for i, (label_text, tag, attr) in enumerate(_ACTION_FIELDS):
-            row, col = divmod(i, _CARD_COLS)
+            row, col = divmod(i, cols)
 
             if tag is None:
                 value = action_el.get(attr, '')
@@ -274,12 +350,14 @@ class _SkillTable(QWidget):
                 value = sub_el.get(attr, '') if sub_el is not None else ''
 
             f, fl, _label, _hint = make_editor_field_shell(label_text)
+            self._prep_field_shell(f)
 
             fld = QLineEdit()
             fld.setFixedHeight(30)
             fld.setFont(QFont("Consolas", 13))
             fld.setStyleSheet(ss_input())
             fld.setMinimumWidth(0)
+            fld.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             fld.setText(value)
             fld.textChanged.connect(self._make_field_updater(action_el, tag, attr))
             fl.addWidget(fld)
@@ -438,7 +516,7 @@ class ProjectileEditor(QWidget):
 
         # Left sidebar
         left_frame = QFrame()
-        left_frame.setFixedWidth(260)
+        left_frame.setFixedWidth(276)
         left_frame.setStyleSheet(ss_sidebar_frame())
         lf_layout = QVBoxLayout(left_frame)
         lf_layout.setContentsMargins(8, 8, 8, 4)
@@ -447,7 +525,7 @@ class ProjectileEditor(QWidget):
         self._search_entry = QLineEdit()
         self._search_entry.setPlaceholderText(self.t("search_placeholder"))
         self._search_entry.setFixedHeight(32)
-        self._search_entry.setFont(QFont("Segoe UI", 13))
+        self._search_entry.setFont(QFont(P.get("font_ui", "Segoe UI"), 13))
         self._search_entry.setStyleSheet(ss_search())
         self._search_entry.textChanged.connect(self._filter_skill_list)
         lf_layout.addWidget(self._search_entry)
@@ -458,7 +536,7 @@ class ProjectileEditor(QWidget):
         actions_layout.setContentsMargins(0, 2, 0, 4)
         actions_layout.setSpacing(4)
 
-        btn_font = QFont("Segoe UI", 10)
+        btn_font = QFont(P.get("font_ui", "Segoe UI"), 10)
 
         self._skill_add_btn = QPushButton(self.t("btn_new"))
         self._skill_add_btn.setFixedHeight(28)
@@ -610,15 +688,19 @@ class ProjectileEditor(QWidget):
 
     def _make_skill_button(self, chunk):
         btn = QPushButton()
-        btn.setFixedHeight(40)
+        btn.setFixedHeight(44)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(ss_sidebar_btn())
         btn_layout = QVBoxLayout(btn)
         btn_layout.setContentsMargins(10, 4, 10, 4)
         btn_layout.setSpacing(0)
 
-        name_lbl = QLabel(chunk['skill_id'])
-        name_lbl.setFont(QFont("Consolas", 12, QFont.Weight.Bold))
+        full_name = chunk['skill_id']
+        name_lbl = QLabel(_truncate(full_name, 26))
+        name_lbl.setToolTip(full_name)
+        name_lbl.setFont(QFont(P.get("font_ui", "Segoe UI"), 12, QFont.Weight.Bold))
         name_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
         name_lbl.setMinimumWidth(0)
         name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -663,7 +745,8 @@ class ProjectileEditor(QWidget):
                 if c is chunk:
                     labels = btn.findChildren(QLabel)
                     if labels:
-                        labels[0].setText(new_id)
+                        labels[0].setText(_truncate(new_id, 26))
+                        labels[0].setToolTip(new_id)
                     break
 
     # Add / Dup / Delete skills

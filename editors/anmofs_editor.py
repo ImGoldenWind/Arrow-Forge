@@ -4,7 +4,7 @@ import copy
 import os
 import threading
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -65,6 +66,11 @@ from parsers.anmofs_parser import (
 ENTRY_FIELDS = ("frame", "value_1", "value_2", "value_3", "value_4", "value_5", "value_6")
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[:max(1, limit - 3)] + "..."
+
+
 def _clear_layout(layout):
     if layout is None:
         return
@@ -104,6 +110,7 @@ class AnmofsEditor(QWidget):
         self._selected_entry_idx = -1
         self._history = EditorHistory()
         self._restoring_history = False
+        self._last_meta_columns = None
 
         self._load_done_signal.connect(self._on_load_done)
         self._load_error_signal.connect(self._on_load_error)
@@ -163,6 +170,7 @@ class AnmofsEditor(QWidget):
         self._editor_scroll = QScrollArea(main)
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
@@ -177,7 +185,7 @@ class AnmofsEditor(QWidget):
 
     def _build_sidebar(self, parent, main_layout):
         side = QFrame(parent)
-        side.setFixedWidth(260)
+        side.setFixedWidth(276)
         side.setStyleSheet(ss_sidebar_frame())
         side_layout = QVBoxLayout(side)
         side_layout.setContentsMargins(8, 8, 8, 4)
@@ -333,7 +341,9 @@ class AnmofsEditor(QWidget):
         self._chunk_buttons = []
         for item in self._chunks:
             btn = QPushButton(self._chunk_list_widget)
-            btn.setFixedHeight(44)
+            btn.setFixedHeight(50)
+            btn.setMinimumWidth(0)
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet(ss_sidebar_btn(item is self._current_chunk))
             btn.clicked.connect(lambda checked=False, chunk=item: self._select_chunk(chunk))
@@ -341,15 +351,21 @@ class AnmofsEditor(QWidget):
             layout = QVBoxLayout(btn)
             layout.setContentsMargins(10, 3, 10, 3)
             layout.setSpacing(0)
-            title = QLabel(item.chunk_name or self.t("ui_anmofs_unnamed_chunk"), btn)
+            title_text = item.chunk_name or self.t("ui_anmofs_unnamed_chunk")
+            title = QLabel(_truncate(title_text, 24), btn)
             title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
             title.setStyleSheet(ss_main_label())
             title.setMinimumWidth(0)
+            title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            title.setToolTip(title_text)
             title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            subtitle = QLabel(item.characode, btn)
+            subtitle_text = item.characode
+            subtitle = QLabel(_truncate(subtitle_text, 30), btn)
             subtitle.setFont(QFont("Consolas", 11))
             subtitle.setStyleSheet(ss_dim_label())
             subtitle.setMinimumWidth(0)
+            subtitle.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            subtitle.setToolTip(subtitle_text)
             subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             layout.addWidget(title)
             layout.addWidget(subtitle)
@@ -382,14 +398,18 @@ class AnmofsEditor(QWidget):
     def _refresh_chunk_buttons(self):
         for btn, item, title, subtitle in self._chunk_buttons:
             btn.setStyleSheet(ss_sidebar_btn(item is self._current_chunk))
-            title.setText(item.chunk_name or self.t("ui_anmofs_unnamed_chunk"))
-            subtitle.setText(item.characode)
+            title_text = item.chunk_name or self.t("ui_anmofs_unnamed_chunk")
+            subtitle_text = item.characode
+            title.setText(_truncate(title_text, 24))
+            title.setToolTip(title_text)
+            subtitle.setText(_truncate(subtitle_text, 30))
+            subtitle.setToolTip(subtitle_text)
 
     def _build_editor(self, item):
         _clear_layout(self._editor_layout)
         self._fields = {}
-        self._editor_layout.setContentsMargins(10, 8, 10, 0)
-        self._editor_layout.setSpacing(12)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
 
         self._build_metadata_panel(item)
         self._build_entries_panel(item)
@@ -397,7 +417,29 @@ class AnmofsEditor(QWidget):
         self._sync_name_warning()
 
     def _make_editor_card(self, margins=(16, 14, 16, 14), spacing=10):
-        return make_editor_card(self._editor_widget, margins=margins, spacing=spacing)
+        card, layout = make_editor_card(self._editor_widget, margins=margins, spacing=spacing)
+        self._prep_card(card)
+        return card, layout
+
+    def _grid_columns(self, max_columns=3):
+        width = self._editor_scroll.viewport().width() if hasattr(self, "_editor_scroll") else self.width()
+        if width < 760:
+            return 1
+        if width < 980:
+            return min(2, max_columns)
+        return max_columns
+
+    def _prep_card(self, card):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(1040)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _prep_field(self, wrap, edit):
+        wrap.setMinimumWidth(0)
+        wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        edit.setMinimumWidth(0)
+        edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
     def _make_editor_field(self, label_text, value, key, *, value_font=None, height=30, width=None):
         wrap, layout, _label, _hint = make_editor_field_shell(label_text)
@@ -412,6 +454,7 @@ class AnmofsEditor(QWidget):
         edit.setMinimumWidth(0)
         edit.setCursorPosition(0)
         edit.textEdited.connect(self._on_meta_changed)
+        self._prep_field(wrap, edit)
         layout.addWidget(edit)
         self._fields[key] = edit
         return wrap, edit
@@ -419,12 +462,13 @@ class AnmofsEditor(QWidget):
     def _build_metadata_panel(self, item):
         panel, grid = make_editor_grid_card(
             self._editor_widget,
-            title=self.t("ui_anmofs_chunk_name"),
+            title=item.chunk_name or self.t("ui_anmofs_unnamed_chunk"),
             icon_name="fa6s.film",
-            subtitle=item.characode,
+            subtitle=" / ".join(part for part in (item.anm_name, item.characode) if part),
             grid_margins=(0, 2, 0, 0),
             vertical_spacing=10,
         )
+        self._prep_card(panel)
 
         fields = [
             ("chunk_name", self.t("ui_anmofs_chunk_name"), item.chunk_name, None),
@@ -433,26 +477,23 @@ class AnmofsEditor(QWidget):
             ("characode", self.t("ui_anmofs_characode"), item.characode, None),
             ("reserved", self.t("ui_anmofs_reserved"), str(item.reserved), 120),
         ]
-        if self.width() < 900:
+        columns = self._grid_columns(2)
+        self._last_meta_columns = columns
+        if columns == 1:
             for row, (key, label, value, width) in enumerate(fields):
                 self._add_line_field(grid, row, 0, key, label, value, width=width)
             warning_row = len(fields)
         else:
-            for row, col, (key, label, value, width) in [
-                (0, 0, fields[0]),
-                (0, 1, fields[1]),
-                (1, 0, fields[2]),
-                (1, 1, fields[3]),
-                (1, 2, fields[4]),
-            ]:
+            for idx, (key, label, value, width) in enumerate(fields):
+                row, col = divmod(idx, columns)
                 self._add_line_field(grid, row, col, key, label, value, width=width)
-            warning_row = 2
+            warning_row = (len(fields) + columns - 1) // columns
 
         self._name_warning = QLabel("", panel)
         self._name_warning.setWordWrap(True)
         self._name_warning.setFont(QFont("Segoe UI", 10))
         self._name_warning.setStyleSheet(ss_error_label())
-        grid.addWidget(self._name_warning, warning_row, 0, 1, 3)
+        grid.addWidget(self._name_warning, warning_row, 0, 1, columns)
 
         self._editor_layout.addWidget(panel)
 
@@ -503,9 +544,16 @@ class AnmofsEditor(QWidget):
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._table.verticalHeader().setVisible(False)
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        if self._grid_columns(2) == 1:
+            self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+            self._table.horizontalHeader().setMinimumSectionSize(72)
+            self._table.horizontalHeader().setDefaultSectionSize(92)
+            self._table.setColumnWidth(0, 38)
+        else:
+            self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+            self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self._table.setMinimumHeight(260)
+        self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._table.itemChanged.connect(self._on_table_item_changed)
         self._table.itemSelectionChanged.connect(self._on_table_selection_changed)
         layout.addWidget(self._table)
@@ -580,6 +628,20 @@ class AnmofsEditor(QWidget):
         else:
             self._name_warning.setText("")
             self._name_warning.setVisible(False)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_chunk is None or self._last_meta_columns is None:
+            return
+        columns = self._grid_columns(2)
+        if columns == self._last_meta_columns:
+            return
+        self._apply_meta_fields()
+        QTimer.singleShot(0, self._rebuild_current_chunk_for_width)
+
+    def _rebuild_current_chunk_for_width(self):
+        if self._current_chunk is not None:
+            self._build_editor(self._current_chunk)
 
     def _on_table_selection_changed(self):
         if self._rebuilding or self._current_chunk is None:

@@ -76,7 +76,7 @@ _DLC_NAMES = {
 class DictionaryParamEditor(QWidget):
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
-        self._t        = t or (lambda k, **kw: k)
+        self._t        = t or (lambda k, **kw: ui_text(k, **kw))
         self._embedded = embedded
         self._filepath: str | None = None
         self._original_data: bytearray | None = None

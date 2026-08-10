@@ -1,6 +1,6 @@
 import os
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QFileDialog,
@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -74,6 +75,11 @@ def _blob_to_hex(blob: AcfBlob) -> str:
     return " ".join(f"{byte:02X}" for byte in blob.data)
 
 
+def _truncate(text: str, limit: int = 28) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[: max(0, limit - 3)].rstrip() + "..."
+
+
 class AsbAcfEditor(QWidget):
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
@@ -90,6 +96,11 @@ class AsbAcfEditor(QWidget):
         self._current_row_idx: int | None = None
         self._dirty = False
         self._loading_detail = False
+        self._grid_cols = 0
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(80)
+        self._resize_timer.timeout.connect(self._rebuild_for_width)
 
         self._build_ui()
 
@@ -126,10 +137,11 @@ class AsbAcfEditor(QWidget):
         top_layout.addWidget(self._btn_save)
 
         self._file_label = QLabel(self._tr("no_file_loaded", ui_text("no_file_loaded")))
+        self._file_label.setMinimumWidth(0)
+        self._file_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self._file_label.setFont(QFont("Consolas", 12))
         self._file_label.setStyleSheet(ss_file_label())
-        top_layout.addWidget(self._file_label)
-        top_layout.addStretch()
+        top_layout.addWidget(self._file_label, 1)
         root.addWidget(top)
 
         sep = QFrame()
@@ -191,6 +203,7 @@ class AsbAcfEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
@@ -203,6 +216,39 @@ class AsbAcfEditor(QWidget):
         root.addWidget(main, 1)
         self._show_placeholder(ui_text("ui_asb_acf_open_file_to_begin_editing"))
         self._update_actions()
+
+    def _editor_width(self) -> int:
+        return max(0, self._editor_scroll.viewport().width() if hasattr(self, "_editor_scroll") else self.width())
+
+    def _grid_columns(self) -> int:
+        width = self._editor_width()
+        if width < 620:
+            return 1
+        if width < 930:
+            return 2
+        return 3
+
+    def _chunk_size(self) -> int:
+        return max(1, self._grid_columns() * 4)
+
+    def _prep_card(self, card: QWidget, *, max_width: int = 1120):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(max_width)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+
+    def _rebuild_for_width(self):
+        if self._current_table_idx is None or self._current_table_idx >= len(self._tables):
+            return
+        cols = self._grid_columns()
+        if cols == self._grid_cols:
+            return
+        self._apply_all_fields(show_errors=False)
+        self._build_editor(self._tables[self._current_table_idx])
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._tables and self._current_table_idx is not None:
+            self._resize_timer.start()
 
     def _action_button(self, key: str, slot, danger: bool = False) -> QPushButton:
         btn = QPushButton(self._tr(key, ui_text(key)))
@@ -314,21 +360,28 @@ class AsbAcfEditor(QWidget):
     def _make_table_button(self, idx: int, table: AcfUtfTable) -> QPushButton:
         btn = QPushButton()
         btn.setFixedHeight(44)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(ss_sidebar_btn(selected=idx == self._current_table_idx))
         layout = QVBoxLayout(btn)
         layout.setContentsMargins(10, 3, 10, 3)
         layout.setSpacing(0)
 
-        title = QLabel(table.source_column or table.name)
+        title_text = table.source_column or table.name
+        title = QLabel(_truncate(title_text, 24))
+        title.setToolTip(title_text)
+        title.setMinimumWidth(0)
         title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         title.setStyleSheet(ss_main_label())
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(title)
 
-        title_text = table.source_column or table.name
         if table.name != title_text:
-            subtitle = QLabel(ui_text("ui_asb_acf_table_subtitle", name=table.name))
+            subtitle_text = ui_text("ui_asb_acf_table_subtitle", name=table.name)
+            subtitle = QLabel(_truncate(subtitle_text, 28))
+            subtitle.setToolTip(subtitle_text)
+            subtitle.setMinimumWidth(0)
             subtitle.setFont(QFont("Segoe UI", 9))
             subtitle.setStyleSheet(ss_dim_label())
             subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -359,6 +412,7 @@ class AsbAcfEditor(QWidget):
         self._row_cards = []
         self._pending_section_titles = []
         self._loading_detail = True
+        self._grid_cols = self._grid_columns()
 
         self._add_section(ui_text("ui_asb_acf_table_title", name=table.name))
 
@@ -371,7 +425,7 @@ class AsbAcfEditor(QWidget):
             if len(table.rows) > 1:
                 self._add_section(ui_text("ui_asb_acf_row_title", index=row_idx))
             for category_key, columns in self._column_groups(table):
-                for chunk in self._column_chunks(columns, 12):
+                for chunk in self._column_chunks(columns, self._chunk_size()):
                     card = self._make_category_card(table, row_idx, row, category_key, chunk)
                     self._editor_layout.addWidget(card)
                     self._row_cards.append((card, row_idx))
@@ -400,6 +454,7 @@ class AsbAcfEditor(QWidget):
         card = QFrame()
         card.setObjectName("EditorCard")
         card.setStyleSheet(ss_editor_card())
+        self._prep_card(card)
         card.mousePressEvent = lambda event, idx=row_idx: self._select_row(idx)
 
         main = QVBoxLayout(card)
@@ -429,8 +484,9 @@ class AsbAcfEditor(QWidget):
         grid.setVerticalSpacing(8)
         layout.addLayout(grid)
 
+        cols = max(1, self._grid_cols or self._grid_columns())
         for idx, column in enumerate(columns):
-            grid_row, grid_col = divmod(idx, 3)
+            grid_row, grid_col = divmod(idx, cols)
             field = self._field_widget(table, row_idx, column, row.get(column.name))
             grid.addWidget(field, grid_row, grid_col)
             grid.setColumnStretch(grid_col, 1)
@@ -498,14 +554,19 @@ class AsbAcfEditor(QWidget):
     def _field_widget(self, table: AcfUtfTable, row_idx: int, column: AcfColumn, value) -> QWidget:
         frame = QWidget()
         frame.setMinimumWidth(0)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         frame.setStyleSheet(ss_transparent())
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
-        label = QLabel(ui_text("ui_asb_acf_column_header", name=column.name, type=column.type_name))
+        label_text = ui_text("ui_asb_acf_column_header", name=column.name, type=column.type_name)
+        cols = max(1, self._grid_cols or self._grid_columns())
+        label_limit = 44 if cols == 1 else (34 if cols == 2 else 28)
+        label = QLabel(_truncate(label_text, label_limit))
+        label.setToolTip(label_text)
         label.setMinimumWidth(0)
-        label.setWordWrap(True)
+        label.setWordWrap(False)
         label.setFont(QFont("Segoe UI", 12))
         label.setStyleSheet(ss_field_label())
         layout.addWidget(label)
@@ -513,6 +574,7 @@ class AsbAcfEditor(QWidget):
         edit = QLineEdit()
         edit.setFixedHeight(30)
         edit.setMinimumWidth(0)
+        edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         edit.setFont(QFont("Consolas", 13))
         edit.setStyleSheet(ss_input())
         edit.setText(self._format_value(value))

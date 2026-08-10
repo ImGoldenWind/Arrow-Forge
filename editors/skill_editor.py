@@ -196,11 +196,17 @@ def _right_scroll():
 
 
 def _placeholder_label(text, *, loaded=True, icon_name="fa6s.list"):
-    title = ui_text("ui_model_viewer_select_item") if loaded else ui_text("no_file_loaded")
+    if loaded:
+        return make_empty_state(
+            title=ui_text("select_entry"),
+            text="",
+            icon_name=None,
+        )
+    title = ui_text("no_file_loaded")
     return make_empty_state(
         title=title,
         text=text,
-        icon_name=icon_name,
+        icon_name=icon_name or "fa6s.folder-open",
     )
 
 
@@ -1097,6 +1103,11 @@ class _MotTab(QWidget):
         hdr_lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         hdr_lbl.setStyleSheet(ss_main_label())
         cl.addWidget(hdr_lbl)
+
+        header_sep = QFrame()
+        header_sep.setFixedHeight(1)
+        header_sep.setStyleSheet(ss_sep())
+        cl.addWidget(header_sep)
 
         sub_action_row = QWidget()
         sub_action_row.setStyleSheet(ss_transparent())

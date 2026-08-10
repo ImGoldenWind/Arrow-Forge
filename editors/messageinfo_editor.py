@@ -128,6 +128,11 @@ def _scope_label(scope) -> str:
     return ui_text("ui_messageinfo_all_strings") if scope == _ALL_STRINGS else _char_label(scope)
 
 
+def _truncate(text: str, limit: int = 28) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[: max(0, limit - 3)].rstrip() + "..."
+
+
 def _clear_layout(layout):
     if layout is None:
         return
@@ -339,13 +344,19 @@ class MessageInfoEditor(QWidget):
         self._detail_widgets: list[QWidget] = []
         self._scan_running = False
         self._capture_active = False
+        self._detail_columns = 0
+        self._last_compact = None
+        self._resize_rebuild_timer = QTimer(self)
+        self._resize_rebuild_timer.setSingleShot(True)
+        self._resize_rebuild_timer.setInterval(80)
+        self._resize_rebuild_timer.timeout.connect(self._rebuild_current_scope_for_width)
 
         # Debounce for right-panel entry search
-        self._entry_search_timer = QTimer()
+        self._entry_search_timer = QTimer(self)
         self._entry_search_timer.setSingleShot(True)
         self._entry_search_timer.setInterval(250)
         self._entry_search_timer.timeout.connect(self._do_entry_search)
-        self._capture_timer = QTimer()
+        self._capture_timer = QTimer(self)
         self._capture_timer.setInterval(6000)
         self._capture_timer.timeout.connect(self._scan_now)
 
@@ -461,7 +472,7 @@ class MessageInfoEditor(QWidget):
 
         # Left sidebar
         list_frame = QFrame()
-        list_frame.setFixedWidth(260)
+        list_frame.setFixedWidth(276)
         list_frame.setStyleSheet(ss_sidebar_frame())
         list_vlayout = QVBoxLayout(list_frame)
         list_vlayout.setContentsMargins(8, 8, 8, 4)
@@ -549,6 +560,7 @@ class MessageInfoEditor(QWidget):
         rh_layout.setSpacing(10)
 
         self._right_title_lbl = QLabel("")
+        self._right_title_lbl.setMinimumWidth(0)
         self._right_title_lbl.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
         self._right_title_lbl.setStyleSheet(ss_main_label())
         rh_layout.addWidget(self._right_title_lbl, 1)
@@ -573,8 +585,8 @@ class MessageInfoEditor(QWidget):
         self._editor_widget.setMinimumWidth(0)
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         self._show_placeholder(ui_text("ui_messageinfo_open_a_messageinfo_bin_xfbin_file_to_begin_editing"))
 
         right_vlayout.addWidget(self._editor_widget, 1)
@@ -597,6 +609,46 @@ class MessageInfoEditor(QWidget):
         self._editor_layout.addStretch()
         self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
+
+    def _right_content_width(self) -> int:
+        return max(0, self._editor_widget.viewport().width() if hasattr(self._editor_widget, "viewport") else self._editor_widget.width())
+
+    def _is_compact_editor(self) -> bool:
+        return self._right_content_width() < 760
+
+    def _field_columns(self) -> int:
+        width = self._right_content_width()
+        if width < 580:
+            return 1
+        if width < 820:
+            return 2
+        if width < 1080:
+            return 3
+        return 6
+
+    def _prep_card(self, card: QWidget, *, max_width: int = 1120):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(max_width)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+
+    def _prep_field_widget(self, widget: QWidget, min_width: int = 130):
+        widget.setMinimumWidth(min_width)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def _rebuild_current_scope_for_width(self):
+        if self._current_char_id is None or not self._entries:
+            return
+        cols = self._field_columns()
+        compact = self._is_compact_editor()
+        if cols == self._detail_columns and compact == self._last_compact:
+            return
+        selected = self._selected_entry_idx
+        self._build_entries_panel(self._current_char_id, select_idx=selected)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._entries and self._current_char_id is not None:
+            self._resize_rebuild_timer.start()
 
     # Character list (left panel)
 
@@ -631,15 +683,20 @@ class MessageInfoEditor(QWidget):
 
     def _make_char_button(self, char_id, count: int) -> QPushButton:
         btn = QPushButton()
-        btn.setFixedHeight(44)
+        btn.setFixedHeight(50)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(ss_sidebar_btn(selected=False))
 
         inner = QVBoxLayout(btn)
-        inner.setContentsMargins(10, 3, 10, 3)
+        inner.setContentsMargins(10, 5, 10, 5)
         inner.setSpacing(0)
 
-        name_lbl = QLabel(_scope_label(char_id))
+        full_name = _scope_label(char_id)
+        name_lbl = QLabel(_truncate(full_name, 25))
+        name_lbl.setToolTip(full_name)
+        name_lbl.setMinimumWidth(0)
         name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         name_lbl.setStyleSheet(ss_main_label())
         name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -688,7 +745,11 @@ class MessageInfoEditor(QWidget):
         _clear_layout(self._editor_layout)
         self._selected_entry_idx = None
         self._detail_widgets = []
-        self._right_title_lbl.setText(_scope_label(scope))
+        self._detail_columns = self._field_columns()
+        self._last_compact = self._is_compact_editor()
+        scope_title = _scope_label(scope)
+        self._right_title_lbl.setText(scope_title)
+        self._right_title_lbl.setToolTip(scope_title)
 
         indices = self._entry_indices_for_scope(scope)
         if not indices:
@@ -697,9 +758,9 @@ class MessageInfoEditor(QWidget):
 
         panel = QWidget()
         panel.setMinimumWidth(0)
-        panel.setStyleSheet(ss_bg_dark())
+        panel.setStyleSheet(ss_transparent())
         panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(12, 10, 12, 12)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
         panel_layout.setSpacing(8)
 
         self._table_model = _MessageInfoTableModel(self._entries, indices, self._id_map, self)
@@ -707,7 +768,18 @@ class MessageInfoEditor(QWidget):
         self._proxy_model.setSourceModel(self._table_model)
         self._proxy_model.set_filter_text(self._entry_search.text())
 
-        self._entries_table = QTableView(panel)
+        table_card, table_layout = make_editor_card(panel, margins=(12, 10, 12, 12), spacing=8)
+        table_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        table_card.setMinimumHeight(230)
+        table_card.setMaximumWidth(1120)
+        add_editor_card_title(
+            table_layout,
+            scope_title,
+            "fa6s.table-list",
+            ui_text("ui_messageinfo_value_entries", p0=len(indices)),
+        )
+
+        self._entries_table = QTableView(table_card)
         self._entries_table.setModel(self._proxy_model)
         self._entries_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._entries_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -718,18 +790,18 @@ class MessageInfoEditor(QWidget):
         self._entries_table.verticalHeader().setVisible(False)
         self._entries_table.verticalHeader().setDefaultSectionSize(28)
         self._entries_table.horizontalHeader().setStretchLastSection(True)
-        self._entries_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self._entries_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self._entries_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self._entries_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self._entries_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        self._entries_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        for col in range(6):
+            self._entries_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
         self._entries_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        self._entries_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._entries_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._entries_table.setMinimumHeight(150 if self._last_compact else 210)
         self._entries_table.setStyleSheet(ss_table())
         self._entries_table.selectionModel().selectionChanged.connect(self._on_table_selection_changed)
-        panel_layout.addWidget(self._entries_table, 1)
+        table_layout.addWidget(self._entries_table, 1)
+        panel_layout.addWidget(table_card, 1)
 
-        panel_layout.addWidget(self._make_detail_panel(panel))
+        panel_layout.addWidget(self._make_detail_panel(panel), 0)
         self._editor_layout.addWidget(panel, 1)
 
         if select_idx is not None:
@@ -753,6 +825,7 @@ class MessageInfoEditor(QWidget):
 
     def _make_detail_panel(self, parent=None) -> QFrame:
         detail, layout = make_editor_card(parent, margins=(14, 12, 14, 12), spacing=9)
+        self._prep_card(detail)
         add_editor_card_title(layout, ui_text("ui_messageinfo_message"), "fa6s.message", ui_text("ui_messageinfo_string_id"))
 
         fields = QWidget(detail)
@@ -763,7 +836,7 @@ class MessageInfoEditor(QWidget):
         fields_layout.setHorizontalSpacing(10)
         fields_layout.setVerticalSpacing(6)
 
-        cols = 3 if self.width() < 980 else 6
+        cols = max(1, self._detail_columns or self._field_columns())
 
         def make_field(label_text: str, idx: int, read_only: bool = False) -> QLineEdit:
             box, box_layout, _label, _hint = make_editor_field_shell(
@@ -771,12 +844,14 @@ class MessageInfoEditor(QWidget):
                 label_font_size=10,
                 spacing=2,
             )
+            self._prep_field_widget(box)
             edit = QLineEdit(box)
             edit.setFixedHeight(28)
             edit.setFont(QFont("Consolas", 11))
             edit.setReadOnly(read_only)
             edit.setStyleSheet(ss_input())
             edit.setMinimumWidth(0)
+            edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             box_layout.addWidget(edit)
             row = idx // cols
             col = idx % cols
@@ -800,7 +875,8 @@ class MessageInfoEditor(QWidget):
 
         self._detail_message = QTextEdit(detail)
         self._detail_message.setFont(QFont("Segoe UI", 10))
-        self._detail_message.setFixedHeight(92)
+        self._detail_message.setFixedHeight(104 if self._last_compact else 92)
+        self._detail_message.setMinimumWidth(0)
         self._detail_message.setStyleSheet(ss_textedit())
         layout.addWidget(self._detail_message)
         self._detail_widgets.append(self._detail_message)

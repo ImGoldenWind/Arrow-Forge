@@ -5,17 +5,17 @@ import threading
 
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QScrollArea,
-    QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox,
+    QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
 
-from core.themes import P
 from core.style_helpers import (
     make_empty_state, make_editor_field_shell, make_editor_grid_card,
     ss_btn, ss_accent_sep, ss_input, ss_search, ss_sidebar_btn,
     ss_scrollarea, ss_scrollarea_transparent, ss_file_label,
     ss_sep, ss_transparent, ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
+    ss_accent_label, ss_dim_label, ss_main_label,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
 from core.editor_file_state import set_file_label
@@ -45,6 +45,11 @@ def _effect_title(entry):
     return ui_text("ui_effect_slot_value", p0=entry.get('slot_id', 0))
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[:max(1, limit - 1)] + "..."
+
+
 class EffectEditor(QWidget):
     _load_done_signal  = pyqtSignal(str, object, object)
     _load_error_signal = pyqtSignal(str)
@@ -61,6 +66,7 @@ class EffectEditor(QWidget):
         self._current_entry = None
         self._entry_buttons = []
         self._fields        = {}
+        self._last_compact: bool | None = None
 
         self._load_done_signal.connect(self._on_load_done)
         self._load_error_signal.connect(self._on_load_error)
@@ -192,12 +198,13 @@ class EffectEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_widget)
 
         self._placeholder = make_empty_state(
@@ -223,6 +230,8 @@ class EffectEditor(QWidget):
     def _make_entry_button(self, entry):
         btn = QPushButton()
         btn.setFixedHeight(44)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(ss_sidebar_btn(False))
 
@@ -230,18 +239,23 @@ class EffectEditor(QWidget):
         btn_layout.setContentsMargins(10, 3, 10, 3)
         btn_layout.setSpacing(0)
 
-        name_lbl = QLabel(_effect_title(entry))
+        title = _effect_title(entry)
+        name_lbl = QLabel(_truncate(title, 24))
         name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        name_color = P['text_main'] if str(entry.get('effect_name') or '').strip() else P['text_dim']
-        name_lbl.setStyleSheet(f"color: {name_color}; background: transparent;")
+        name_lbl.setStyleSheet(ss_main_label() if str(entry.get('effect_name') or '').strip() else ss_dim_label())
         name_lbl.setMinimumWidth(0)
+        name_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        name_lbl.setToolTip(title)
         name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         btn_layout.addWidget(name_lbl)
 
-        id_lbl = QLabel(ui_text("ui_effect_slot_value", p0=entry['slot_id']))
+        id_text = ui_text("ui_effect_slot_value", p0=entry['slot_id'])
+        id_lbl = QLabel(_truncate(id_text, 28))
         id_lbl.setFont(QFont("Consolas", 11))
-        id_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        id_lbl.setStyleSheet(ss_dim_label())
         id_lbl.setMinimumWidth(0)
+        id_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        id_lbl.setToolTip(id_text)
         id_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         btn_layout.addWidget(id_lbl)
 
@@ -281,84 +295,124 @@ class EffectEditor(QWidget):
     def _clear_editor(self):
         _clear_layout(self._editor_layout)
 
+    def _is_compact_editor(self) -> bool:
+        if not hasattr(self, "_editor_scroll"):
+            return False
+        return self._editor_scroll.viewport().width() < 780
+
+    def _grid_columns(self, max_columns: int) -> int:
+        width = self._editor_scroll.viewport().width()
+        if width < 780:
+            return 1
+        if width < 1080:
+            return min(2, max_columns)
+        return max_columns
+
+    def _prep_card(self, card: QFrame):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(980)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _prep_field_widget(self, widget: QWidget):
+        widget.setMinimumWidth(0)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return widget
+
+    def _add_editor_card(self, card: QFrame):
+        self._editor_layout.addWidget(card)
+
+    def _field_position(self, row: int, col: int) -> tuple[int, int]:
+        columns = self._grid_columns(3)
+        logical_index = row * 3 + col
+        return divmod(logical_index, columns)
+
     def _add_section(self, title):
         self._pending_section_title = title
 
-    def _make_field(self, label_text, value, font=None, color=None, height=30, placeholder=None):
+    def _make_field(self, label_text, value, font=None, accent=False, height=30, placeholder=None):
         frame, layout, _label, _hint = make_editor_field_shell(label_text)
+        self._prep_field_widget(frame)
 
         e = QLineEdit()
         e.setFixedHeight(height)
         e.setMinimumWidth(0)
+        e.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         e.setFont(font or QFont("Consolas", 13))
-        c = color or P['text_main']
-
-        def _sync_text_color(text):
-            fg = P['text_dim'] if placeholder and not str(text) else c
-            e.setStyleSheet(
-                ss_input()
-                + f"QLineEdit {{ color: {fg}; placeholder-text-color: {P['text_dim']}; }}"
-            )
+        e.setStyleSheet(ss_input())
+        if accent:
+            _label.setStyleSheet(ss_accent_label())
 
         if placeholder and str(value) == "":
             e.setPlaceholderText(placeholder)
-        _sync_text_color(value)
         e.setText(str(value))
-        e.textChanged.connect(_sync_text_color)
+        e.setCursorPosition(0)
         layout.addWidget(e)
         return frame, e
 
     def _build_editor(self, entry):
         self._clear_editor()
         self._fields = {}
+        self._last_compact = self._is_compact_editor()
+        title = _effect_title(entry)
+        title_limit = 22 if self._last_compact else 50
+        name_font = QFont("Segoe UI", 15 if self._last_compact else 18, QFont.Weight.Bold)
+        name_height = 34 if self._last_compact else 36
 
         # Header card: Effect Name + Slot ID + Xfbins Count
         hdr, hdr_grid = make_editor_grid_card(
-            title=_effect_title(entry),
+            self._editor_widget,
+            title=_truncate(title, title_limit),
             icon_name="fa6s.wand-magic-sparkles",
             subtitle=ui_text("ui_effect_slot_value", p0=entry['slot_id']),
             grid_margins=(0, 2, 0, 0),
             vertical_spacing=8,
         )
+        self._prep_card(hdr)
 
         name_frame, e_name = self._make_field(
             ui_text("ui_effect_effect_name"), entry['effect_name'],
-            font=QFont("Segoe UI", 18, QFont.Weight.Bold),
-            color=P['accent'], height=36,
-            placeholder=_effect_title(entry),
+            font=name_font,
+            accent=True, height=name_height,
+            placeholder=title,
         )
-        hdr_grid.addWidget(name_frame, 0, 0)
-        hdr_grid.setColumnStretch(0, 2)
+        row, col = self._field_position(0, 0)
+        hdr_grid.addWidget(name_frame, row, col)
+        hdr_grid.setColumnStretch(col, 2)
         self._fields['effect_name'] = e_name
 
         slot_frame, e_slot = self._make_field(
             ui_text("ui_effect_slot_id"), entry['slot_id'],
             font=QFont("Consolas", 16), height=36,
         )
-        hdr_grid.addWidget(slot_frame, 0, 1)
-        hdr_grid.setColumnStretch(1, 1)
+        row, col = self._field_position(0, 1)
+        hdr_grid.addWidget(slot_frame, row, col)
+        hdr_grid.setColumnStretch(col, 1)
         self._fields['slot_id'] = e_slot
 
         count_frame, e_count = self._make_field(
             ui_text("ui_effect_xfbins_count"), entry['xfbins_count'],
             font=QFont("Consolas", 16), height=36,
         )
-        hdr_grid.addWidget(count_frame, 0, 2)
-        hdr_grid.setColumnStretch(2, 1)
+        row, col = self._field_position(0, 2)
+        hdr_grid.addWidget(count_frame, row, col)
+        hdr_grid.setColumnStretch(col, 1)
         self._fields['xfbins_count'] = e_count
 
-        self._editor_layout.addWidget(hdr)
+        self._add_editor_card(hdr)
 
         # XFBIN Path section
         self._add_section(ui_text("ui_effect_xfbin_path"))
         section_title = getattr(self, "_pending_section_title", None)
         self._pending_section_title = None
         path_card, path_grid = make_editor_grid_card(
+            self._editor_widget,
             title=section_title,
             icon_name="fa6s.folder-open",
             grid_margins=(0, 4, 0, 0),
             vertical_spacing=10,
         )
+        self._prep_card(path_card)
 
         path_frame, e_path = self._make_field(
             ui_text("ui_effect_xfbin_path"), entry['xfbin_path'],
@@ -368,7 +422,7 @@ class EffectEditor(QWidget):
         path_grid.setColumnStretch(0, 1)
         self._fields['xfbin_path'] = e_path
 
-        self._editor_layout.addWidget(path_card)
+        self._add_editor_card(path_card)
 
         # Connect signals after all setText calls to avoid false dirty triggers
         e_name.textChanged.connect(self._mark_dirty)
@@ -381,6 +435,20 @@ class EffectEditor(QWidget):
         spacer.setStyleSheet(ss_transparent())
         self._editor_layout.addWidget(spacer)
         self._editor_layout.addStretch()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_entry is not None and self._last_compact is not None:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+
+    def _maybe_rebuild_for_compact(self):
+        if self._current_entry is None:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_compact:
+            return
+        self._apply_fields()
+        self._build_editor(self._current_entry)
 
     def _apply_fields(self):
         if not self._current_entry or not self._fields:
@@ -406,11 +474,13 @@ class EffectEditor(QWidget):
             if e is entry:
                 labels = btn.findChildren(QLabel)
                 if len(labels) >= 2:
-                    labels[0].setText(_effect_title(entry))
-                    labels[0].setStyleSheet(
-                        f"color: {P['text_main'] if entry['effect_name'] else P['text_dim']}; background: transparent;"
-                    )
-                    labels[1].setText(ui_text("ui_effect_slot_value", p0=entry['slot_id']))
+                    title = _effect_title(entry)
+                    labels[0].setText(_truncate(title, 24))
+                    labels[0].setStyleSheet(ss_main_label() if entry['effect_name'] else ss_dim_label())
+                    labels[0].setToolTip(title)
+                    id_text = ui_text("ui_effect_slot_value", p0=entry['slot_id'])
+                    labels[1].setText(_truncate(id_text, 28))
+                    labels[1].setToolTip(id_text)
                 break
 
     # Add / Duplicate / Delete

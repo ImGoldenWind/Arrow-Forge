@@ -2,7 +2,7 @@ import copy
 import os
 import threading
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QFileDialog,
@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -21,6 +22,9 @@ from PyQt6.QtWidgets import (
 from core.style_helpers import (
     TOOLBAR_BTN_H,
     TOOLBAR_H,
+    add_editor_card_title,
+    make_editor_card,
+    make_editor_field_shell,
     make_empty_state,
     ss_bg_dark,
     ss_bg_panel,
@@ -29,6 +33,7 @@ from core.style_helpers import (
     ss_btn,
     ss_dim_label,
     ss_entry_card,
+    ss_editor_card,
     ss_field_label,
     ss_file_label,
     ss_file_label_loaded,
@@ -56,7 +61,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -67,6 +75,11 @@ def _fmt_float(value):
     except (TypeError, ValueError):
         return "0"
     return str(int(value)) if value == int(value) else f"{value:.4f}"
+
+
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[:max(1, limit - 1)] + "..."
 
 
 class SndCmnParamEditor(QWidget):
@@ -86,6 +99,7 @@ class SndCmnParamEditor(QWidget):
         self._fields = {}
         self._current_section_idx = None
         self._current_entry_idx = None
+        self._last_compact = None
 
         self._load_done.connect(self._on_load_done)
         self._load_error.connect(self._on_load_error)
@@ -143,7 +157,7 @@ class SndCmnParamEditor(QWidget):
         main_layout.setSpacing(0)
 
         list_frame = QFrame()
-        list_frame.setFixedWidth(260)
+        list_frame.setFixedWidth(276)
         list_frame.setStyleSheet(ss_sidebar_frame())
         list_layout = QVBoxLayout(list_frame)
         list_layout.setContentsMargins(8, 8, 8, 4)
@@ -194,8 +208,10 @@ class SndCmnParamEditor(QWidget):
         self._category_scroll.setWidgetResizable(True)
         self._category_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._category_scroll.setStyleSheet(ss_scrollarea_transparent())
+        self._category_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._category_widget = QWidget()
+        self._category_widget.setMinimumWidth(0)
         self._category_widget.setStyleSheet(ss_transparent())
         self._category_layout = QVBoxLayout(self._category_widget)
         self._category_layout.setContentsMargins(0, 0, 0, 0)
@@ -214,13 +230,14 @@ class SndCmnParamEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
 
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_widget)
         self._show_placeholder(ui_text("ui_sndcmnparam_open_a_sndcmnparam_xfbin_file_to_begin_editing"))
 
@@ -328,23 +345,33 @@ class SndCmnParamEditor(QWidget):
 
     def _make_category_button(self, idx, section):
         btn = QPushButton()
-        btn.setFixedHeight(44)
+        btn.setFixedHeight(50)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(ss_sidebar_btn(selected=idx == self._current_section_idx))
 
         btn_layout = QVBoxLayout(btn)
-        btn_layout.setContentsMargins(10, 3, 10, 3)
+        btn_layout.setContentsMargins(10, 4, 10, 4)
         btn_layout.setSpacing(0)
 
-        name_lbl = QLabel(section["name"])
+        name_text = str(section["name"])
+        name_lbl = QLabel(_truncate(name_text, 24))
         name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         name_lbl.setStyleSheet(ss_main_label())
+        name_lbl.setMinimumWidth(0)
+        name_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        name_lbl.setToolTip(name_text)
         name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         btn_layout.addWidget(name_lbl)
 
-        type_lbl = QLabel(self._section_type_label(section))
+        type_text = self._section_type_label(section)
+        type_lbl = QLabel(_truncate(type_text, 26))
         type_lbl.setFont(QFont("Consolas", 11))
         type_lbl.setStyleSheet(ss_dim_label())
+        type_lbl.setMinimumWidth(0)
+        type_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        type_lbl.setToolTip(type_text)
         type_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         btn_layout.addWidget(type_lbl)
 
@@ -401,17 +428,53 @@ class SndCmnParamEditor(QWidget):
             self._show_placeholder(ui_text("ui_sndcmnparam_open_a_sndcmnparam_xfbin_file_to_begin_editing"))
             return
 
-        title = QLabel(section["name"])
-        title.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
-        title.setStyleSheet(ss_accent_label())
-        title.setContentsMargins(16, 12, 0, 4)
-        self._editor_layout.addWidget(title)
-
+        self._last_compact = self._is_compact_editor()
         shown = 0
         query = self._search_entry.text().lower().strip()
-        for idx, entry in enumerate(section["entries"]):
-            if query and not self._matches_entry(section, entry, idx, query):
-                continue
+        matching_indices = [
+            idx for idx, entry in enumerate(section["entries"])
+            if not query or self._matches_entry(section, entry, idx, query)
+        ]
+
+        header = self._make_detail_card(
+            title=section["name"],
+            subtitle=self._section_type_label(section),
+            icon_name="fa6s.volume-high",
+            selected=False,
+        )
+        self._add_summary_field(
+            header._editor_grid,
+            0,
+            0,
+            ui_text("ui_trophyparam_entry_count"),
+            str(len(section["entries"])),
+            max_columns=3,
+        )
+        selected_text = (
+            self._entry_title(section, section["entries"][self._current_entry_idx], self._current_entry_idx)
+            if self._current_entry_idx is not None and self._current_entry_idx < len(section["entries"])
+            else "-"
+        )
+        self._add_summary_field(
+            header._editor_grid,
+            0,
+            1,
+            ui_text("ui_dictionaryparam_index"),
+            selected_text,
+            max_columns=3,
+        )
+        self._add_summary_field(
+            header._editor_grid,
+            0,
+            2,
+            ui_text("ui_messageinfo_search_entries"),
+            query or "-",
+            max_columns=3,
+        )
+        self._editor_layout.addWidget(header)
+
+        for idx in matching_indices:
+            entry = section["entries"][idx]
             card = self._make_entry_card(section, entry, idx)
             self._editor_layout.addWidget(card)
             self._entry_cards.append((card, idx))
@@ -433,38 +496,99 @@ class SndCmnParamEditor(QWidget):
         self._refresh_entry_card_styles()
 
     def _make_entry_card(self, section, entry, idx):
-        card = QFrame()
+        title_text = self._entry_title(section, entry, idx)
+        subtitle_text = self._entry_subtitle(section, entry)
+        card = self._make_detail_card(
+            title=title_text,
+            subtitle=subtitle_text,
+            icon_name="fa6s.wave-square",
+            selected=idx == self._current_entry_idx,
+        )
         card.setCursor(Qt.CursorShape.PointingHandCursor)
-        card.setStyleSheet(ss_entry_card(selected=idx == self._current_entry_idx))
         card.mousePressEvent = lambda event, i=idx: self._select_entry(i)
 
-        layout = QGridLayout(card)
-        layout.setContentsMargins(16, 12, 16, 14)
-        layout.setHorizontalSpacing(16)
-        layout.setVerticalSpacing(8)
-
-        title = QLabel(self._entry_title(section, entry, idx))
-        title.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
-        title.setStyleSheet(ss_section_label())
-        title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        layout.addWidget(title, 0, 0, 1, 3)
-
-        subtitle = QLabel(self._entry_subtitle(section, entry))
-        subtitle.setFont(QFont("Consolas", 11))
-        subtitle.setStyleSheet(ss_dim_label())
-        subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        layout.addWidget(subtitle, 0, 3)
-
         fields = self._fields_for_type(section["type"])
+        max_columns = 3
+        columns = self._grid_columns(max_columns)
+        for col in range(columns):
+            card._editor_grid.setColumnStretch(col, 1)
         for pos, field in enumerate(fields):
             key, label, kind = field
-            row = 1 + pos // 3
-            col = pos % 3
-            colspan = 4 if len(fields) == 1 else 1
-            self._add_field(layout, row, col, section, entry, idx, key, label, kind, colspan)
-            layout.setColumnStretch(col, 1)
+            row, col = self._field_position(pos // max_columns, pos % max_columns, max_columns)
+            colspan = columns if len(fields) == 1 else 1
+            self._add_field(card._editor_grid, row, col, section, entry, idx, key, label, kind, colspan)
 
         return card
+
+    def _make_detail_card(self, *, title, subtitle="", icon_name="fa6s.sliders", selected=False):
+        card, layout = make_editor_card(self._editor_widget, margins=(16, 14, 16, 14), spacing=10)
+        title_limit = 42 if self._last_compact else 72
+        subtitle_limit = 56 if self._last_compact else 96
+        _row, title_lbl, subtitle_lbl = add_editor_card_title(
+            layout,
+            _truncate(title, title_limit),
+            icon_name,
+            _truncate(subtitle, subtitle_limit) if subtitle else None,
+        )
+        title_lbl.setToolTip(str(title))
+        if subtitle_lbl is not None:
+            subtitle_lbl.setToolTip(str(subtitle))
+
+        inner = QWidget(card)
+        inner.setStyleSheet(ss_transparent())
+        grid = QGridLayout(inner)
+        grid.setContentsMargins(0, 4, 0, 0)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(10)
+        layout.addWidget(inner)
+        card._editor_grid = grid
+        card._title_label = title_lbl
+        card._subtitle_label = subtitle_lbl
+        self._prep_card(card)
+        if selected:
+            card.setStyleSheet(ss_editor_card(selected=True))
+        return card
+
+    def _is_compact_editor(self):
+        if not hasattr(self, "_editor_scroll"):
+            return False
+        return self._editor_scroll.viewport().width() < 780
+
+    def _grid_columns(self, max_columns: int) -> int:
+        width = self._editor_scroll.viewport().width()
+        if width < 780:
+            return 1
+        if width < 960:
+            return min(2, max_columns)
+        return max_columns
+
+    def _field_position(self, row: int, col: int, max_columns: int) -> tuple[int, int]:
+        columns = self._grid_columns(max_columns)
+        logical_index = row * max_columns + col
+        return divmod(logical_index, columns)
+
+    def _prep_card(self, card: QFrame):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(1040)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def _prep_field_widget(self, frame: QWidget, editor: QWidget):
+        frame.setMinimumWidth(0)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        editor.setMinimumWidth(0)
+        editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+
+    def _add_summary_field(self, layout, row, col, label, value, max_columns=3):
+        frame, field_layout, _label, _hint = make_editor_field_shell(label)
+        edit = QLineEdit(str(value))
+        edit.setReadOnly(True)
+        edit.setFixedHeight(30)
+        edit.setFont(QFont("Consolas", 13))
+        edit.setStyleSheet(ss_input())
+        self._prep_field_widget(frame, edit)
+        field_layout.addWidget(edit)
+        mapped_row, mapped_col = self._field_position(row, col, max_columns)
+        layout.addWidget(frame, mapped_row, mapped_col)
 
     def _fields_for_type(self, section_type):
         if section_type == "sndcmnparam":
@@ -497,17 +621,7 @@ class SndCmnParamEditor(QWidget):
         ]
 
     def _add_field(self, layout, row, col, section, entry, idx, key, label, kind, colspan=1):
-        frame = QWidget()
-        frame.setStyleSheet(ss_transparent())
-        field_layout = QVBoxLayout(frame)
-        field_layout.setContentsMargins(0, 0, 0, 0)
-        field_layout.setSpacing(2)
-
-        lbl = QLabel(label)
-        lbl.setFont(QFont("Segoe UI", 12))
-        lbl.setStyleSheet(ss_field_label())
-        lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        field_layout.addWidget(lbl)
+        frame, field_layout, _label, _hint = make_editor_field_shell(label)
 
         edit = QLineEdit()
         edit.setFixedHeight(30)
@@ -522,6 +636,7 @@ class SndCmnParamEditor(QWidget):
             edit.setText(_fmt_float(entry.get(key, 0.0)))
         edit.textChanged.connect(lambda text, e=entry, k=key, t=kind, w=edit, i=idx: self._on_field_changed(e, k, t, w, i))
         edit.editingFinished.connect(lambda e=entry, k=key, t=kind, w=edit: self._coerce_field(e, k, t, w))
+        self._prep_field_widget(frame, edit)
         field_layout.addWidget(edit)
 
         self._fields[(id(section), idx, key)] = (edit, entry, key, kind)
@@ -571,18 +686,28 @@ class SndCmnParamEditor(QWidget):
 
     def _refresh_entry_card_styles(self):
         for card, idx in self._entry_cards:
-            card.setStyleSheet(ss_entry_card(selected=idx == self._current_entry_idx))
+            if idx == self._current_entry_idx:
+                card.setStyleSheet(ss_editor_card(selected=True))
+            else:
+                card.setStyleSheet(ss_editor_card(selected=False))
 
     def _refresh_entry_titles(self, idx):
         for card, card_idx in self._entry_cards:
             if card_idx != idx:
                 continue
-            labels = card.findChildren(QLabel)
             section = self._current_section()
-            if section and len(labels) >= 2 and idx < len(section["entries"]):
+            if section and idx < len(section["entries"]):
                 entry = section["entries"][idx]
-                labels[0].setText(self._entry_title(section, entry, idx))
-                labels[1].setText(self._entry_subtitle(section, entry))
+                title = self._entry_title(section, entry, idx)
+                subtitle = self._entry_subtitle(section, entry)
+                title_lbl = getattr(card, "_title_label", None)
+                subtitle_lbl = getattr(card, "_subtitle_label", None)
+                if title_lbl is not None:
+                    title_lbl.setText(_truncate(title, 42 if self._last_compact else 72))
+                    title_lbl.setToolTip(title)
+                if subtitle_lbl is not None:
+                    subtitle_lbl.setText(_truncate(subtitle, 56 if self._last_compact else 96))
+                    subtitle_lbl.setToolTip(subtitle)
             break
 
     def _entry_title(self, section, entry, idx):
@@ -630,6 +755,21 @@ class SndCmnParamEditor(QWidget):
         self._add_btn.setEnabled(loaded)
         self._dup_btn.setEnabled(selected)
         self._del_btn.setEnabled(selected)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_section() is None:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_compact:
+            return
+        QTimer.singleShot(0, self._rebuild_for_width_change)
+
+    def _rebuild_for_width_change(self):
+        if self._current_section() is None:
+            return
+        self._sync_visible_fields()
+        self._build_entry_cards()
 
     def _make_default_entry(self, section_type):
         if section_type == "sndcmnparam":

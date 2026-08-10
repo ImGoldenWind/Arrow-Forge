@@ -2,7 +2,7 @@ import copy
 import math
 import os
 
-from PyQt6.QtCore import QRegularExpression, Qt
+from PyQt6.QtCore import QRegularExpression, Qt, QTimer
 from PyQt6.QtGui import QFont, QRegularExpressionValidator
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -80,6 +81,11 @@ def _clear_layout(layout):
             _clear_layout(item.layout())
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
+
+
 class SupportItemParamEditor(QWidget):
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
@@ -96,6 +102,8 @@ class SupportItemParamEditor(QWidget):
         self._entry_count_label: QLabel | None = None
         self._dirty = False
         self._loading_detail = False
+        self._last_compact: bool | None = None
+        self._active_grid_columns = 3
 
         self._uint_validator = QRegularExpressionValidator(QRegularExpression(r"\d{0,10}"), self)
         self._float_validator = QRegularExpressionValidator(
@@ -188,8 +196,10 @@ class SupportItemParamEditor(QWidget):
         self._entry_scroll = QScrollArea()
         self._entry_scroll.setWidgetResizable(True)
         self._entry_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._entry_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._entry_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._entry_list_widget = QWidget()
+        self._entry_list_widget.setMinimumWidth(0)
         self._entry_list_widget.setStyleSheet(ss_transparent())
         self._entry_list_layout = QVBoxLayout(self._entry_list_widget)
         self._entry_list_layout.setContentsMargins(0, 0, 0, 0)
@@ -207,12 +217,13 @@ class SupportItemParamEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_widget)
         main_layout.addWidget(self._editor_scroll, 1)
 
@@ -321,6 +332,8 @@ class SupportItemParamEditor(QWidget):
     def _make_entry_button(self, idx: int, entry: dict) -> QPushButton:
         btn = QPushButton()
         btn.setFixedHeight(48)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(ss_sidebar_btn(selected=idx == self._current_idx))
 
@@ -328,15 +341,25 @@ class SupportItemParamEditor(QWidget):
         layout.setContentsMargins(10, 3, 10, 3)
         layout.setSpacing(0)
 
-        title = QLabel(self._entry_title(idx, entry))
+        title_text = self._entry_title(idx, entry)
+        button_title = self._entry_button_title(idx, entry)
+        subtitle_text = self._entry_subtitle(entry)
+        button_subtitle = self._entry_button_subtitle(entry)
+        title = QLabel(_truncate(button_title, 22))
         title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         title.setStyleSheet(ss_main_label())
+        title.setMinimumWidth(0)
+        title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        title.setToolTip(title_text)
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(title)
 
-        subtitle = QLabel(self._entry_subtitle(entry))
+        subtitle = QLabel(_truncate(button_subtitle, 30))
         subtitle.setFont(QFont("Segoe UI", 9))
         subtitle.setStyleSheet(ss_dim_label())
+        subtitle.setMinimumWidth(0)
+        subtitle.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        subtitle.setToolTip(subtitle_text)
         subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(subtitle)
 
@@ -347,12 +370,22 @@ class SupportItemParamEditor(QWidget):
         key = entry.get("story_title_key") or entry.get("campaign_title_key") or ui_text("ui_supportitemparam_empty_text_key")
         return ui_text("ui_supportitemparam_entry_title", index=idx, support_id=int(entry.get("support_id", 0)), title=key)
 
+    def _entry_button_title(self, idx: int, entry: dict) -> str:
+        return f"#{idx:03d} ID {int(entry.get('support_id', 0))}"
+
     def _entry_subtitle(self, entry: dict) -> str:
         return ui_text(
             "ui_supportitemparam_entry_subtitle",
             price=int(entry.get("price", 0)),
             effect=int(entry.get("effect_type", 0)),
             order=int(entry.get("display_order", 0)),
+        )
+
+    def _entry_button_subtitle(self, entry: dict) -> str:
+        return (
+            f"P {int(entry.get('price', 0))} / "
+            f"E {int(entry.get('effect_type', 0))} / "
+            f"O {int(entry.get('display_order', 0))}"
         )
 
     def _filter_list(self):
@@ -385,9 +418,15 @@ class SupportItemParamEditor(QWidget):
                 continue
             labels = btn.findChildren(QLabel)
             if len(labels) >= 1:
-                labels[0].setText(self._entry_title(idx, self._entries[idx]))
+                title_text = self._entry_title(idx, self._entries[idx])
+                button_title = self._entry_button_title(idx, self._entries[idx])
+                labels[0].setText(_truncate(button_title, 22))
+                labels[0].setToolTip(title_text)
             if len(labels) >= 2:
-                labels[1].setText(self._entry_subtitle(self._entries[idx]))
+                subtitle_text = self._entry_subtitle(self._entries[idx])
+                button_subtitle = self._entry_button_subtitle(self._entries[idx])
+                labels[1].setText(_truncate(button_subtitle, 30))
+                labels[1].setToolTip(subtitle_text)
             break
         self._filter_list()
 
@@ -407,62 +446,73 @@ class SupportItemParamEditor(QWidget):
         self._entry_count_label = None
         self._loading_detail = True
         entry = self._entries[idx]
+        self._last_compact = self._is_compact_editor()
 
         header, header_layout = make_editor_grid_card(
+            self._editor_widget,
             title=self._entry_title(idx, entry),
             icon_name="fa6s.bag-shopping",
             subtitle=self._entry_subtitle(entry),
-            grid_margins=(0, 2, 0, 0),
+            grid_margins=(0, 0, 0, 0),
             vertical_spacing=8,
         )
+        self._prep_card(header)
+        self._active_grid_columns = 3
 
-        self._add_uint_field(header_layout, 1, 0, "support_id", entry, ui_text("ui_supportitemparam_support_id"), ui_text("ui_supportitemparam_support_id_hint"), big=True)
-        self._add_uint_field(header_layout, 1, 1, "price", entry, ui_text("ui_supportitemparam_price"), ui_text("ui_supportitemparam_price_hint"), big=True)
-        self._add_combo_field(header_layout, 2, 0, "tier_or_category", entry, self._number_options(_TIER_VALUES, "ui_supportitemparam_tier_option"), ui_text("ui_supportitemparam_tier_or_category"), ui_text("ui_supportitemparam_tier_hint"), big=True, colspan=2)
-        for col in range(3):
+        self._add_uint_field(header_layout, 0, 0, "support_id", entry, ui_text("ui_supportitemparam_support_id"), ui_text("ui_supportitemparam_support_id_hint"), big=True)
+        self._add_uint_field(header_layout, 0, 1, "price", entry, ui_text("ui_supportitemparam_price"), ui_text("ui_supportitemparam_price_hint"), big=True)
+        self._add_combo_field(header_layout, 0, 2, "tier_or_category", entry, self._number_options(_TIER_VALUES, "ui_supportitemparam_tier_option"), ui_text("ui_supportitemparam_tier_or_category"), ui_text("ui_supportitemparam_tier_hint"), big=True)
+        for col in range(self._grid_columns(3)):
             header_layout.setColumnStretch(col, 1)
         self._editor_layout.addWidget(header)
 
         self._add_section(ui_text("ui_supportitemparam_text_keys"))
         text_card = self._make_card()
         text_grid = self._card_grid(text_card)
+        self._active_grid_columns = 2
         self._add_text_field(text_grid, 0, 0, "story_title_key", entry, ui_text("ui_supportitemparam_story_title_key"), ui_text("ui_supportitemparam_text_hint"))
         self._add_text_field(text_grid, 0, 1, "story_hint_key", entry, ui_text("ui_supportitemparam_story_hint_key"), ui_text("ui_supportitemparam_text_hint"))
         self._add_text_field(text_grid, 1, 0, "campaign_title_key", entry, ui_text("ui_supportitemparam_campaign_title_key"), ui_text("ui_supportitemparam_text_hint"))
         self._add_text_field(text_grid, 1, 1, "campaign_hint_key", entry, ui_text("ui_supportitemparam_campaign_hint_key"), ui_text("ui_supportitemparam_text_hint"))
-        text_grid.setColumnStretch(0, 1)
-        text_grid.setColumnStretch(1, 1)
+        for col in range(self._grid_columns(2)):
+            text_grid.setColumnStretch(col, 1)
         self._editor_layout.addWidget(text_card)
 
         self._add_section(ui_text("ui_supportitemparam_effect_values"))
         effect_card = self._make_card()
         effect_grid = self._card_grid(effect_card)
+        self._active_grid_columns = 3
         self._add_combo_field(effect_grid, 0, 0, "effect_type", entry, self._number_options(_EFFECT_TYPE_VALUES, "ui_supportitemparam_effect_type_option"), ui_text("ui_supportitemparam_effect_type"), ui_text("ui_supportitemparam_effect_type_hint"))
         self._add_float_field(effect_grid, 0, 1, "effect_value_1", entry, ui_text("ui_supportitemparam_effect_value_1"), ui_text("ui_supportitemparam_effect_value_hint"))
         self._add_float_field(effect_grid, 0, 2, "effect_value_2", entry, ui_text("ui_supportitemparam_effect_value_2"), ui_text("ui_supportitemparam_effect_value_hint"))
         self._add_float_field(effect_grid, 1, 0, "effect_value_3", entry, ui_text("ui_supportitemparam_effect_value_3"), ui_text("ui_supportitemparam_effect_value_hint"))
         self._add_combo_field(effect_grid, 1, 1, "target_group", entry, self._number_options(_TARGET_GROUP_VALUES, "ui_supportitemparam_target_group_option"), ui_text("ui_supportitemparam_target_group"), ui_text("ui_supportitemparam_target_group_hint"))
         self._add_uint_field(effect_grid, 1, 2, "raw_64", entry, ui_text("ui_supportitemparam_raw_64"), ui_text("ui_supportitemparam_raw_hint"))
-        for col in range(3):
+        for col in range(self._grid_columns(3)):
             effect_grid.setColumnStretch(col, 1)
         self._editor_layout.addWidget(effect_card)
 
         self._add_section(ui_text("ui_supportitemparam_file_header"))
         file_card = self._make_card()
         file_grid = self._card_grid(file_card)
+        self._active_grid_columns = 2
         self._add_uint_value_field(file_grid, 0, 0, "version", ui_text("ui_supportitemparam_version"), int(self._result.get("version", 1000) if self._result else 1000), "")
         self._entry_count_label = QLabel(ui_text("ui_supportitemparam_entry_count_value", count=len(self._entries)))
         self._entry_count_label.setFont(QFont("Segoe UI", 12))
         self._entry_count_label.setStyleSheet(ss_main_label())
-        file_grid.addWidget(self._entry_count_label, 0, 1)
+        self._entry_count_label.setMinimumWidth(0)
+        self._entry_count_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        count_row, count_col = self._field_position(0, 1, 2)
+        file_grid.addWidget(self._entry_count_label, count_row, count_col)
         self._add_text_value_field(file_grid, 1, 0, "notes_hex", ui_text("ui_supportitemparam_notes_hex"), self._notes_hex(), ui_text("ui_supportitemparam_notes_hint"), colspan=2, hex_mode=True)
-        file_grid.setColumnStretch(0, 1)
-        file_grid.setColumnStretch(1, 1)
+        for col in range(self._grid_columns(2)):
+            file_grid.setColumnStretch(col, 1)
         self._editor_layout.addWidget(file_card)
 
         self._add_section(ui_text("ui_supportitemparam_raw_values"))
         raw_card = self._make_card()
         raw_grid = self._card_grid(raw_card)
+        self._active_grid_columns = 3
         raw_fields = (
             "display_order", "enabled_flag", "shop_marker",
             "reserved_04", "reserved_24", "empty_slot_marker",
@@ -481,7 +531,7 @@ class SupportItemParamEditor(QWidget):
                 self._add_uint_field(raw_grid, row, col, key, entry, self._label_for_key(key), self._hint_for_key(key))
         blob_row = (len(raw_fields) + 2) // 3
         self._add_text_value_field(raw_grid, blob_row, 0, "pre_text_blob_hex", ui_text("ui_supportitemparam_pre_text_blob"), self._blob_hex(entry), ui_text("ui_supportitemparam_pre_text_blob_hint"), colspan=3, hex_mode=True)
-        for col in range(3):
+        for col in range(self._grid_columns(3)):
             raw_grid.setColumnStretch(col, 1)
         self._editor_layout.addWidget(raw_card)
 
@@ -509,10 +559,12 @@ class SupportItemParamEditor(QWidget):
         section_title = getattr(self, "_pending_section_title", None)
         self._pending_section_title = None
         card, grid = make_editor_grid_card(
+            self._editor_widget,
             title=section_title,
             icon_name="fa6s.sliders",
             vertical_spacing=10,
         )
+        self._prep_card(card)
         card._editor_grid = grid
         return card
 
@@ -522,6 +574,40 @@ class SupportItemParamEditor(QWidget):
     def _field_shell(self, label: str, hint: str = "") -> tuple[QWidget, QVBoxLayout]:
         frame, layout, _label, _hint = make_editor_field_shell(label, hint)
         return frame, layout
+
+    def _is_compact_editor(self) -> bool:
+        if not hasattr(self, "_editor_scroll"):
+            return False
+        return self._editor_scroll.viewport().width() < 780
+
+    def _grid_columns(self, max_columns: int) -> int:
+        width = self._editor_scroll.viewport().width()
+        if width < 780:
+            return 1
+        if width < 960:
+            return min(2, max_columns)
+        return max_columns
+
+    def _field_position(self, row: int, col: int, max_columns: int) -> tuple[int, int]:
+        columns = self._grid_columns(max_columns)
+        logical_index = row * max_columns + col
+        return divmod(logical_index, columns)
+
+    def _field_span(self, col: int, requested: int, max_columns: int) -> int:
+        columns = self._grid_columns(max_columns)
+        return max(1, min(requested, columns - (col % columns)))
+
+    def _prep_card(self, card: QFrame):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(980)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _prep_field_widget(self, frame: QWidget, editor: QWidget):
+        frame.setMinimumWidth(0)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        editor.setMinimumWidth(0)
+        editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
     def _add_text_field(self, grid, row, col, key, entry, label, hint="", big=False):
         self._add_text_value_field(grid, row, col, key, label, str(entry.get(key, "")), hint, big=big)
@@ -534,10 +620,16 @@ class SupportItemParamEditor(QWidget):
         edit.setFont(QFont("Consolas", 16 if big else 13))
         edit.setStyleSheet(ss_input())
         edit.setMinimumWidth(0)
+        edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         edit.setText(str(value))
+        edit.setCursorPosition(0)
         edit.textChanged.connect(lambda _text, k=key: self._on_text_changed(k))
         layout.addWidget(edit)
-        grid.addWidget(frame, row, col, 1, colspan)
+        self._prep_field_widget(frame, edit)
+        max_cols = getattr(self, "_active_grid_columns", 3)
+        mapped_row, mapped_col = self._field_position(row, col, max_cols)
+        grid.addWidget(frame, mapped_row, mapped_col, 1, self._field_span(mapped_col, colspan, max_cols))
+        grid.setColumnStretch(mapped_col, 1)
         self._fields[key] = edit
 
     def _add_uint_field(self, grid, row, col, key, entry, label, hint="", big=False):
@@ -552,11 +644,16 @@ class SupportItemParamEditor(QWidget):
         edit.setFont(QFont("Consolas", 16 if big else 13))
         edit.setStyleSheet(ss_input())
         edit.setMinimumWidth(0)
+        edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         edit.setText(str(int(value)))
+        edit.setCursorPosition(0)
         edit.textChanged.connect(self._on_numeric_text_changed)
         edit.editingFinished.connect(lambda k=key: self._on_uint_finished(k))
         layout.addWidget(edit)
-        grid.addWidget(frame, row, col)
+        self._prep_field_widget(frame, edit)
+        mapped_row, mapped_col = self._field_position(row, col, getattr(self, "_active_grid_columns", 3))
+        grid.addWidget(frame, mapped_row, mapped_col)
+        grid.setColumnStretch(mapped_col, 1)
         self._fields[key] = edit
 
     def _add_combo_field(self, grid, row, col, key, entry, options, label, hint="", big=False, colspan=1):
@@ -566,6 +663,7 @@ class SupportItemParamEditor(QWidget):
         combo.setFont(QFont("Consolas", 16 if big else 13))
         combo.setStyleSheet(ss_input())
         combo.setMinimumWidth(0)
+        combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         combo.setMinimumContentsLength(1)
         combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         current = int(entry.get(key, 0))
@@ -578,7 +676,11 @@ class SupportItemParamEditor(QWidget):
         combo.setCurrentIndex(max(0, selected))
         combo.currentIndexChanged.connect(lambda _idx, k=key: self._on_combo_changed(k))
         layout.addWidget(combo)
-        grid.addWidget(frame, row, col, 1, colspan)
+        self._prep_field_widget(frame, combo)
+        max_cols = getattr(self, "_active_grid_columns", 3)
+        mapped_row, mapped_col = self._field_position(row, col, max_cols)
+        grid.addWidget(frame, mapped_row, mapped_col, 1, self._field_span(mapped_col, colspan, max_cols))
+        grid.setColumnStretch(mapped_col, 1)
         self._fields[key] = combo
 
     def _add_float_field(self, grid, row, col, key, entry, label, hint="", big=False):
@@ -589,12 +691,30 @@ class SupportItemParamEditor(QWidget):
         edit.setFont(QFont("Consolas", 16 if big else 13))
         edit.setStyleSheet(ss_input())
         edit.setMinimumWidth(0)
+        edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         edit.setText(f"{float(entry.get(key, 0.0)):.9g}")
+        edit.setCursorPosition(0)
         edit.textChanged.connect(self._on_numeric_text_changed)
         edit.editingFinished.connect(lambda k=key: self._on_float_finished(k))
         layout.addWidget(edit)
-        grid.addWidget(frame, row, col)
+        self._prep_field_widget(frame, edit)
+        mapped_row, mapped_col = self._field_position(row, col, getattr(self, "_active_grid_columns", 3))
+        grid.addWidget(frame, mapped_row, mapped_col)
+        grid.setColumnStretch(mapped_col, 1)
         self._fields[key] = edit
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_idx is not None and self._last_compact is not None:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+
+    def _maybe_rebuild_for_compact(self):
+        if self._current_idx is None or self._loading_detail:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_compact:
+            return
+        self._build_editor(self._current_idx)
 
     def _on_text_changed(self, key: str):
         if self._loading_detail or self._current_idx is None:

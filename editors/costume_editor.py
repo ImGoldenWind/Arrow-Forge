@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QColorDialog, QSizePolicy, QTabWidget,
 )
 from PyQt6.QtGui import QFont, QColor, QCursor
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal
 from core.themes import P
 from core.style_helpers import (
     ss_btn, ss_accent_sep, ss_input,
@@ -16,7 +16,7 @@ from core.style_helpers import (
     ss_main_label, ss_dim_label,
     ss_panel_title, ss_tab_widget, ss_transparent, ss_search,
     ss_sidebar_btn, ss_bg_dark, ss_bg_panel, ss_sidebar_frame, ss_sep,
-    make_editor_card, make_empty_state, make_editor_field_shell,
+    make_editor_card, make_empty_state, make_editor_field_shell, add_editor_card_title,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
 from core.editor_file_state import set_file_label, set_file_label_empty
@@ -76,6 +76,7 @@ class CostumeEditor(QWidget):
         self._char_buttons = []
         self._notes = b''
         self._costume_frames = []  # list of QFrame, one per costume section
+        self._last_compact = None
 
         self._sig_load_done.connect(self._on_load_done)
         self._sig_load_error.connect(self._on_load_error)
@@ -134,7 +135,7 @@ class CostumeEditor(QWidget):
 
         # Character list sidebar
         list_frame = QFrame(main)
-        list_frame.setFixedWidth(260)
+        list_frame.setFixedWidth(276)
         list_frame.setStyleSheet(ss_sidebar_frame())
         list_layout = QVBoxLayout(list_frame)
         list_layout.setContentsMargins(0, 0, 0, 0)
@@ -221,8 +222,8 @@ class CostumeEditor(QWidget):
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_widget)
 
         self._show_placeholder()
@@ -458,8 +459,21 @@ class CostumeEditor(QWidget):
 
     def _make_editor_card(self, parent=None, margins=(16, 14, 16, 14), spacing=10):
         card, layout = make_editor_card(parent or self._editor_widget, margins=margins, spacing=spacing)
-        card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(1040)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         return card, layout
+
+    def _is_compact_editor(self):
+        if not hasattr(self, "_editor_scroll"):
+            return False
+        return self._editor_scroll.viewport().width() < 760
+
+    def _prep_field(self, frame, editor):
+        frame.setMinimumWidth(0)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        editor.setMinimumWidth(0)
+        editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
     def _make_overview_field(self, parent, label, value, *, editable=False, font=None):
         frame, layout, _label, _hint = make_editor_field_shell(label)
@@ -473,6 +487,7 @@ class CostumeEditor(QWidget):
             entry.setText(str(value))
             entry.setMinimumWidth(0)
             entry.setCursorPosition(0)
+            self._prep_field(frame, entry)
             layout.addWidget(entry)
             return frame, entry
 
@@ -480,6 +495,7 @@ class CostumeEditor(QWidget):
         value_lbl.setFont(font or QFont("Consolas", 18, QFont.Weight.Bold))
         value_lbl.setStyleSheet(ss_main_label())
         value_lbl.setMinimumWidth(0)
+        value_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         layout.addWidget(value_lbl)
         return frame, value_lbl
 
@@ -495,12 +511,21 @@ class CostumeEditor(QWidget):
         self._name_entry = None
         self._costume_frames = []
         self._editor_layout.setContentsMargins(12, 12, 12, 12)
-        self._editor_layout.setSpacing(12)
+        self._editor_layout.setSpacing(8)
+        self._last_compact = self._is_compact_editor()
 
-        hdr, hdr_wrap_layout = self._make_editor_card(margins=(20, 16, 20, 16), spacing=0)
+        hdr, hdr_wrap_layout = self._make_editor_card(margins=(16, 14, 16, 14), spacing=10)
+        add_editor_card_title(
+            hdr_wrap_layout,
+            char['name'],
+            "fa6s.palette",
+            subtitle=f"{char['char_id']} / {len(char['costumes'])} {self.t('label_costumes').lower()}",
+            icon_size=20,
+        )
         hdr_layout = QGridLayout()
-        hdr_layout.setContentsMargins(0, 0, 0, 0)
-        hdr_layout.setHorizontalSpacing(24)
+        hdr_layout.setContentsMargins(0, 4, 0, 0)
+        hdr_layout.setHorizontalSpacing(16)
+        hdr_layout.setVerticalSpacing(10)
 
         name_frame, self._name_entry = self._make_overview_field(
             hdr, self.t("label_display_name"), char['name'],
@@ -514,23 +539,35 @@ class CostumeEditor(QWidget):
             hdr, self.t("label_costumes"), len(char['costumes']),
             font=QFont("Consolas", 18, QFont.Weight.Bold)
         )
-        hdr_layout.addWidget(name_frame, 0, 0, 1, 2)
-        hdr_layout.addWidget(id_frame, 1, 0)
-        hdr_layout.addWidget(count_frame, 1, 1)
-        hdr_layout.setColumnStretch(0, 2)
-        hdr_layout.setColumnStretch(1, 1)
+        if self._last_compact:
+            hdr_layout.addWidget(name_frame, 0, 0)
+            hdr_layout.addWidget(id_frame, 1, 0)
+            hdr_layout.addWidget(count_frame, 2, 0)
+            hdr_layout.setColumnStretch(0, 1)
+        else:
+            hdr_layout.addWidget(name_frame, 0, 0, 1, 2)
+            hdr_layout.addWidget(id_frame, 1, 0)
+            hdr_layout.addWidget(count_frame, 1, 1)
+            hdr_layout.setColumnStretch(0, 2)
+            hdr_layout.setColumnStretch(1, 1)
         hdr_wrap_layout.addLayout(hdr_layout)
         self._editor_layout.addWidget(hdr)
 
         tabs = QTabWidget(self._editor_widget)
         tabs.setDocumentMode(True)
         tabs.setStyleSheet(ss_tab_widget())
+        tabs.setMinimumWidth(0)
+        tabs.setMaximumWidth(1040)
+        tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        tabs.tabBar().setUsesScrollButtons(True)
+        tabs.tabBar().setExpanding(False)
+        tabs.tabBar().setElideMode(Qt.TextElideMode.ElideRight)
         for ci, costume in enumerate(char['costumes']):
             tab = QWidget(tabs)
             tab.setStyleSheet(ss_transparent())
             tab_layout = QVBoxLayout(tab)
-            tab_layout.setContentsMargins(0, 12, 0, 0)
-            tab_layout.setSpacing(0)
+            tab_layout.setContentsMargins(0, 10, 0, 0)
+            tab_layout.setSpacing(8)
             tab_layout.addWidget(
                 self._build_costume_section(char, ci, costume, tab),
                 0,
@@ -554,7 +591,7 @@ class CostumeEditor(QWidget):
     def _build_costume_section(self, char, ci, costume, parent=None):
         sec, sec_layout = self._make_editor_card(parent)
         self._costume_frames.append(sec)
-        compact_section = self._editor_scroll.viewport().width() < 760
+        compact_section = self._is_compact_editor()
 
         header = QWidget(sec)
         header.setStyleSheet(ss_transparent())
@@ -562,17 +599,22 @@ class CostumeEditor(QWidget):
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(8)
 
-        slot_lbl = QLabel(self._slot_title(costume), header)
+        slot_title = self._slot_title(costume)
+        slot_lbl = QLabel(_truncate(slot_title, 26 if compact_section else 56), header)
         slot_lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
         slot_lbl.setStyleSheet(ss_panel_title())
-        header_layout.addWidget(slot_lbl)
-        header_layout.addStretch()
+        slot_lbl.setMinimumWidth(0)
+        slot_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        slot_lbl.setToolTip(slot_title)
+        header_layout.addWidget(slot_lbl, 1 if compact_section else 0)
+        if not compact_section:
+            header_layout.addStretch()
 
-        chip_limit = 3 if compact_section else 6
+        chip_limit = 2 if compact_section else 6
         for color in costume['colors'][:chip_limit]:
             hx = f"#{color['r']:02x}{color['g']:02x}{color['b']:02x}"
             chip = QFrame(header)
-            chip.setFixedSize(34, 18)
+            chip.setFixedSize(26 if compact_section else 34, 16 if compact_section else 18)
             chip.setStyleSheet(_color_chip_style(hx, radius=4, border_width=1))
             header_layout.addWidget(chip)
 
@@ -891,3 +933,17 @@ class CostumeEditor(QWidget):
         self._dirty = True
         if self._filepath:
             set_file_label(self._file_label, self._filepath, dirty=True)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_char is None or self._last_compact is None:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_compact:
+            return
+        self._apply_colors()
+        QTimer.singleShot(0, self._rebuild_current_for_width)
+
+    def _rebuild_current_for_width(self):
+        if self._current_char is not None:
+            self._build_editor(self._current_char)

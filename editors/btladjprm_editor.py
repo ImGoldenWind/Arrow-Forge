@@ -5,12 +5,11 @@ import os
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton,
     QVBoxLayout, QHBoxLayout, QScrollArea, QFileDialog, QMessageBox,
-    QLineEdit,
+    QLineEdit, QSizePolicy,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 
-from core.themes import P
 from core.style_helpers import (
     make_empty_state,
     make_editor_field_shell,
@@ -139,6 +138,7 @@ class BtlAdjPrmEditor(QWidget):
         self._result   = None
         self._dirty    = False
         self._param_inputs = {}  # name -> QLineEdit
+        self._last_compact = None
 
         self._build_ui()
 
@@ -216,13 +216,15 @@ class BtlAdjPrmEditor(QWidget):
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setStyleSheet(ss_scrollarea())
 
         self._cards_widget = QWidget()
+        self._cards_widget.setMinimumWidth(0)
         self._cards_widget.setStyleSheet(ss_bg_dark())
         self._cards_layout = QVBoxLayout(self._cards_widget)
-        self._cards_layout.setContentsMargins(0, 0, 12, 0)
-        self._cards_layout.setSpacing(0)
+        self._cards_layout.setContentsMargins(0, 2, 0, 0)
+        self._cards_layout.setSpacing(8)
 
         self._scroll.setWidget(self._cards_widget)
         bl.addWidget(self._scroll, 1)
@@ -260,6 +262,34 @@ class BtlAdjPrmEditor(QWidget):
     def _add_section(self, title):
         self._pending_section_title = title
 
+    def _is_compact_cards(self) -> bool:
+        if not hasattr(self, "_scroll"):
+            return False
+        return self._scroll.viewport().width() < 780
+
+    def _grid_columns(self, max_columns: int) -> int:
+        width = self._scroll.viewport().width()
+        if width < 780:
+            return 1
+        if width < 1080:
+            return min(2, max_columns)
+        return max_columns
+
+    def _prep_card(self, card: QFrame):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(980)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _prep_field(self, frame: QWidget, editor: QWidget):
+        frame.setMinimumWidth(0)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        editor.setMinimumWidth(0)
+        editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+
+    def _field_position(self, logical_index: int, max_columns: int) -> tuple[int, int]:
+        return divmod(logical_index, self._grid_columns(max_columns))
+
     # Data
 
     def _populate_cards(self, filter_text=""):
@@ -269,6 +299,7 @@ class BtlAdjPrmEditor(QWidget):
 
         self._clear_cards()
         self._param_inputs.clear()
+        self._last_compact = self._is_compact_cards()
 
         entries  = self._result['entries']
         ft       = filter_text.strip().lower()
@@ -290,13 +321,15 @@ class BtlAdjPrmEditor(QWidget):
             section_title = getattr(self, "_pending_section_title", None)
             self._pending_section_title = None
             card, grid = make_editor_grid_card(
+                self._cards_widget,
                 title=section_title,
                 icon_name="fa6s.sliders",
                 vertical_spacing=10,
             )
+            self._prep_card(card)
 
             for i, e in enumerate(group_entries):
-                row, col = divmod(i, _COLS)
+                row, col = self._field_position(i, _COLS)
                 name = e['name']
 
                 cell, cell_vl, _label, _hint = make_editor_field_shell(
@@ -308,11 +341,13 @@ class BtlAdjPrmEditor(QWidget):
                 inp = QLineEdit()
                 inp.setFixedHeight(30)
                 inp.setMinimumWidth(0)
+                inp.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
                 inp.setFont(QFont("Consolas", 13))
                 inp.setStyleSheet(ss_input())
                 inp.setText(ui_text("ui_btladjprm_value", p0=e['value']))
                 inp.editingFinished.connect(self._make_value_handler(name, inp))
                 cell_vl.addWidget(inp)
+                self._prep_field(cell, inp)
 
                 grid.addWidget(cell, row, col)
                 grid.setColumnStretch(col, 1)
@@ -357,6 +392,19 @@ class BtlAdjPrmEditor(QWidget):
 
     def _on_filter(self, text):
         self._populate_cards(text)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._result is not None and self._last_compact is not None:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+
+    def _maybe_rebuild_for_compact(self):
+        if self._result is None:
+            return
+        compact = self._is_compact_cards()
+        if compact == self._last_compact:
+            return
+        self._populate_cards(self._search.text())
 
     # File I/O
 

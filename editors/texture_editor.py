@@ -319,7 +319,7 @@ class _TextureList(QWidget):
         self._new_btn.clicked.connect(self.sig_new)
         btn_layout.addWidget(self._new_btn, 1)
 
-        self._dup_btn = QPushButton(ui_text("btn_duplicate"))
+        self._dup_btn = QPushButton(ui_text("btn_dup_short"))
         self._dup_btn.setFixedHeight(28)
         self._dup_btn.setFont(btn_font)
         self._dup_btn.setStyleSheet(ss_btn())
@@ -703,7 +703,7 @@ class _GradSliderRow(QWidget):
 
 # Right panel: info + quick-edit + operations
 class _RightPanel(QWidget):
-    WIDTH = 370
+    WIDTH = 330
 
     sig_export_dds  = pyqtSignal()
     sig_export_png  = pyqtSignal()
@@ -721,9 +721,9 @@ class _RightPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumWidth(330)
+        self.setMinimumWidth(286)
         self.setMaximumWidth(self.WIDTH)
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self.setStyleSheet(ss_bg_dark())
 
         scroll = QScrollArea()
@@ -903,8 +903,15 @@ class _RightPanel(QWidget):
         self._pending_entry: TextureEntry | None = None
 
     # Helpers
+    def set_panel_width(self, width: int):
+        width = max(260, min(self.WIDTH, int(width)))
+        self.setMinimumWidth(width)
+        self.setMaximumWidth(width)
+
     def _card(self, parent, title: str, icon_name: str):
         card, layout = make_editor_card(parent, margins=(14, 12, 14, 12), spacing=8)
+        card.setMinimumWidth(0)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         add_editor_card_title(layout, title, icon_name)
         return card, layout
 
@@ -1122,6 +1129,7 @@ class TextureEditor(QWidget):
         self._xfbin_path: str | None = None
         self._unsaved   = False
         self._orig_pil: Image.Image | None = None   # cached original for live preview
+        self._last_compact_shell = None
 
         self._build_ui()
 
@@ -1239,12 +1247,16 @@ class TextureEditor(QWidget):
         top_layout.addWidget(self._save_btn)
 
         self._file_label = QLabel(ui_text("ui_btladjprm_no_file_loaded"))
+        self._file_label.setMinimumWidth(0)
+        self._file_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self._file_label.setFont(QFont("Consolas", 12))
         self._file_label.setStyleSheet(ss_file_label())
-        top_layout.addWidget(self._file_label)
-        top_layout.addStretch()
+        top_layout.addWidget(self._file_label, 1)
 
         self._status_lbl = QLabel("")
+        self._status_lbl.setMinimumWidth(0)
+        self._status_lbl.setMaximumWidth(320)
+        self._status_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self._status_lbl.setFont(QFont("Segoe UI", 10))
         self._status_lbl.setStyleSheet(ss_dim_label())
         top_layout.addWidget(self._status_lbl)
@@ -1261,10 +1273,10 @@ class TextureEditor(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        list_frame = QFrame()
-        list_frame.setFixedWidth(260)
-        list_frame.setStyleSheet(ss_sidebar_frame())
-        list_layout = QVBoxLayout(list_frame)
+        self._list_frame = QFrame()
+        self._list_frame.setFixedWidth(260)
+        self._list_frame.setStyleSheet(ss_sidebar_frame())
+        list_layout = QVBoxLayout(self._list_frame)
         list_layout.setContentsMargins(0, 0, 0, 0)
         list_layout.setSpacing(0)
 
@@ -1274,7 +1286,7 @@ class TextureEditor(QWidget):
         self._grid.sig_duplicate.connect(self._duplicate_texture)
         self._grid.sig_delete.connect(self._delete_texture)
         list_layout.addWidget(self._grid)
-        main_layout.addWidget(list_frame)
+        main_layout.addWidget(self._list_frame)
 
         divider = QFrame()
         divider.setFixedWidth(1)
@@ -1314,6 +1326,30 @@ class TextureEditor(QWidget):
 
         main_layout.addWidget(content, 1)
         root.addWidget(main, 1)
+        self._apply_responsive_shell()
+
+    def _is_compact_shell(self) -> bool:
+        return self.width() < 920
+
+    def _apply_responsive_shell(self):
+        compact = self._is_compact_shell()
+        if compact == self._last_compact_shell:
+            return
+        self._last_compact_shell = compact
+        if compact:
+            self._list_frame.setFixedWidth(236)
+            self._preview.setMinimumWidth(210)
+            self._right.set_panel_width(286)
+            self._status_lbl.setMaximumWidth(240)
+        else:
+            self._list_frame.setFixedWidth(276)
+            self._preview.setMinimumWidth(300)
+            self._right.set_panel_width(_RightPanel.WIDTH)
+            self._status_lbl.setMaximumWidth(360)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_responsive_shell()
 
     # Open / Save
     def _open_xfbin(self):

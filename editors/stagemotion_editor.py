@@ -6,18 +6,18 @@ import os
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QComboBox,
     QVBoxLayout, QHBoxLayout, QScrollArea, QGridLayout,
-    QFileDialog, QMessageBox,
+    QFileDialog, QMessageBox, QSizePolicy,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 
-from core.themes import P
 from core.style_helpers import (
     add_editor_card_title, make_empty_state,
     ss_btn, ss_sep, ss_accent_sep, ss_input,
     ss_sidebar_btn, ss_search, ss_scrollarea, ss_scrollarea_transparent,
     ss_editor_card, ss_transparent, ss_bg_dark, ss_bg_panel,
     ss_sidebar_frame, ss_file_label,
+    ss_accent_label, ss_dim_label, ss_main_label,
     make_editor_field_shell, make_editor_grid_card,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
@@ -61,14 +61,24 @@ def _card_frame():
     f = QFrame()
     f.setObjectName("EditorCard")
     f.setStyleSheet(ss_editor_card())
+    f.setMinimumWidth(0)
+    f.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     return f
+
+
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[:max(1, limit - 1)] + "..."
 
 
 def _make_field(label_text, value_text, hint_text=""):
     f, fl, _label, _hint = make_editor_field_shell(label_text, hint_text)
+    f.setMinimumWidth(0)
+    f.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     e = QLineEdit(str(value_text))
     e.setFixedHeight(30)
     e.setMinimumWidth(0)
+    e.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
     e.setFont(QFont("Consolas", 13))
     e.setStyleSheet(ss_input())
     e.setCursorPosition(0)
@@ -79,9 +89,12 @@ def _make_field(label_text, value_text, hint_text=""):
 def _make_combo_field(label_text, options_with_data, current_data):
     """Returns (container_widget, QComboBox). options_with_data = [(data, label), ...]"""
     f, fl, _label, _hint = make_editor_field_shell(label_text)
+    f.setMinimumWidth(0)
+    f.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     cb = QComboBox()
     cb.setFixedHeight(30)
     cb.setMinimumWidth(0)
+    cb.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
     cb.setMinimumContentsLength(1)
     cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
     cb.setFont(QFont("Consolas", 12))
@@ -104,20 +117,28 @@ def _make_combo_field(label_text, options_with_data, current_data):
 def _sidebar_entry_btn(title, subtitle, selected, on_click):
     btn = QPushButton()
     btn.setFixedHeight(44)
+    btn.setMinimumWidth(0)
+    btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
     btn.setStyleSheet(ss_sidebar_btn(selected=selected))
     bl = QVBoxLayout(btn)
     bl.setContentsMargins(10, 3, 10, 3)
     bl.setSpacing(0)
-    name_lbl = QLabel(title)
+    name_lbl = QLabel(_truncate(title, 24))
     name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-    name_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+    name_lbl.setStyleSheet(ss_main_label())
+    name_lbl.setMinimumWidth(0)
+    name_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+    name_lbl.setToolTip(title)
     name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
     bl.addWidget(name_lbl)
     if subtitle:
-        sub_lbl = QLabel(subtitle)
+        sub_lbl = QLabel(_truncate(subtitle, 28))
         sub_lbl.setFont(QFont("Segoe UI", 11))
-        sub_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        sub_lbl.setStyleSheet(ss_dim_label())
+        sub_lbl.setMinimumWidth(0)
+        sub_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        sub_lbl.setToolTip(subtitle)
         sub_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         bl.addWidget(sub_lbl)
     btn.clicked.connect(on_click)
@@ -138,6 +159,7 @@ class StageMotionEditor(QWidget):
         self._stage_btns = []
         self._entries_layout = None
         self._entry_section_lbl = None
+        self._last_compact: bool | None = None
 
         self._build_ui()
 
@@ -284,6 +306,7 @@ class StageMotionEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_inner = QWidget()
         self._editor_inner.setStyleSheet(ss_bg_dark())
@@ -402,8 +425,11 @@ class StageMotionEditor(QWidget):
             if i == idx:
                 lbls = btn.findChildren(QLabel)
                 if len(lbls) >= 2:
-                    lbls[0].setText(sid)
-                    lbls[1].setText(ui_text("ui_stagemotion_value_value_entries", p0=idx, p1=n))
+                    subtitle = ui_text("ui_stagemotion_value_value_entries", p0=idx, p1=n)
+                    lbls[0].setText(_truncate(sid, 24))
+                    lbls[0].setToolTip(sid)
+                    lbls[1].setText(_truncate(subtitle, 28))
+                    lbls[1].setToolTip(subtitle)
                 break
 
     def _add_stage(self):
@@ -453,17 +479,48 @@ class StageMotionEditor(QWidget):
 
     # Right panel
 
+    def _is_compact_editor(self) -> bool:
+        if not hasattr(self, "_editor_scroll"):
+            return False
+        return self._editor_scroll.viewport().width() < 780
+
+    def _grid_columns(self, max_columns: int) -> int:
+        width = self._editor_scroll.viewport().width()
+        if width < 780:
+            return 1
+        if width < 1080:
+            return min(2, max_columns)
+        return max_columns
+
+    def _prep_card(self, card: QFrame):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(980)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _add_editor_card(self, card: QFrame):
+        self._editor_layout.addWidget(card)
+
+    def _grid_add(self, grid: QGridLayout, widget: QWidget, index: int, max_columns: int, stretch: int = 1):
+        columns = self._grid_columns(max_columns)
+        row, col = divmod(index, columns)
+        grid.addWidget(widget, row, col)
+        grid.setColumnStretch(col, stretch)
+
     def _rebuild_right_panel(self, stage):
         _clear_layout(self._editor_layout)
+        self._last_compact = self._is_compact_editor()
 
         # Stage Header card
         hdr_card, hdr_grid = make_editor_grid_card(
+            self._editor_inner,
             title=ui_text("ui_stagemotion_stage_header"),
             icon_name="fa6s.sliders",
             subtitle=stage.get('stage_id', ''),
             grid_margins=(0, 4, 0, 0),
             vertical_spacing=8,
         )
+        self._prep_card(hdr_card)
 
         fw0, f_sid = _make_field(
             ui_text("ui_mainmodeparam_stage_id"),
@@ -472,9 +529,9 @@ class StageMotionEditor(QWidget):
         fw1, f_nut = _make_field(ui_text("ui_stagemotion_nut_type"), stage.get('nut_type', 'PL_ANM_NUT'))
         fw2, f_flg = _make_field(ui_text("ui_stagemotion_id_flag"), stage.get('id_flag', 0))
 
-        hdr_grid.addWidget(fw0, 0, 0); hdr_grid.setColumnStretch(0, 2)
-        hdr_grid.addWidget(fw1, 0, 1); hdr_grid.setColumnStretch(1, 2)
-        hdr_grid.addWidget(fw2, 0, 2); hdr_grid.setColumnStretch(2, 1)
+        self._grid_add(hdr_grid, fw0, 0, 3, 2)
+        self._grid_add(hdr_grid, fw1, 1, 3, 2)
+        self._grid_add(hdr_grid, fw2, 2, 3, 1)
 
         cur_idx = self._current_stage_idx
 
@@ -492,16 +549,21 @@ class StageMotionEditor(QWidget):
         f_nut.editingFinished.connect(commit_header)
         f_flg.editingFinished.connect(commit_header)
 
-        self._editor_layout.addWidget(hdr_card)
+        self._add_editor_card(hdr_card)
 
         # Entries section
         entries = stage.setdefault('entries', [])
 
         ent_bar = _card_frame()
+        self._prep_card(ent_bar)
         ent_bar_lay = QVBoxLayout(ent_bar)
         ent_bar_lay.setContentsMargins(12, 12, 12, 12)
         ent_bar_lay.setSpacing(8)
-        self._entry_section_lbl = add_editor_card_title(ent_bar_lay, f"Entries  ({len(entries)})", "fa6s.list")
+        _row, self._entry_section_lbl, _subtitle = add_editor_card_title(
+            ent_bar_lay,
+            ui_text("ui_stagemotion_entries_value", p0=len(entries)),
+            "fa6s.list",
+        )
 
         ent_buttons = QHBoxLayout()
         ent_buttons.setContentsMargins(0, 0, 0, 0)
@@ -517,10 +579,13 @@ class StageMotionEditor(QWidget):
 
         ent_buttons.addStretch()
         ent_bar_lay.addLayout(ent_buttons)
-        self._editor_layout.addWidget(ent_bar)
+        self._add_editor_card(ent_bar)
 
         # Entry cards container
         self._entries_container = QWidget()
+        self._entries_container.setMinimumWidth(0)
+        self._entries_container.setMaximumWidth(980)
+        self._entries_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._entries_container.setStyleSheet(ss_transparent())
         self._entries_layout = QVBoxLayout(self._entries_container)
         self._entries_layout.setContentsMargins(0, 8, 0, 0)
@@ -529,7 +594,7 @@ class StageMotionEditor(QWidget):
         for i, e in enumerate(entries):
             self._entries_layout.addWidget(self._make_entry_card(i, e, stage))
 
-        self._editor_layout.addWidget(self._entries_container)
+        self._add_editor_card(self._entries_container)
 
         spacer = QWidget()
         spacer.setFixedHeight(20)
@@ -537,8 +602,24 @@ class StageMotionEditor(QWidget):
         self._editor_layout.addWidget(spacer)
         self._editor_layout.addStretch()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_stage_idx >= 0 and self._last_compact is not None:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+
+    def _maybe_rebuild_for_compact(self):
+        if self._result is None or self._current_stage_idx < 0:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_compact:
+            return
+        stages = self._result.get('stages') or []
+        if 0 <= self._current_stage_idx < len(stages):
+            self._rebuild_right_panel(stages[self._current_stage_idx])
+
     def _make_entry_card(self, idx, entry, stage):
         card = _card_frame()
+        self._prep_card(card)
         cl = QVBoxLayout(card)
         cl.setContentsMargins(12, 12, 12, 12)
         cl.setSpacing(8)
@@ -549,7 +630,7 @@ class StageMotionEditor(QWidget):
         hdr_row.setSpacing(4)
         hdr_lbl = QLabel(ui_text("ui_stagemotion_value", p0=idx))
         hdr_lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        hdr_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
+        hdr_lbl.setStyleSheet(ss_accent_label())
         hdr_row.addWidget(hdr_lbl)
         hdr_row.addStretch()
 
@@ -585,11 +666,14 @@ class StageMotionEditor(QWidget):
             entry.get('type_code', 0x0044),
         )
 
-        grid.addWidget(fw0, 0, 0); grid.setColumnStretch(0, 3)
-        grid.addWidget(fw2, 0, 1); grid.setColumnStretch(1, 3)
-        grid.addWidget(fw1, 0, 2); grid.setColumnStretch(2, 1)
-        grid.addWidget(fw3, 1, 0); grid.setColumnStretch(0, 1)
-        grid.addWidget(fw4, 1, 1); grid.setColumnStretch(1, 1)
+        for field_index, (field_widget, stretch) in enumerate([
+            (fw0, 3),
+            (fw2, 3),
+            (fw1, 1),
+            (fw3, 1),
+            (fw4, 1),
+        ]):
+            self._grid_add(grid, field_widget, field_index, 3, stretch)
 
         cl.addLayout(grid)
 

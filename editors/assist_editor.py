@@ -5,17 +5,17 @@ import copy
 
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QScrollArea,
-    QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox,
+    QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 
-from core.themes import P
 from core.style_helpers import (
     make_empty_state, make_editor_field_shell, make_editor_grid_card,
     ss_btn, ss_sep, ss_accent_sep, ss_input, ss_search, ss_scrollarea, ss_scrollarea_transparent,
     ss_sidebar_btn, ss_file_label, ss_transparent,
     ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
+    ss_accent_label, ss_dim_label, ss_main_label,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
 from core.editor_file_state import set_file_label
@@ -122,6 +122,11 @@ def _clear_layout(layout):
             _clear_layout(item.layout())
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[:max(1, limit - 1)] + "..."
+
+
 # Editor
 
 class AssistEditor(QWidget):
@@ -138,6 +143,7 @@ class AssistEditor(QWidget):
         self._entry_buttons = []
         self._fields = {}
         self._display_name_lbl = None
+        self._last_compact: bool | None = None
 
         self._build_ui()
 
@@ -251,8 +257,10 @@ class AssistEditor(QWidget):
         self._entry_scroll = QScrollArea()
         self._entry_scroll.setWidgetResizable(True)
         self._entry_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._entry_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._entry_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._entry_list_widget = QWidget()
+        self._entry_list_widget.setMinimumWidth(0)
         self._entry_list_widget.setStyleSheet(ss_transparent())
         self._entry_list_layout = QVBoxLayout(self._entry_list_widget)
         self._entry_list_layout.setContentsMargins(0, 0, 0, 0)
@@ -272,12 +280,13 @@ class AssistEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_widget)
 
         self._set_editor_placeholder(ui_text("ui_assist_open_a_supportcharaparam_bin_xfbin_file_to_begin"))
@@ -303,23 +312,60 @@ class AssistEditor(QWidget):
     def _add_section(self, title):
         self._pending_section_title = title
 
+    def _is_compact_editor(self) -> bool:
+        if not hasattr(self, "_editor_scroll"):
+            return False
+        return self._editor_scroll.viewport().width() < 780
+
+    def _grid_columns(self, max_columns: int) -> int:
+        width = self._editor_scroll.viewport().width()
+        if width < 780:
+            return 1
+        if width < 1080:
+            return min(2, max_columns)
+        return max_columns
+
+    def _prep_card(self, card: QFrame):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(980)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _prep_field_widget(self, widget: QWidget):
+        widget.setMinimumWidth(0)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return widget
+
+    def _add_editor_card(self, card: QFrame):
+        self._editor_layout.addWidget(card)
+
+    def _field_position(self, row: int, col: int, max_columns: int = 3) -> tuple[int, int]:
+        columns = self._grid_columns(max_columns)
+        logical_index = row * max_columns + col
+        return divmod(logical_index, columns)
+
     def _build_field_card(self, field_indices, entry, cols=3):
         section_title = getattr(self, "_pending_section_title", None)
         self._pending_section_title = None
         card, grid = make_editor_grid_card(
+            self._editor_widget,
             title=section_title,
             icon_name="fa6s.sliders",
             vertical_spacing=10,
         )
+        self._prep_card(card)
+        actual_cols = self._grid_columns(cols)
 
         for i, fi in enumerate(field_indices):
-            row, col = divmod(i, cols)
+            row, col = divmod(i, actual_cols)
             f, fl, label, _hint = make_editor_field_shell(FIELD_NAMES[fi])
+            self._prep_field_widget(f)
             label.setToolTip(FIELD_TOOLTIPS.get(fi, ''))
 
             e = QLineEdit(str(entry[f'f{fi}']))
             e.setFixedHeight(30)
             e.setMinimumWidth(0)
+            e.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             e.setFont(QFont("Consolas", 13))
             e.setStyleSheet(ss_input())
             e.setToolTip(FIELD_TOOLTIPS.get(fi, ''))
@@ -374,6 +420,8 @@ class AssistEditor(QWidget):
     def _make_entry_button(self, entry, idx):
         btn = QPushButton()
         btn.setFixedHeight(44)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(ss_sidebar_btn(selected=(idx == self._current_idx)))
         bl = QVBoxLayout(btn)
@@ -381,15 +429,22 @@ class AssistEditor(QWidget):
         bl.setSpacing(0)
 
         char_id = entry['char_id']
-        name_lbl = QLabel(self._get_display_name(char_id))
+        display_name = self._get_display_name(char_id)
+        name_lbl = QLabel(_truncate(display_name, 24))
         name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        name_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        name_lbl.setStyleSheet(ss_main_label())
+        name_lbl.setMinimumWidth(0)
+        name_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        name_lbl.setToolTip(display_name)
         name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         bl.addWidget(name_lbl)
 
-        id_lbl = QLabel(char_id)
+        id_lbl = QLabel(_truncate(char_id, 28))
         id_lbl.setFont(QFont("Consolas", 11))
-        id_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        id_lbl.setStyleSheet(ss_dim_label())
+        id_lbl.setMinimumWidth(0)
+        id_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        id_lbl.setToolTip(char_id)
         id_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         bl.addWidget(id_lbl)
 
@@ -432,8 +487,11 @@ class AssistEditor(QWidget):
                             if i == self._current_idx:
                                 lbls = btn.findChildren(QLabel)
                                 if len(lbls) >= 2:
-                                    lbls[0].setText(self._get_display_name(text))
-                                    lbls[1].setText(text)
+                                    display_name = self._get_display_name(text)
+                                    lbls[0].setText(_truncate(display_name, 24))
+                                    lbls[0].setToolTip(display_name)
+                                    lbls[1].setText(_truncate(text, 28))
+                                    lbls[1].setToolTip(text)
                                 break
                 else:
                     entry[key] = int(text)
@@ -444,51 +502,66 @@ class AssistEditor(QWidget):
         _clear_layout(self._editor_layout)
         self._fields = {}
         self._display_name_lbl = None
+        self._last_compact = self._is_compact_editor()
+        display_name = self._get_display_name(entry['char_id'])
+        display_limit = 22 if self._last_compact else 30
+        display_font = QFont("Segoe UI", 15 if self._last_compact else 18, QFont.Weight.Bold)
+        display_height = 34 if self._last_compact else 36
 
         # Header card
         hdr, hdr_grid = make_editor_grid_card(
+            self._editor_widget,
             title=ui_text("ui_assist_character"),
             icon_name="fa6s.handshake-angle",
-            subtitle=self._get_display_name(entry['char_id']),
+            subtitle=_truncate(display_name, display_limit),
             grid_margins=(0, 2, 0, 0),
             vertical_spacing=8,
         )
+        self._prep_card(hdr)
 
         # Column 0: display name (cosmetic, non-editable)
         name_frame, name_layout, _label, _hint = make_editor_field_shell(ui_text("ui_assist_character"))
+        self._prep_field_widget(name_frame)
 
-        self._display_name_lbl = QLabel(self._get_display_name(entry['char_id']))
+        self._display_name_lbl = QLabel(_truncate(display_name, display_limit))
         self._display_name_lbl.setMinimumWidth(0)
-        self._display_name_lbl.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
-        self._display_name_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent;")
-        self._display_name_lbl.setFixedHeight(36)
+        self._display_name_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._display_name_lbl.setFont(display_font)
+        self._display_name_lbl.setStyleSheet(ss_accent_label())
+        self._display_name_lbl.setFixedHeight(display_height)
+        self._display_name_lbl.setToolTip(display_name)
         name_layout.addWidget(self._display_name_lbl)
 
-        hdr_grid.addWidget(name_frame, 0, 0)
-        hdr_grid.setColumnStretch(0, 2)
+        row, col = self._field_position(0, 0, max_columns=2)
+        hdr_grid.addWidget(name_frame, row, col)
+        hdr_grid.setColumnStretch(col, 2)
 
         # Column 1: char_id (editable)
         id_frame, id_layout, _label, _hint = make_editor_field_shell(ui_text("ui_assist_char_id"))
+        self._prep_field_widget(id_frame)
 
         e_id = QLineEdit(entry['char_id'])
         e_id.setFixedHeight(36)
         e_id.setMinimumWidth(0)
+        e_id.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         e_id.setFont(QFont("Consolas", 16))
         e_id.setStyleSheet(ss_input())
+        e_id.setCursorPosition(0)
         e_id.textEdited.connect(self._on_char_id_edited)
         id_layout.addWidget(e_id)
         self._fields['char_id'] = e_id
 
-        hdr_grid.addWidget(id_frame, 0, 1)
-        hdr_grid.setColumnStretch(1, 1)
+        row, col = self._field_position(0, 1, max_columns=2)
+        hdr_grid.addWidget(id_frame, row, col)
+        hdr_grid.setColumnStretch(col, 1)
 
-        self._editor_layout.addWidget(hdr)
+        self._add_editor_card(hdr)
 
         # Field group cards
         for section_title, field_indices in _FIELD_GROUPS:
             self._add_section(section_title)
             card = self._build_field_card(field_indices, entry, cols=3)
-            self._editor_layout.addWidget(card)
+            self._add_editor_card(card)
 
         spacer = QWidget()
         spacer.setFixedHeight(20)
@@ -496,9 +569,26 @@ class AssistEditor(QWidget):
         self._editor_layout.addWidget(spacer)
         self._editor_layout.addStretch()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_entry is not None and self._last_compact is not None:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+
+    def _maybe_rebuild_for_compact(self):
+        if self._current_entry is None:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_compact:
+            return
+        self._apply_fields()
+        self._build_editor(self._current_entry)
+
     def _on_char_id_edited(self, new_id):
         if self._display_name_lbl is not None:
-            self._display_name_lbl.setText(self._get_display_name(new_id))
+            display_name = self._get_display_name(new_id)
+            display_limit = 22 if self._is_compact_editor() else 30
+            self._display_name_lbl.setText(_truncate(display_name, display_limit))
+            self._display_name_lbl.setToolTip(display_name)
         self._mark_dirty()
 
     def _mark_dirty(self):

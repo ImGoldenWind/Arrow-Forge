@@ -1,7 +1,7 @@
 import copy
 import os
 
-from PyQt6.QtCore import Qt, QRegularExpression
+from PyQt6.QtCore import QRegularExpression, Qt, QTimer
 from PyQt6.QtGui import QFont, QRegularExpressionValidator
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -41,6 +42,7 @@ from core.style_helpers import (
     ss_search,
     ss_sep,
     ss_sidebar_btn,
+    ss_sidebar_frame,
     ss_transparent,
 )
 from core.translations import ui_text
@@ -94,6 +96,11 @@ def _clear_layout(layout):
             _clear_layout(item.layout())
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
+
+
 class CommandListParamEditor(QWidget):
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
@@ -110,6 +117,8 @@ class CommandListParamEditor(QWidget):
         self._type_combo: QComboBox | None = None
         self._dirty = False
         self._loading_detail = False
+        self._last_compact: bool | None = None
+        self._active_grid_columns = 3
 
         self._uint_validator = QRegularExpressionValidator(QRegularExpression(r"\d{0,10}"), self)
         self._int_validator = QRegularExpressionValidator(QRegularExpression(r"-?\d{0,10}"), self)
@@ -169,8 +178,8 @@ class CommandListParamEditor(QWidget):
         main_layout.setSpacing(0)
 
         sidebar = QFrame()
-        sidebar.setFixedWidth(260)
-        sidebar.setStyleSheet(ss_bg_panel())
+        sidebar.setFixedWidth(290)
+        sidebar.setStyleSheet(ss_sidebar_frame())
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(8, 8, 8, 4)
         sidebar_layout.setSpacing(4)
@@ -218,8 +227,10 @@ class CommandListParamEditor(QWidget):
         self._entry_scroll = QScrollArea()
         self._entry_scroll.setWidgetResizable(True)
         self._entry_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._entry_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._entry_scroll.setStyleSheet(ss_scrollarea_transparent())
         self._entry_list_widget = QWidget()
+        self._entry_list_widget.setMinimumWidth(0)
         self._entry_list_widget.setStyleSheet(ss_transparent())
         self._entry_list_layout = QVBoxLayout(self._entry_list_widget)
         self._entry_list_layout.setContentsMargins(0, 0, 0, 0)
@@ -237,12 +248,13 @@ class CommandListParamEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_widget)
         main_layout.addWidget(self._editor_scroll, 1)
 
@@ -341,7 +353,9 @@ class CommandListParamEditor(QWidget):
 
     def _make_entry_button(self, idx: int, entry: dict) -> QPushButton:
         btn = QPushButton()
-        btn.setFixedHeight(44)
+        btn.setFixedHeight(50)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(ss_sidebar_btn(selected=idx == self._current_idx))
 
@@ -349,15 +363,26 @@ class CommandListParamEditor(QWidget):
         layout.setContentsMargins(10, 3, 10, 3)
         layout.setSpacing(0)
 
-        title = QLabel(self._entry_title(idx, entry))
+        title_text = self._entry_title(idx, entry)
+        subtitle_text = self._entry_subtitle(entry)
+        button_title = self._entry_button_title(idx, entry)
+        button_subtitle = self._entry_button_subtitle(entry)
+
+        title = QLabel(_truncate(button_title, 24))
         title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         title.setStyleSheet(ss_main_label())
+        title.setMinimumWidth(0)
+        title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        title.setToolTip(title_text)
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(title)
 
-        subtitle = QLabel(self._entry_subtitle(entry))
+        subtitle = QLabel(_truncate(button_subtitle, 30))
         subtitle.setFont(QFont("Consolas", 11))
         subtitle.setStyleSheet(ss_dim_label())
+        subtitle.setMinimumWidth(0)
+        subtitle.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        subtitle.setToolTip(subtitle_text)
         subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(subtitle)
 
@@ -378,9 +403,18 @@ class CommandListParamEditor(QWidget):
             type=self._type_label(int(entry.get("move_type", 0))),
         )
 
+    def _entry_button_title(self, idx: int, entry: dict) -> str:
+        char_id = entry.get("char_id", "") or ui_text("ui_commandlistparam_empty_char")
+        return f"#{idx:03d} {char_id}"
+
     def _entry_subtitle(self, entry: dict) -> str:
         name_key = entry.get("name_key", "") or ui_text("ui_commandlistparam_empty_text_key")
         return ui_text("ui_commandlistparam_entry_subtitle", name_key=name_key)
+
+    def _entry_button_subtitle(self, entry: dict) -> str:
+        move_type = self._type_label(int(entry.get("move_type", 0)))
+        name_key = entry.get("name_key", "") or ui_text("ui_commandlistparam_empty_text_key")
+        return f"{move_type} / {name_key}"
 
     def _filter_list(self):
         query = self._search.text().lower().strip()
@@ -420,8 +454,13 @@ class CommandListParamEditor(QWidget):
                 continue
             labels = btn.findChildren(QLabel)
             if len(labels) >= 2:
-                labels[0].setText(self._entry_title(idx, self._entries[idx]))
-                labels[1].setText(self._entry_subtitle(self._entries[idx]))
+                entry = self._entries[idx]
+                title_text = self._entry_title(idx, entry)
+                subtitle_text = self._entry_subtitle(entry)
+                labels[0].setText(_truncate(self._entry_button_title(idx, entry), 24))
+                labels[0].setToolTip(title_text)
+                labels[1].setText(_truncate(self._entry_button_subtitle(entry), 30))
+                labels[1].setToolTip(subtitle_text)
             break
         self._filter_list()
 
@@ -439,14 +478,18 @@ class CommandListParamEditor(QWidget):
         self._type_combo = None
         self._loading_detail = True
         entry = self._entries[idx]
+        self._last_compact = self._is_compact_editor()
 
         header, header_layout = make_editor_grid_card(
+            self._editor_widget,
             title=self._entry_title(idx, entry),
             icon_name="fa6s.list-check",
             subtitle=self._entry_subtitle(entry),
-            grid_margins=(0, 2, 0, 0),
+            grid_margins=(0, 0, 0, 0),
             vertical_spacing=8,
         )
+        self._prep_card(header)
+        self._active_grid_columns = 3
 
         self._add_text_field(
             header_layout,
@@ -470,13 +513,14 @@ class CommandListParamEditor(QWidget):
             big=True,
         )
         self._add_hint(header_layout, 1, 2, ui_text("ui_commandlistparam_command_list_num_hint"))
-        for col in range(3):
+        for col in range(self._grid_columns(3)):
             header_layout.setColumnStretch(col, 1)
         self._editor_layout.addWidget(header)
 
         self._add_section(ui_text("ui_commandlistparam_file_header"))
         file_card = self._make_card()
         file_grid = self._card_grid(file_card)
+        self._active_grid_columns = 2
         self._add_int_field(
             file_grid,
             0,
@@ -495,13 +539,14 @@ class CommandListParamEditor(QWidget):
             ui_text("ui_commandlistparam_notes_hex"),
             self._notes_hex(),
         )
-        file_grid.setColumnStretch(0, 1)
-        file_grid.setColumnStretch(1, 2)
+        for col in range(self._grid_columns(2)):
+            file_grid.setColumnStretch(col, 1)
         self._editor_layout.addWidget(file_card)
 
         self._add_section(ui_text("ui_commandlistparam_text_keys"))
         text_card = self._make_card()
         text_grid = self._card_grid(text_card)
+        self._active_grid_columns = 3
         self._add_hint(text_grid, 0, 0, ui_text("ui_commandlistparam_text_keys_hint"), colspan=3)
         self._add_text_field(
             text_grid,
@@ -527,13 +572,14 @@ class CommandListParamEditor(QWidget):
             ui_text("ui_commandlistparam_input_key"),
             entry.get("input_key", ""),
         )
-        for col in range(3):
+        for col in range(self._grid_columns(3)):
             text_grid.setColumnStretch(col, 1)
         self._editor_layout.addWidget(text_card)
 
         self._add_section(ui_text("ui_commandlistparam_raw_values"))
         raw_card = self._make_card()
         raw_grid = self._card_grid(raw_card)
+        self._active_grid_columns = 3
         row = col = 0
         for key, label_key, min_value, max_value in _NUMERIC_FIELDS:
             if key == "command_list_num":
@@ -552,7 +598,7 @@ class CommandListParamEditor(QWidget):
             if col >= 3:
                 row += 1
                 col = 0
-        for grid_col in range(3):
+        for grid_col in range(self._grid_columns(3)):
             raw_grid.setColumnStretch(grid_col, 1)
         self._editor_layout.addWidget(raw_card)
 
@@ -570,10 +616,12 @@ class CommandListParamEditor(QWidget):
         section_title = getattr(self, "_pending_section_title", None)
         self._pending_section_title = None
         card, grid = make_editor_grid_card(
+            self._editor_widget,
             title=section_title,
             icon_name="fa6s.sliders",
             vertical_spacing=10,
         )
+        self._prep_card(card)
         card._editor_grid = grid
         return card
 
@@ -584,24 +632,68 @@ class CommandListParamEditor(QWidget):
         frame, layout, _label, _hint = make_editor_field_shell(label)
         return frame, layout
 
+    def _is_compact_editor(self) -> bool:
+        if not hasattr(self, "_editor_scroll"):
+            return False
+        return self._editor_scroll.viewport().width() < 780
+
+    def _grid_columns(self, max_columns: int) -> int:
+        width = self._editor_scroll.viewport().width()
+        if width < 780:
+            return 1
+        if width < 960:
+            return min(2, max_columns)
+        return max_columns
+
+    def _field_position(self, row: int, col: int, max_columns: int) -> tuple[int, int]:
+        columns = self._grid_columns(max_columns)
+        logical_index = row * max_columns + col
+        return divmod(logical_index, columns)
+
+    def _field_span(self, col: int, requested: int, max_columns: int) -> int:
+        columns = self._grid_columns(max_columns)
+        return max(1, min(requested, columns - (col % columns)))
+
+    def _prep_card(self, card: QFrame):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(980)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _prep_field_widget(self, frame: QWidget, editor: QWidget):
+        frame.setMinimumWidth(0)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        editor.setMinimumWidth(0)
+        editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+
     def _add_text_field(self, grid, row, col, key, label, value, big=False):
         frame, layout = self._field_shell(label)
         edit = QLineEdit()
         edit.setFixedHeight(36 if big else 30)
         edit.setFont(QFont("Consolas", 16 if big else 13))
         edit.setStyleSheet(ss_input())
+        edit.setMinimumWidth(0)
+        edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         edit.setText(str(value))
+        edit.setCursorPosition(0)
         edit.textChanged.connect(lambda _text, k=key: self._on_text_changed(k))
         layout.addWidget(edit)
-        grid.addWidget(frame, row, col)
+        self._prep_field_widget(frame, edit)
+        mapped_row, mapped_col = self._field_position(row, col, getattr(self, "_active_grid_columns", 3))
+        grid.addWidget(frame, mapped_row, mapped_col)
+        grid.setColumnStretch(mapped_col, 1)
         self._fields[key] = edit
 
     def _add_hint(self, grid, row, col, text, colspan=1):
         hint = QLabel(text)
+        hint.setMinimumWidth(0)
+        hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         hint.setWordWrap(True)
         hint.setFont(QFont("Segoe UI", 9))
         hint.setStyleSheet(ss_dim_label())
-        grid.addWidget(hint, row, col, 1, colspan)
+        max_cols = getattr(self, "_active_grid_columns", 3)
+        mapped_row, mapped_col = self._field_position(row, col, max_cols)
+        grid.addWidget(hint, mapped_row, mapped_col, 1, self._field_span(mapped_col, colspan, max_cols))
 
     def _add_type_field(self, grid, row, col, value: int):
         frame, layout = self._field_shell(ui_text("ui_commandlistparam_move_type"))
@@ -609,6 +701,8 @@ class CommandListParamEditor(QWidget):
         combo.setFixedHeight(36)
         combo.setFont(QFont("Consolas", 13))
         combo.setStyleSheet(ss_input())
+        combo.setMinimumWidth(0)
+        combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         type_values = list(_TYPE_LABEL_KEYS)
         if value not in type_values:
             type_values.append(value)
@@ -618,7 +712,10 @@ class CommandListParamEditor(QWidget):
         combo.setCurrentIndex(max(0, selected))
         combo.currentIndexChanged.connect(self._on_type_changed)
         layout.addWidget(combo)
-        grid.addWidget(frame, row, col)
+        self._prep_field_widget(frame, combo)
+        mapped_row, mapped_col = self._field_position(row, col, getattr(self, "_active_grid_columns", 3))
+        grid.addWidget(frame, mapped_row, mapped_col)
+        grid.setColumnStretch(mapped_col, 1)
         self._type_combo = combo
 
     def _add_int_field(self, grid, row, col, key, label, value, min_value, max_value, big=False):
@@ -629,12 +726,31 @@ class CommandListParamEditor(QWidget):
         edit.setFixedHeight(36 if big else 30)
         edit.setFont(QFont("Consolas", 16 if big else 13))
         edit.setStyleSheet(ss_input())
+        edit.setMinimumWidth(0)
+        edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         edit.setText(str(int(value)))
+        edit.setCursorPosition(0)
         edit.textChanged.connect(self._on_numeric_text_changed)
         edit.editingFinished.connect(lambda k=key, lo=min_value, hi=max_value: self._on_numeric_finished(k, lo, hi))
         layout.addWidget(edit)
-        grid.addWidget(frame, row, col)
+        self._prep_field_widget(frame, edit)
+        mapped_row, mapped_col = self._field_position(row, col, getattr(self, "_active_grid_columns", 3))
+        grid.addWidget(frame, mapped_row, mapped_col)
+        grid.setColumnStretch(mapped_col, 1)
         self._fields[key] = edit
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_idx is not None and self._last_compact is not None:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+
+    def _maybe_rebuild_for_compact(self):
+        if self._current_idx is None or self._loading_detail:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_compact:
+            return
+        self._build_editor(self._current_idx)
 
     def _on_text_changed(self, key: str):
         if self._loading_detail or self._current_idx is None:

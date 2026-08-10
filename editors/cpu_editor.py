@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QFileDialog,
@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -90,6 +91,11 @@ _DEFAULT_ACTION_ATTRS = {
 }
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[:max(1, limit - 3)] + "..."
+
+
 def _clear_layout(layout):
     if layout is None:
         return
@@ -123,6 +129,7 @@ class CpuEditor(QWidget):
         self._catalog = {}
         self._dirty = False
         self._block_changes = False
+        self._last_detail_columns = None
 
         self._build_ui()
 
@@ -177,7 +184,7 @@ class CpuEditor(QWidget):
         main_layout.setSpacing(0)
 
         sidebar = QFrame()
-        sidebar.setFixedWidth(260)
+        sidebar.setFixedWidth(276)
         sidebar.setStyleSheet(ss_sidebar_frame())
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(8, 8, 8, 4)
@@ -247,6 +254,7 @@ class CpuEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
@@ -396,24 +404,32 @@ class CpuEditor(QWidget):
             else item.get("index") == self._current_arcade_index
         )
         btn = QPushButton()
-        btn.setFixedHeight(44)
+        btn.setFixedHeight(50)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(ss_sidebar_btn(selected=selected))
         layout = QVBoxLayout(btn)
         layout.setContentsMargins(10, 3, 10, 3)
         layout.setSpacing(0)
 
-        title = QLabel(item["label"])
+        title_text = item["label"]
+        title = QLabel(_truncate(title_text, 24))
         title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         title.setStyleSheet(ss_main_label())
         title.setMinimumWidth(0)
+        title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        title.setToolTip(title_text)
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(title)
 
-        subtitle = QLabel(item.get("subtitle", ""))
+        subtitle_text = item.get("subtitle", "")
+        subtitle = QLabel(_truncate(subtitle_text, 30))
         subtitle.setFont(QFont("Consolas", 11))
         subtitle.setStyleSheet(ss_dim_label())
         subtitle.setMinimumWidth(0)
+        subtitle.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        subtitle.setToolTip(subtitle_text)
         subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(subtitle)
 
@@ -448,6 +464,25 @@ class CpuEditor(QWidget):
         self._build_arcade_detail(index)
         self._update_action_buttons()
 
+    def _grid_columns(self, max_columns=3):
+        width = self._editor_scroll.viewport().width() if hasattr(self, "_editor_scroll") else self.width()
+        if width < 760:
+            return 1
+        if width < 920:
+            return min(2, max_columns)
+        return max_columns
+
+    def _prep_card(self, card):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(1040)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def _prep_field(self, wrap, widget):
+        wrap.setMinimumWidth(0)
+        wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        widget.setMinimumWidth(0)
+        widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+
     def _build_detail(self, element):
         _clear_layout(self._editor_layout)
         self._fields.clear()
@@ -465,9 +500,11 @@ class CpuEditor(QWidget):
             horizontal_spacing=12,
             vertical_spacing=8,
         )
+        self._prep_card(card)
 
         self._block_changes = True
-        cols = 1 if self.width() < 900 else 2
+        cols = self._grid_columns(3)
+        self._last_detail_columns = cols
         for idx, (key, value) in enumerate(element.attrib.items()):
             field = self._make_field(element, key, value)
             grid.addWidget(field, idx // cols, idx % cols)
@@ -495,10 +532,12 @@ class CpuEditor(QWidget):
             horizontal_spacing=12,
             vertical_spacing=8,
         )
+        self._prep_card(card)
 
         self._block_changes = True
         grid.addWidget(self._make_arcade_name_field(entry), 0, 0)
-        cols = 1 if self.width() < 900 else 2
+        cols = self._grid_columns(3)
+        self._last_detail_columns = cols
         levels = list(entry.get("levels", []))[:ARCADE_CPU_LEVEL_COUNT]
         levels += [0] * (ARCADE_CPU_LEVEL_COUNT - len(levels))
         entry["levels"] = levels
@@ -523,6 +562,7 @@ class CpuEditor(QWidget):
         widget.setFont(QFont("Consolas", 13))
         widget.setStyleSheet(ss_input())
         widget.setCursorPosition(0)
+        self._prep_field(wrap, widget)
         layout.addWidget(widget)
         self._fields["name"] = widget
         return wrap
@@ -539,6 +579,7 @@ class CpuEditor(QWidget):
         widget.setFont(QFont("Consolas", 13))
         widget.setStyleSheet(ss_input())
         widget.setCursorPosition(0)
+        self._prep_field(wrap, widget)
         layout.addWidget(widget)
         self._fields[f"level_{index + 1}"] = widget
         return wrap
@@ -572,8 +613,10 @@ class CpuEditor(QWidget):
                 item.update(self._items[self._current_arcade_index])
                 labels = btn.findChildren(QLabel)
                 if len(labels) >= 2:
-                    labels[0].setText(item["label"])
-                    labels[1].setText(item.get("subtitle", ""))
+                    labels[0].setText(_truncate(item["label"], 24))
+                    labels[0].setToolTip(item["label"])
+                    labels[1].setText(_truncate(item.get("subtitle", ""), 30))
+                    labels[1].setToolTip(item.get("subtitle", ""))
                 break
 
     def _make_field(self, element, key, value):
@@ -602,6 +645,7 @@ class CpuEditor(QWidget):
         widget.setStyleSheet(ss_input())
         if hasattr(widget, "setCursorPosition"):
             widget.setCursorPosition(0)
+        self._prep_field(wrap, widget)
         layout.addWidget(widget)
         self._fields[key] = widget
 
@@ -614,6 +658,22 @@ class CpuEditor(QWidget):
         self._refresh_current_label()
         self._mark_dirty()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._last_detail_columns is None:
+            return
+        columns = self._grid_columns(3)
+        if columns == self._last_detail_columns:
+            return
+        QTimer.singleShot(0, self._rebuild_current_detail_for_width)
+
+    def _rebuild_current_detail_for_width(self):
+        if self._mode == "arcade" and self._current_arcade_index is not None:
+            self._build_arcade_detail(self._current_arcade_index)
+            return
+        if self._current_element is not None:
+            self._build_detail(self._current_element)
+
     def _refresh_current_label(self):
         if self._tree is None or self._current_element is None:
             return
@@ -624,8 +684,10 @@ class CpuEditor(QWidget):
                         old_item.update(item)
                         labels = btn.findChildren(QLabel)
                         if len(labels) >= 2:
-                            labels[0].setText(item["label"])
-                            labels[1].setText(item.get("subtitle", ""))
+                            labels[0].setText(_truncate(item["label"], 24))
+                            labels[0].setToolTip(item["label"])
+                            labels[1].setText(_truncate(item.get("subtitle", ""), 30))
+                            labels[1].setToolTip(item.get("subtitle", ""))
                         break
                 return
 

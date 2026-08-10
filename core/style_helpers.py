@@ -516,11 +516,28 @@ def make_empty_state(parent=None, *, title, text="", icon_name="fa6s.folder-open
     """Create the standard no-selection/no-file card used in editor bodies."""
     from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import QSizePolicy
+    from core.translations import ui_text
+
+    title = str(title)
+    text = str(text or "")
+    no_file_titles = {
+        ui_text("no_file_loaded").casefold(),
+        ui_text("ui_btladjprm_no_file_loaded").casefold(),
+        "no file loaded",
+    }
+    select_entry_text = ui_text("select_entry")
+    if title.casefold() in no_file_titles:
+        icon_name = "fa6s.folder-open"
+    if title == select_entry_text or text == select_entry_text:
+        title = select_entry_text
+        text = ""
+        icon_name = None
 
     card, layout = make_editor_card(parent, margins=(22, 18, 22, 18), spacing=10)
-    card.setMinimumSize(520, 132)
+    card.setMinimumWidth(0)
+    card.setMinimumHeight(132)
     card.setMaximumWidth(620)
-    card.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Maximum)
+    card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
     _row, title_lbl, subtitle_lbl = add_editor_card_title(layout, title, icon_name, text, icon_size=22)
     title_lbl.setStyleSheet(ss_main_label())
     title_lbl.setMinimumHeight(24)

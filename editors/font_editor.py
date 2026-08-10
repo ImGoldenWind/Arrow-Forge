@@ -1,7 +1,7 @@
 import os
 
 from PIL import Image
-from PyQt6.QtCore import QRegularExpression, QRect, Qt
+from PyQt6.QtCore import QRegularExpression, QRect, Qt, QTimer
 from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPixmap, QRegularExpressionValidator
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QTextEdit,
     QVBoxLayout,
@@ -100,6 +101,11 @@ class FontEditor(QWidget):
         self._glyph_size_spin: QSpinBox | None = None
         self._glyph_bold_check: QCheckBox | None = None
         self._glyph_italic_check: QCheckBox | None = None
+        self._last_compact = None
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(80)
+        self._resize_timer.timeout.connect(self._rebuild_for_width)
 
         self._uint32_validator = QRegularExpressionValidator(QRegularExpression(r"\d{0,10}"), self)
 
@@ -191,6 +197,7 @@ class FontEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
@@ -202,6 +209,29 @@ class FontEditor(QWidget):
 
         root.addWidget(main, 1)
         self._show_placeholder(ui_text("ui_font_open_file_to_begin"))
+
+    def _editor_width(self) -> int:
+        return max(0, self._editor_scroll.viewport().width() if hasattr(self, "_editor_scroll") else self.width())
+
+    def _is_compact_editor(self) -> bool:
+        return self._editor_width() < 760
+
+    def _rebuild_for_width(self):
+        compact = self._is_compact_editor()
+        if compact == self._last_compact:
+            return
+        if self._doc is None:
+            return
+        if self._current_idx is not None:
+            self._apply_current_record(show_errors=False)
+            self._build_editor(self._current_idx)
+        else:
+            self._build_overview()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._doc is not None:
+            self._resize_timer.start()
 
     def _do_open(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -443,23 +473,27 @@ class FontEditor(QWidget):
     def _build_glyph_image_card(self, idx: int):
         assert self._doc is not None
         record = self._doc.glyph_records[idx]
+        compact = self._is_compact_editor()
+        self._last_compact = compact
         self._add_section(ui_text("ui_font_glyph_preview_title"))
         card = self._make_card()
         layout = self._card_vbox(card)
 
         body = QWidget()
         body.setStyleSheet(ss_transparent())
-        body_layout = QHBoxLayout(body)
+        body_layout = QVBoxLayout(body) if compact else QHBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.setSpacing(22)
+        body_layout.setSpacing(12 if compact else 22)
 
         left = QWidget()
         left.setStyleSheet(ss_transparent())
+        left.setMinimumWidth(0)
+        left.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(10)
 
-        preview_frame, preview = self._make_preview_surface(220)
+        preview_frame, preview = self._make_preview_surface(190 if compact else 220)
         crop = crop_nfh_glyph_image(self._doc, idx)
         if crop is not None:
             preview.setPixmap(self._pil_to_preview(crop, 300, 130, upscale=True, max_scale=4))
@@ -481,16 +515,22 @@ class FontEditor(QWidget):
 
         controls = QWidget()
         controls.setStyleSheet(ss_transparent())
-        controls.setFixedWidth(240)
+        controls.setMinimumWidth(0)
+        if compact:
+            controls.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        else:
+            controls.setFixedWidth(240)
         controls_layout = QVBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.setSpacing(14)
+        controls_layout.setSpacing(10 if compact else 14)
 
         size_frame, size_layout = self._field_shell(ui_text("ui_font_font_size"))
         self._glyph_size_spin = QSpinBox()
         self._glyph_size_spin.setRange(1, 256)
         self._glyph_size_spin.setValue(max(8, record.atlas_height or 32))
         self._glyph_size_spin.setFixedHeight(34)
+        self._glyph_size_spin.setMinimumWidth(0)
+        self._glyph_size_spin.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._glyph_size_spin.setFont(QFont("Consolas", 11))
         self._glyph_size_spin.setStyleSheet(ss_input())
         size_layout.addWidget(self._glyph_size_spin)
@@ -499,6 +539,8 @@ class FontEditor(QWidget):
         font_frame, font_layout = self._field_shell(ui_text("ui_font_windows_font"))
         self._glyph_font_combo = QFontComboBox()
         self._glyph_font_combo.setFixedHeight(34)
+        self._glyph_font_combo.setMinimumWidth(0)
+        self._glyph_font_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._glyph_font_combo.setFont(QFont("Segoe UI", 10))
         self._glyph_font_combo.setStyleSheet(ss_input())
         font_layout.addWidget(self._glyph_font_combo)
@@ -507,6 +549,8 @@ class FontEditor(QWidget):
         text_frame, text_layout = self._field_shell(ui_text("ui_font_replacement_text"))
         self._glyph_replacement_edit = QLineEdit()
         self._glyph_replacement_edit.setFixedHeight(34)
+        self._glyph_replacement_edit.setMinimumWidth(0)
+        self._glyph_replacement_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._glyph_replacement_edit.setFont(QFont("Segoe UI", 12))
         self._glyph_replacement_edit.setStyleSheet(ss_input())
         self._glyph_replacement_edit.setPlaceholderText(ui_text("ui_font_replacement_placeholder"))
@@ -534,6 +578,8 @@ class FontEditor(QWidget):
 
         apply_btn = self._small_button(ui_text("ui_font_apply_windows_font"), self._apply_windows_font_to_glyph)
         apply_btn.setFixedHeight(38)
+        apply_btn.setMinimumWidth(0)
+        apply_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         controls_layout.addWidget(apply_btn)
         controls_layout.addStretch()
 
@@ -591,6 +637,9 @@ class FontEditor(QWidget):
         card = QFrame()
         card.setObjectName("EditorCard")
         card.setStyleSheet(ss_editor_card())
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(1120)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         return card
 
     def _card_grid(self, card: QFrame) -> QGridLayout:
@@ -622,6 +671,8 @@ class FontEditor(QWidget):
 
     def _field_shell(self, label: str) -> tuple[QWidget, QVBoxLayout]:
         frame, layout, _label, _hint = make_editor_field_shell(label)
+        frame.setMinimumWidth(0)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         return frame, layout
 
     def _add_info(self, grid, row: int, col: int, label: str, value: str, colspan: int = 1):
@@ -679,6 +730,7 @@ class FontEditor(QWidget):
     def _small_button(self, text: str, slot, accent: bool = False) -> QPushButton:
         btn = QPushButton(text)
         btn.setFixedHeight(36)
+        btn.setMinimumWidth(0)
         btn.setFont(QFont("Segoe UI", 10))
         btn.setStyleSheet(ss_btn(accent=accent))
         btn.clicked.connect(slot)

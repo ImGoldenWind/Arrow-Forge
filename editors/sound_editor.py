@@ -484,10 +484,11 @@ class SoundEditor(QWidget):
         top_layout.addWidget(self._save_btn)
 
         self._file_label = QLabel(self.t("no_file_loaded"))
+        self._file_label.setMinimumWidth(0)
+        self._file_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self._file_label.setFont(QFont("Consolas", 12))
         self._file_label.setStyleSheet(ss_file_label())
-        top_layout.addWidget(self._file_label)
-        top_layout.addStretch()
+        top_layout.addWidget(self._file_label, 1)
 
         root_layout.addWidget(top)
 
@@ -536,7 +537,7 @@ class SoundEditor(QWidget):
         self._add_btn.clicked.connect(self._add_new_entry)
         actions_layout.addWidget(self._add_btn, 1)
 
-        self._dup_btn = QPushButton(self.t("btn_duplicate"))
+        self._dup_btn = QPushButton(self.t("btn_dup_short"))
         self._dup_btn.setFixedHeight(28)
         self._dup_btn.setFont(btn_font)
         self._dup_btn.setEnabled(False)
@@ -1012,6 +1013,7 @@ class SoundEditor(QWidget):
         # Header
         hdr = QFrame()
         hdr, hdr_layout = make_editor_card(self._editor_widget, margins=(16, 14, 16, 14), spacing=10)
+        self._prep_card(hdr)
         title = self._entry_label(entry)
         add_editor_card_title(
             hdr_layout,
@@ -1200,6 +1202,7 @@ class SoundEditor(QWidget):
 
     def _make_section(self, title):
         sec, sec_layout = make_editor_card(self._editor_widget, margins=(16, 14, 16, 14), spacing=10)
+        self._prep_card(sec)
         icon_name = "fa6s.sliders"
         if title == self.t("sound_section_playback"):
             icon_name = "fa6s.play"
@@ -1211,12 +1214,20 @@ class SoundEditor(QWidget):
         self._editor_layout.addWidget(sec)
         return sec
 
+    def _prep_card(self, card: QWidget, *, max_width: int = 1120):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(max_width)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+
     def _add_field(self, parent_grid, label, value, key, row=0, col=0, readonly=False):
         frame, f_layout, _label, _hint = make_editor_field_shell(label, label_font_size=11, spacing=2)
+        frame.setMinimumWidth(0)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         ent = QLineEdit(value)
         ent.setFixedHeight(30)
         ent.setMinimumWidth(0)
+        ent.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         ent.setFont(QFont("Consolas", 12))
         ent.setStyleSheet(ss_input())
         ent.setCursorPosition(0)

@@ -5,14 +5,14 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox,
     QSizePolicy,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 
-from core.themes import P
 from core.style_helpers import (
     ss_btn, ss_sep, ss_accent_sep, ss_scrollarea, ss_scrollarea_transparent,
     ss_search, ss_sidebar_btn, ss_input, ss_file_label, ss_transparent,
     ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
+    ss_accent_label, ss_dim_label, ss_main_label,
     make_empty_state, make_editor_field_shell, make_editor_grid_card,
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
@@ -78,6 +78,11 @@ _CHAR_NAMES = {
 _TYPE_ORDER = [1, 2, 3]  # Battle Start, Round Win, Battle Win
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[:max(1, limit - 1)] + "..."
+
+
 class SpeakingEditor(QWidget):
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
@@ -91,6 +96,7 @@ class SpeakingEditor(QWidget):
         self._dirty         = False
         self._selected_pair: tuple[str, str] | None = None
         self._pair_buttons:  list[tuple[QPushButton, str, str]] = []
+        self._last_compact: bool | None = None
         self._build_ui()
 
     # UI construction
@@ -220,6 +226,7 @@ class SpeakingEditor(QWidget):
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
         self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
@@ -290,6 +297,8 @@ class SpeakingEditor(QWidget):
     def _make_pair_button(self, c1: str, c2: str) -> QPushButton:
         btn = QPushButton()
         btn.setFixedHeight(44)
+        btn.setMinimumWidth(0)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(ss_sidebar_btn())
         layout = QVBoxLayout(btn)
@@ -299,19 +308,23 @@ class SpeakingEditor(QWidget):
         n1 = _CHAR_NAMES.get(c1, c1)
         n2 = _CHAR_NAMES.get(c2, c2)
 
-        pair_lbl = QLabel(ui_text("ui_speaking_value_vs_value", p0=n1, p1=n2))
+        pair_text = ui_text("ui_speaking_value_vs_value", p0=n1, p1=n2)
+        pair_lbl = QLabel(_truncate(pair_text, 24))
         pair_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        pair_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
+        pair_lbl.setStyleSheet(ss_main_label())
         pair_lbl.setMinimumWidth(0)
         pair_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        pair_lbl.setToolTip(pair_text)
         pair_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(pair_lbl)
 
-        id_lbl = QLabel(ui_text("ui_sound_value_value_2", p0=c1, p1=c2))
+        id_text = ui_text("ui_sound_value_value_2", p0=c1, p1=c2)
+        id_lbl = QLabel(_truncate(id_text, 28))
         id_lbl.setFont(QFont("Consolas", 10))
-        id_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+        id_lbl.setStyleSheet(ss_dim_label())
         id_lbl.setMinimumWidth(0)
         id_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        id_lbl.setToolTip(id_text)
         id_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(id_lbl)
 
@@ -340,33 +353,68 @@ class SpeakingEditor(QWidget):
 
     # Editor
 
-    def _make_text_field(self, label_text: str, value: str, *, font=None, color=None, height=30):
+    def _is_compact_editor(self) -> bool:
+        if not hasattr(self, "_editor_scroll"):
+            return False
+        return self._editor_scroll.viewport().width() < 780
+
+    def _grid_columns(self, max_columns: int) -> int:
+        width = self._editor_scroll.viewport().width()
+        if width < 780:
+            return 1
+        if width < 1080:
+            return min(2, max_columns)
+        return max_columns
+
+    def _prep_card(self, card: QFrame):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(980)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _prep_field_widget(self, widget: QWidget):
+        widget.setMinimumWidth(0)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return widget
+
+    def _add_editor_card(self, card: QFrame):
+        self._editor_layout.addWidget(card)
+
+    def _field_position(self, index: int, columns: int) -> tuple[int, int]:
+        return divmod(index, max(1, columns))
+
+    def _make_text_field(self, label_text: str, value: str, *, font=None, accent=False, height=30):
         frame, layout, _label, _hint = make_editor_field_shell(label_text)
+        self._prep_field_widget(frame)
         edit = QLineEdit(value)
         edit.setFixedHeight(height)
         edit.setFont(font or QFont("Consolas", 13))
-        edit.setStyleSheet(
-            ss_input()
-            + (f"QLineEdit {{ color: {color}; font-weight: bold; }}" if color else "")
-        )
+        edit.setStyleSheet(ss_input())
         edit.setMinimumWidth(0)
+        edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         edit.setCursorPosition(0)
+        if accent:
+            _label.setStyleSheet(ss_accent_label())
         layout.addWidget(edit)
         return frame, edit
 
     def _build_editor(self, c1: str, c2: str):
         _clear_layout(self._editor_layout)
+        self._last_compact = self._is_compact_editor()
+        columns = self._grid_columns(2)
 
         pair_entries = self._entries_for_pair(c1, c2)
 
         # Character header
         hdr, hdr_grid = make_editor_grid_card(
+            self._editor_widget,
             title=ui_text("ui_speaking_value_vs_value", p0=c1, p1=c2),
             icon_name="fa6s.comments",
             subtitle=ui_text("ui_sound_value_value_2", p0=c1, p1=c2),
             grid_margins=(0, 2, 0, 0),
             vertical_spacing=8,
         )
+        self._prep_card(hdr)
 
         for col, (field, code, label_text) in enumerate([
             ("char1", c1, ui_text("ui_speaking_character_1")),
@@ -375,7 +423,7 @@ class SpeakingEditor(QWidget):
             frame, edit = self._make_text_field(
                 label_text, code,
                 font=QFont("Consolas", 16),
-                color=P['accent'],
+                accent=True,
                 height=36,
             )
 
@@ -384,10 +432,11 @@ class SpeakingEditor(QWidget):
                     self._on_char_changed(_c1, _c2, _field, _edit.text().strip())
             )
 
-            hdr_grid.addWidget(frame, 0, col)
-            hdr_grid.setColumnStretch(col, 1)
+            row, mapped_col = self._field_position(col, columns)
+            hdr_grid.addWidget(frame, row, mapped_col)
+            hdr_grid.setColumnStretch(mapped_col, 1)
 
-        self._editor_layout.addWidget(hdr)
+        self._add_editor_card(hdr)
 
         # Three dialogue cards
         for itype in _TYPE_ORDER:
@@ -396,16 +445,20 @@ class SpeakingEditor(QWidget):
             typed = [(i, e) for i, e in pair_entries if e["interaction_type"] == itype]
 
             card, card_grid = make_editor_grid_card(
+                self._editor_widget,
                 title=type_name,
                 icon_name="fa6s.quote-left",
                 grid_margins=(0, 2, 0, 0),
                 vertical_spacing=8,
             )
+            self._prep_card(card)
 
             if not typed:
                 empty_lbl = QLabel(ui_text("ui_speaking_no_entry_for_this_interaction_type"))
                 empty_lbl.setFont(QFont("Segoe UI", 11))
-                empty_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
+                empty_lbl.setStyleSheet(ss_dim_label())
+                empty_lbl.setMinimumWidth(0)
+                empty_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
                 card_grid.addWidget(empty_lbl, 0, 0)
 
                 add_btn = QPushButton(ui_text("ui_speaking_add_entry"))
@@ -429,16 +482,31 @@ class SpeakingEditor(QWidget):
                                 self._update_entry_field(_idx, _key, text)
                         )
 
-                        card_grid.addWidget(f, row_idx, col_idx)
-                        card_grid.setColumnStretch(col_idx, 1)
+                        field_index = row_idx * 2 + col_idx
+                        row, mapped_col = self._field_position(field_index, columns)
+                        card_grid.addWidget(f, row, mapped_col)
+                        card_grid.setColumnStretch(mapped_col, 1)
 
-            self._editor_layout.addWidget(card)
+            self._add_editor_card(card)
 
         spacer = QWidget()
         spacer.setFixedHeight(20)
         spacer.setStyleSheet(ss_transparent())
         self._editor_layout.addWidget(spacer)
         self._editor_layout.addStretch()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._selected_pair is not None and self._last_compact is not None:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+
+    def _maybe_rebuild_for_compact(self):
+        if self._selected_pair is None:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_compact:
+            return
+        self._build_editor(*self._selected_pair)
 
     # Field update helpers
 

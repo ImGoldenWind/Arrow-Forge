@@ -6,12 +6,15 @@
   "check_updates_on_startup": false,
   "last_update_check": "",
   "recent_tools": [
-    "dlg_sound_test",
-    "dlg_tutorial_param",
-    "dlg_assist",
-    "dlg_dlc_info",
-    "dlg_char_stats",
+    "dlg_char_skill",
     "dlg_char_id",
+    "dlg_char_stats",
+    "dlg_lip_sync",
+    "dlg_command_list_param",
+    "dlg_projectile",
+    "dlg_anmofs",
+    "dlg_movelist",
+    "dlg_costume",
     "dlg_asb_acf",
     "dlg_sound_param",
     "dlg_effect",
@@ -27,6 +30,7 @@
     "dlg_trophy_param",
     "dlg_player_title",
     "dlg_custom_card",
+    "dlg_sound_test",
     "dlg_gallery_param",
     "dlg_custom_default",
     "dlg_dictionary",
@@ -35,6 +39,7 @@
     "dlg_gimmick_dmg",
     "dlg_gimmick",
     "dlg_stage_info",
+    "dlg_tutorial_param",
     "dlg_term_list",
     "dlg_game_text",
     "dlg_guide_char",
@@ -49,22 +54,37 @@
     "dlg_hit_react",
     "dlg_char_const",
     "dlg_cpu_ai",
-    "dlg_projectile",
-    "dlg_command_list_param",
-    "dlg_anmofs",
-    "dlg_lip_sync",
-    "dlg_movelist",
-    "dlg_char_skill",
-    "dlg_costume"
+    "dlg_assist",
+    "dlg_dlc_info"
   ],
-  "recent_tools_on_top": true,
+  "recent_tools_on_top": false,
   "favorite_tools": [],
   "pinned_tools": {},
-  "recent_files_by_tool": {},
+  "recent_files_by_tool": {
+    "dlg_char_stats": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\.ASBR MODDING\\ASBR files\\data\\spc\\duelPlayerParam.xfbin",
+        "name": "duelPlayerParam.xfbin",
+        "opened_at": "2026-08-10T16:54:36+00:00"
+      }
+    ],
+    "dlg_anmofs": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\.ASBR MODDING\\ASBR files\\data\\spc\\7jny01_anmofs.xfbin",
+        "name": "7jny01_anmofs.xfbin",
+        "opened_at": "2026-08-10T16:17:48+00:00"
+      },
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\.ASBR MODDING\\ASBR files\\data\\spc\\7scm02_anmofs.xfbin",
+        "name": "7scm02_anmofs.xfbin",
+        "opened_at": "2026-08-10T16:11:34+00:00"
+      }
+    ]
+  },
   "workspace": {
-    "active_tool_id": "dlg_sound_test",
+    "active_tool_id": "dlg_char_skill",
     "active_file_path": "",
-    "updated_at": "2026-07-18T18:54:48+00:00"
+    "updated_at": "2026-08-10T16:55:01+00:00"
   },
   "restore_workspace_on_startup": false,
   "change_summary_disabled_by_tool": {},

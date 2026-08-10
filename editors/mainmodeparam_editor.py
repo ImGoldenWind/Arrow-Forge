@@ -36,7 +36,10 @@ def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
 
@@ -54,6 +57,8 @@ def _le(value='', width=None):
     w.setFont(QFont("Consolas", 12))
     w.setFixedHeight(28)
     w.setStyleSheet(ss_input())
+    w.setMinimumWidth(0)
+    w.setCursorPosition(0)
     if width:
         w.setFixedWidth(width)
     return w
@@ -65,6 +70,8 @@ def _combo(items, idx=0):
     w.addItems(items)
     w.setCurrentIndex(idx)
     w.setStyleSheet(ss_input())
+    w.setMinimumWidth(0)
+    w.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
     return w
 
 
@@ -105,13 +112,16 @@ class PanelItem(QFrame):
 
     def __init__(self, idx, panel, parent=None):
         super().__init__(parent)
+        self.setObjectName("MainModePanelItem")
         self._idx = idx
         self._update_style(selected=False)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(52)
+        self.setFixedHeight(54)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 4, 8, 4)
+        lay.setContentsMargins(10, 4, 10, 5)
         lay.setSpacing(1)
 
         typ       = panel.get('type', 0)
@@ -122,18 +132,18 @@ class PanelItem(QFrame):
         total_idx = panel.get('total_idx', 0)
         type_name = PANEL_TYPE_NAMES.get(typ, str(typ))
 
-        t = QLabel(ui_text("ui_mainmodeparam_value_value", p0=total_idx, p1=panel_id))
-        t.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
-        t.setText(_truncate(t.text(), 24))
-        t.setToolTip(ui_text("ui_mainmodeparam_value_value", p0=total_idx, p1=panel_id))
+        title_text = ui_text("ui_mainmodeparam_value_value", p0=total_idx, p1=panel_id)
+        t = QLabel(_truncate(title_text, 24))
+        t.setFont(QFont(P.get("font_ui", "Segoe UI"), 11, QFont.Weight.Bold))
+        t.setToolTip(title_text)
         t.setStyleSheet(ss_main_label())
         t.setMinimumWidth(0)
         t.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
-        s = QLabel(ui_text("ui_mainmodeparam_value_vs_value_value", p0=player_id, p1=enemy_id, p2=type_name))
-        s.setFont(QFont("Segoe UI", 10))
-        s.setText(_truncate(s.text(), 28))
-        s.setToolTip(ui_text("ui_mainmodeparam_value_vs_value_value", p0=player_id, p1=enemy_id, p2=type_name))
+        subtitle_text = ui_text("ui_mainmodeparam_value_vs_value_value", p0=player_id, p1=enemy_id, p2=type_name)
+        s = QLabel(_truncate(subtitle_text, 32))
+        s.setFont(QFont(P.get("font_ui", "Segoe UI"), 10))
+        s.setToolTip(subtitle_text)
         s.setStyleSheet(f"color: {tc}; background: transparent;")
         s.setMinimumWidth(0)
         s.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
@@ -152,12 +162,12 @@ class PanelItem(QFrame):
         border = P.get("accent", P["border"]) if selected else "transparent"
         if selected:
             self.setStyleSheet(
-                f"QFrame {{ background: {bg}; border-radius: 6px; border: 1px solid {border}; }}"
+                f"QFrame#MainModePanelItem {{ background: {bg}; border-radius: 6px; border: 1px solid {border}; }}"
             )
         else:
             self.setStyleSheet(
-                f"QFrame {{ background: {bg}; border-radius: 6px; border: 1px solid transparent; }}"
-                f"QFrame:hover {{ background: {hover}; }}"
+                f"QFrame#MainModePanelItem {{ background: {bg}; border-radius: 6px; border: 1px solid transparent; }}"
+                f"QFrame#MainModePanelItem:hover {{ background: {hover}; }}"
             )
 
     def set_selected(self, v):
@@ -185,6 +195,7 @@ class MainModeParamEditor(QWidget):
         self._current  = -1
         self._items    = []
         self._fields   = {}
+        self._last_editor_compact = None
 
         self._sig_done.connect(self._on_load_done)
         self._sig_error.connect(self._on_load_error)
@@ -245,7 +256,7 @@ class MainModeParamEditor(QWidget):
 
         # sidebar
         sidebar = QFrame()
-        sidebar.setFixedWidth(272)
+        sidebar.setFixedWidth(286)
         sidebar.setStyleSheet(ss_sidebar_frame())
         sl = QVBoxLayout(sidebar)
         sl.setContentsMargins(6, 8, 6, 6)
@@ -254,7 +265,7 @@ class MainModeParamEditor(QWidget):
         self._search = QLineEdit()
         self._search.setPlaceholderText(self.t("search_placeholder"))
         self._search.setFixedHeight(32)
-        self._search.setFont(QFont("Segoe UI", 13))
+        self._search.setFont(QFont(P.get("font_ui", "Segoe UI"), 13))
         self._search.setStyleSheet(ss_search())
         self._search.textChanged.connect(self._filter_list)
         sl.addWidget(self._search)
@@ -267,21 +278,21 @@ class MainModeParamEditor(QWidget):
         al.setSpacing(4)
 
         self._add_btn = QPushButton(self.t("btn_new"))
-        self._add_btn.setFont(QFont("Segoe UI", 10))
+        self._add_btn.setFont(QFont(P.get("font_ui", "Segoe UI"), 10))
         self._add_btn.setFixedHeight(28)
         self._add_btn.setEnabled(False)
         self._add_btn.setStyleSheet(ss_btn())
         self._add_btn.clicked.connect(self._add_panel)
 
         self._dup_btn = QPushButton(self.t("btn_duplicate"))
-        self._dup_btn.setFont(QFont("Segoe UI", 10))
+        self._dup_btn.setFont(QFont(P.get("font_ui", "Segoe UI"), 10))
         self._dup_btn.setFixedHeight(28)
         self._dup_btn.setEnabled(False)
         self._dup_btn.setStyleSheet(ss_btn())
         self._dup_btn.clicked.connect(self._duplicate_panel)
 
         self._del_btn = QPushButton(self.t("btn_delete"))
-        self._del_btn.setFont(QFont("Segoe UI", 10))
+        self._del_btn.setFont(QFont(P.get("font_ui", "Segoe UI"), 10))
         self._del_btn.setFixedHeight(28)
         self._del_btn.setEnabled(False)
         self._del_btn.setStyleSheet(ss_btn(danger=True))
@@ -324,8 +335,8 @@ class MainModeParamEditor(QWidget):
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(14, 12, 14, 16)
-        self._editor_layout.setSpacing(10)
+        self._editor_layout.setContentsMargins(12, 12, 12, 16)
+        self._editor_layout.setSpacing(8)
         self._editor_scroll.setWidget(self._editor_widget)
         ml.addWidget(self._editor_scroll, 1)
 
@@ -559,14 +570,82 @@ class MainModeParamEditor(QWidget):
             except (ValueError, TypeError):
                 pass
 
+    def _is_compact_editor(self):
+        if not hasattr(self, "_editor_scroll"):
+            return False
+        return self._editor_scroll.viewport().width() < 780
+
+    def _prep_card(self, card):
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(1040)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return card
+
+    def _prep_summary_field(self, frame, editor):
+        frame.setMinimumWidth(0)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        editor.setMinimumWidth(0)
+        editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+
+    def _summary_field(self, label, value):
+        frame, layout, _label, _hint = make_editor_field_shell(label)
+        edit = QLineEdit(str(value))
+        edit.setReadOnly(True)
+        edit.setFixedHeight(30)
+        edit.setFont(QFont("Consolas", 13))
+        edit.setStyleSheet(ss_input())
+        edit.setCursorPosition(0)
+        self._prep_summary_field(frame, edit)
+        layout.addWidget(edit)
+        return frame
+
+    def _build_header_card(self, panel):
+        panel_id = panel.get('ptr_panel_id', '') or f"Panel {self._current + 1}"
+        typ = int(panel.get('type', 0))
+        type_name = PANEL_TYPE_NAMES.get(typ, str(typ))
+        subtitle = ui_text(
+            "ui_mainmodeparam_value_vs_value_value",
+            p0=panel.get('ptr_player_id', '') or "???",
+            p1=panel.get('ptr_enemy_id', '') or "???",
+            p2=type_name,
+        )
+        card, layout = make_editor_card(self._editor_widget, margins=(16, 14, 16, 14), spacing=10)
+        self._prep_card(card)
+        add_editor_card_title(
+            layout,
+            panel_id,
+            "fa6s.map-location-dot",
+            subtitle=subtitle,
+            icon_size=20,
+        )
+        inner = QWidget(card)
+        inner.setStyleSheet(ss_transparent())
+        grid = QGridLayout(inner)
+        grid.setContentsMargins(0, 4, 0, 0)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(10)
+        columns = 1 if self._is_compact_editor() else 3
+        summary = [
+            (ui_text("ui_mainmodeparam_part_jojo_arc"), panel.get('part', 0)),
+            (ui_text("ui_mainmodeparam_stage_id"), panel.get('ptr_stage_id', '')),
+            (ui_text("ui_mainmodeparam_panel_type"), type_name),
+        ]
+        for idx, (label, value) in enumerate(summary):
+            grid.addWidget(self._summary_field(label, value), idx // columns, idx % columns)
+            grid.setColumnStretch(idx % columns, 1)
+        layout.addWidget(inner)
+        return card
+
     # Form builder
 
     def _build_form(self, panel):
         _clear_layout(self._editor_layout)
         self._fields = {}
-        compact = self._editor_scroll.viewport().width() < 560
+        compact = self._is_compact_editor()
+        self._last_editor_compact = compact
 
         typ = panel.get('type', 0)
+        self._editor_layout.addWidget(self._build_header_card(panel))
 
         # Basic Information
         basic_title = ui_text("ui_mainmodeparam_basic_information")
@@ -668,7 +747,8 @@ class MainModeParamEditor(QWidget):
 
         # Secret Missions
         missions_title = ui_text("ui_mainmodeparam_secret_missions")
-        missions_card, missions_layout = make_editor_card(margins=(16, 14, 16, 16), spacing=10)
+        missions_card, missions_layout = make_editor_card(self._editor_widget, margins=(16, 14, 16, 16), spacing=10)
+        self._prep_card(missions_card)
         add_editor_card_title(missions_layout, missions_title, "fa6s.medal")
         mission_keys = [
             ('m1_cond', 'm1_unk', 'ptr_m1_reward', 'm1_gold'),
@@ -734,9 +814,9 @@ class MainModeParamEditor(QWidget):
         self._editor_layout.addStretch()
         self._editor_scroll.verticalScrollBar().setValue(0)
 
-    @staticmethod
-    def _wrap(layout, title=None, icon_name=None):
-        f, flay = make_editor_card(margins=(16, 14, 16, 16), spacing=10)
+    def _wrap(self, layout, title=None, icon_name=None):
+        f, flay = make_editor_card(self._editor_widget, margins=(16, 14, 16, 16), spacing=10)
+        self._prep_card(f)
         if title:
             add_editor_card_title(flay, title, icon_name)
         inner = QWidget()
@@ -744,3 +824,17 @@ class MainModeParamEditor(QWidget):
         inner.setLayout(layout)
         flay.addWidget(inner)
         return f
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current < 0 or self._last_editor_compact is None:
+            return
+        compact = self._is_compact_editor()
+        if compact == self._last_editor_compact:
+            return
+        self._flush_panel()
+        QTimer.singleShot(0, self._rebuild_current_panel_for_width)
+
+    def _rebuild_current_panel_for_width(self):
+        if 0 <= self._current < len(self._panels):
+            self._build_form(self._panels[self._current])
