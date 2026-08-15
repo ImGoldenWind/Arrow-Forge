@@ -6,7 +6,7 @@ import re
 import threading
 
 from PyQt6.QtWidgets import (
-    QWidget, QFrame, QLabel, QPushButton, QLineEdit, QComboBox,
+    QWidget, QFrame, QLabel, QPushButton, QLineEdit,
     QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QMessageBox,
     QScrollArea, QTextEdit, QSizePolicy, QTableView, QAbstractItemView,
     QHeaderView, QProgressBar,
@@ -26,10 +26,6 @@ from core.style_helpers import (
 from core.editor_file_state import set_file_label, set_file_label_empty
 from core.skeleton import SkeletonBar, SkeletonListRow
 from core.messageinfo_id_map import MessageInfoIdMap
-from core.messageinfo_memory_scanner import (
-    list_processes,
-    scan_process_strings,
-)
 from parsers.messageinfo_parser import (
     parse_messageinfo_xfbin, save_messageinfo_xfbin,
 )
@@ -319,8 +315,6 @@ class _MessageInfoFilterProxy(QSortFilterProxyModel):
 class MessageInfoEditor(QWidget):
     _load_done_signal = pyqtSignal(str, object, int, object)
     _load_error_signal = pyqtSignal(str)
-    _scan_done_signal = pyqtSignal(object, int)
-    _scan_error_signal = pyqtSignal(str)
 
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
@@ -342,8 +336,6 @@ class MessageInfoEditor(QWidget):
         self._entries_table: QTableView | None = None
         self._loading_detail = False
         self._detail_widgets: list[QWidget] = []
-        self._scan_running = False
-        self._capture_active = False
         self._detail_columns = 0
         self._last_compact = None
         self._resize_rebuild_timer = QTimer(self)
@@ -356,14 +348,9 @@ class MessageInfoEditor(QWidget):
         self._entry_search_timer.setSingleShot(True)
         self._entry_search_timer.setInterval(250)
         self._entry_search_timer.timeout.connect(self._do_entry_search)
-        self._capture_timer = QTimer(self)
-        self._capture_timer.setInterval(6000)
-        self._capture_timer.timeout.connect(self._scan_now)
 
         self._load_done_signal.connect(self._on_load_done)
         self._load_error_signal.connect(self._on_load_error)
-        self._scan_done_signal.connect(self._on_scan_done)
-        self._scan_error_signal.connect(self._on_scan_error)
 
         self._build_ui()
 
@@ -405,59 +392,7 @@ class MessageInfoEditor(QWidget):
         self._file_lbl.setStyleSheet(ss_file_label())
         tl.addWidget(self._file_lbl, 1)
 
-        self._process_combo = QComboBox()
-        self._process_combo.setFixedHeight(TOOLBAR_BTN_H)
-        self._process_combo.setFixedWidth(160)
-        self._process_combo.setMinimumWidth(0)
-        self._process_combo.setFont(QFont("Segoe UI", 9))
-        self._process_combo.setStyleSheet(ss_input())
-        self._process_combo.currentIndexChanged.connect(lambda _idx: self._update_capture_buttons())
-        tl.addWidget(self._process_combo)
-
-        self._btn_refresh_processes = QPushButton(ui_text("ui_messageinfo_refresh_processes"))
-        self._btn_refresh_processes.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_refresh_processes.setFixedWidth(82)
-        self._btn_refresh_processes.setFont(QFont("Segoe UI", 9))
-        self._btn_refresh_processes.setStyleSheet(ss_btn())
-        self._btn_refresh_processes.clicked.connect(self._refresh_processes)
-        tl.addWidget(self._btn_refresh_processes)
-
-        self._btn_scan_now = QPushButton(ui_text("ui_messageinfo_scan_now"))
-        self._btn_scan_now.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_scan_now.setFixedWidth(92)
-        self._btn_scan_now.setFont(QFont("Segoe UI", 9))
-        self._btn_scan_now.setStyleSheet(ss_btn())
-        self._btn_scan_now.clicked.connect(self._scan_now)
-        tl.addWidget(self._btn_scan_now)
-
-        self._btn_start_capture = QPushButton(ui_text("ui_messageinfo_start_capture"))
-        self._btn_start_capture.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_start_capture.setFixedWidth(126)
-        self._btn_start_capture.setFont(QFont("Segoe UI", 9))
-        self._btn_start_capture.setStyleSheet(ss_btn(accent=True))
-        self._btn_start_capture.clicked.connect(self._start_capture)
-        tl.addWidget(self._btn_start_capture)
-
-        self._btn_stop_capture = QPushButton(ui_text("ui_messageinfo_stop_capture"))
-        self._btn_stop_capture.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_stop_capture.setFixedWidth(58)
-        self._btn_stop_capture.setFont(QFont("Segoe UI", 9))
-        self._btn_stop_capture.setStyleSheet(ss_btn())
-        self._btn_stop_capture.clicked.connect(self._stop_capture)
-        tl.addWidget(self._btn_stop_capture)
-
-        self._capture_status = QLabel("")
-        self._capture_status.setFont(QFont("Consolas", 10))
-        self._capture_status.setMinimumWidth(0)
-        self._capture_status.setMaximumWidth(190)
-        self._capture_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self._capture_status.setStyleSheet(ss_dim_label())
-        tl.addWidget(self._capture_status)
-
         root.addWidget(top)
-        self._refresh_processes()
-        self._update_capture_buttons()
-        self._update_capture_status()
 
         sep = QFrame()
         sep.setFixedHeight(2)
@@ -1214,120 +1149,6 @@ class MessageInfoEditor(QWidget):
             next_select = len(self._entries) - 1
         self._build_entries_panel(self._current_char_id, select_idx=max(0, next_select))
 
-    # Live String ID capture
-
-    def _refresh_processes(self):
-        selected_pid = self._process_combo.currentData() if hasattr(self, "_process_combo") else None
-        self._process_combo.blockSignals(True)
-        self._process_combo.clear()
-        self._process_combo.addItem(ui_text("ui_messageinfo_select_process"), None)
-        processes = list_processes()
-        if processes:
-            for process in processes:
-                self._process_combo.addItem(process.label, process.pid)
-            if selected_pid is not None:
-                index = self._process_combo.findData(selected_pid)
-                if index >= 0:
-                    self._process_combo.setCurrentIndex(index)
-            else:
-                for index, process in enumerate(processes, start=1):
-                    if process.name.lower() == "asbr.exe":
-                        self._process_combo.setCurrentIndex(index)
-                        break
-        else:
-            self._process_combo.setItemText(0, ui_text("ui_messageinfo_no_processes"))
-        self._process_combo.blockSignals(False)
-        self._update_capture_buttons()
-
-    def _selected_process_pid(self) -> int | None:
-        pid = self._process_combo.currentData()
-        try:
-            return int(pid) if pid is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    def _start_capture(self):
-        if self._selected_process_pid() is None:
-            self._scan_error_signal.emit(ui_text("ui_messageinfo_select_process_first"))
-            return
-        self._capture_active = True
-        self._capture_timer.start()
-        self._update_capture_buttons()
-        self._scan_now()
-
-    def _stop_capture(self):
-        self._capture_active = False
-        self._capture_timer.stop()
-        self._update_capture_buttons()
-        self._update_capture_status()
-
-    def _scan_now(self):
-        if self._scan_running:
-            return
-        pid = self._selected_process_pid()
-        if pid is None:
-            self._scan_error_signal.emit(ui_text("ui_messageinfo_select_process_first"))
-            return
-        self._scan_running = True
-        self._update_capture_buttons()
-        self._capture_status.setText(ui_text("ui_messageinfo_capture_scanning"))
-
-        def worker():
-            try:
-                result = scan_process_strings(pid)
-                changed = self._id_map.merge_strings(result.strings)
-            except Exception as exc:
-                self._scan_error_signal.emit(str(exc))
-                return
-            self._scan_done_signal.emit(result, changed)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_scan_done(self, result, changed: int):
-        self._scan_running = False
-        self._update_capture_buttons()
-        self._refresh_id_map_views()
-        self._capture_status.setText(
-            ui_text(
-                "ui_messageinfo_capture_done",
-                p0=changed,
-                p1=len(result.strings),
-                p2=self._id_map.count(),
-                p3=self._matched_entry_count(),
-            )
-        )
-
-    def _on_scan_error(self, msg: str):
-        self._scan_running = False
-        self._capture_active = False
-        self._capture_timer.stop()
-        self._update_capture_buttons()
-        self._update_capture_status(error=msg)
-        QMessageBox.warning(self, ui_text("ui_messageinfo_capture_error"), msg)
-
-    def _update_capture_buttons(self):
-        pid_selected = self._selected_process_pid() is not None if hasattr(self, "_process_combo") else False
-        self._btn_refresh_processes.setEnabled(not self._scan_running)
-        self._btn_scan_now.setEnabled(pid_selected and not self._scan_running)
-        self._btn_start_capture.setEnabled(pid_selected and not self._capture_active)
-        self._btn_stop_capture.setEnabled(self._capture_active)
-
-    def _update_capture_status(self, error: str = ""):
-        if error:
-            self._capture_status.setText(ui_text("ui_messageinfo_capture_error_short"))
-            self._capture_status.setToolTip(error)
-            return
-        self._capture_status.setToolTip("")
-        state = ui_text("ui_messageinfo_capture_active") if self._capture_active else ui_text("ui_messageinfo_capture_idle")
-        self._capture_status.setText(
-            ui_text(
-                "ui_messageinfo_capture_status",
-                p0=self._id_map.count(),
-                p1=self._matched_entry_count(),
-                p2=state,
-            )
-        )
-
     def _matched_entry_count(self) -> int:
         return sum(
             1
@@ -1356,7 +1177,6 @@ class MessageInfoEditor(QWidget):
                 self._loading_detail = True
                 self._detail_string.setText(self._selected_entry_string_id(entry))
                 self._loading_detail = False
-        self._update_capture_status()
 
     # Dirty state
 
@@ -1474,7 +1294,6 @@ class MessageInfoEditor(QWidget):
             self._select_char(_ALL_STRINGS)
         else:
             self._show_placeholder(ui_text("ui_assist_no_entries_found"))
-        self._update_capture_status()
 
     def _on_save(self):
         if not self._filepath or self._original_data is None:

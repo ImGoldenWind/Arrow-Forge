@@ -6,6 +6,11 @@
   "check_updates_on_startup": false,
   "last_update_check": "",
   "recent_tools": [
+    "dlg_game_text",
+    "dlg_font",
+    "dlg_sound",
+    "dlg_char_viewer",
+    "dlg_texture",
     "dlg_char_skill",
     "dlg_char_id",
     "dlg_char_stats",
@@ -21,9 +26,6 @@
     "dlg_usm_video",
     "dlg_xfbin_audio",
     "dlg_model_viewer",
-    "dlg_font",
-    "dlg_texture",
-    "dlg_sound",
     "dlg_online_mission",
     "dlg_net_result",
     "dlg_net_rank",
@@ -34,14 +36,12 @@
     "dlg_gallery_param",
     "dlg_custom_default",
     "dlg_dictionary",
-    "dlg_char_viewer",
     "dlg_ui_coll",
     "dlg_gimmick_dmg",
     "dlg_gimmick",
     "dlg_stage_info",
     "dlg_tutorial_param",
     "dlg_term_list",
-    "dlg_game_text",
     "dlg_guide_char",
     "dlg_dialogue",
     "dlg_support_item",
@@ -82,9 +82,9 @@
     ]
   },
   "workspace": {
-    "active_tool_id": "dlg_char_skill",
+    "active_tool_id": "dlg_game_text",
     "active_file_path": "",
-    "updated_at": "2026-08-10T16:55:01+00:00"
+    "updated_at": "2026-08-10T17:58:08+00:00"
   },
   "restore_workspace_on_startup": false,
   "change_summary_disabled_by_tool": {},

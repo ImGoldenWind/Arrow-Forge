@@ -10,9 +10,11 @@ Supports:
 
 import struct
 import os
+import tempfile
 import math
 import zlib
 import sys
+from dataclasses import dataclass
 
 _UTF_XOR_SEED = 0x0000655F
 _UTF_XOR_MULT = 0x00004115
@@ -773,15 +775,26 @@ def _align_up(value: int, alignment: int = _ALIGN) -> int:
     return math.ceil(value / alignment) * alignment
 
 
-def build_cpk(entries: list[tuple[str, str, bytes]],
-              align: int = _ALIGN) -> bytes:
+@dataclass(frozen=True)
+class DiskPayload:
+    path: str
+    size: int
+
+    def __len__(self):
+        return self.size
+
+
+def build_cpk(entries: list[tuple[str, str, bytes | DiskPayload]],
+              align: int = _ALIGN, output_path: str | None = None,
+              progress_cb=None, asbr_data_profile: bool = False) -> bytes | None:
     """
     Build a CPK archive from *entries*.
 
     *entries* is a list of (dir_name, file_name, data) tuples.
     All files are stored UNCOMPRESSED (FileSize == ExtractSize).
 
-    Returns the complete CPK as a bytes object.
+    Returns the complete CPK as bytes by default. When *output_path* is
+    supplied, payloads are streamed directly to disk and ``None`` is returned.
     """
     # layout file offsets
     # ContentOffset will be after CPK header section + TOC section (aligned)
@@ -869,7 +882,8 @@ def build_cpk(entries: list[tuple[str, str, bytes]],
     cpk_hdr.add_column("Directories",       _ST_PERROW,   _DT_UINT32)
     cpk_hdr.add_column("Updates",           _ST_PERROW,   _DT_UINT32)
     cpk_hdr.add_column("Version",           _ST_CONSTANT, _DT_UINT16, 7)
-    cpk_hdr.add_column("Revision",          _ST_CONSTANT, _DT_UINT16, 0)
+    cpk_hdr.add_column("Revision",          _ST_CONSTANT, _DT_UINT16,
+                       11 if asbr_data_profile else 0)
     cpk_hdr.add_column("Align",             _ST_PERROW,   _DT_UINT16)
     cpk_hdr.add_column("Sorted",            _ST_PERROW,   _DT_UINT16)
     cpk_hdr.add_column("EnableFileName",    _ST_PERROW,   _DT_UINT16)
@@ -918,7 +932,8 @@ def build_cpk(entries: list[tuple[str, str, bytes]],
         EnableFileName   = 1,
         EID              = 0,
         CpkMode          = 1,
-        Tvers            = "ArrowForge1.0",
+        Tvers            = ("CPKMC2.45.00, DLL3.15.00"
+                            if asbr_data_profile else "ArrowForge1.0"),
         Comment          = "<NULL>",
         Codec            = 0,
         DpkItoc          = 0,
@@ -933,6 +948,38 @@ def build_cpk(entries: list[tuple[str, str, bytes]],
             cpk_header_section_size - len(hdr_section_body))
 
     # Step 5: assemble the output
+    if output_path is not None:
+        with open(output_path, "xb", buffering=1024 * 1024) as output:
+            output.write(hdr_section_body)
+            output.write(toc_section)
+            if output.tell() < content_offset:
+                output.write(b"\x00" * (content_offset - output.tell()))
+
+            total = len(entries)
+            zeroes = b"\x00" * align
+            for i, (_d, file_name, data) in enumerate(entries):
+                expected = content_offset + file_offsets[i]
+                if output.tell() != expected:
+                    raise ValueError(f"CPK offset mismatch at entry {i}")
+                if isinstance(data, DiskPayload):
+                    with open(data.path, "rb", buffering=1024 * 1024) as source:
+                        if asbr_data_profile:
+                            _copy_jojo_encrypted(source, output, len(data))
+                        else:
+                            _copy_stream(source, output, len(data))
+                    progress_name = data.path
+                else:
+                    output.write(crypt_jojo_asbr(data) if asbr_data_profile else data)
+                    progress_name = file_name
+                padding = _align_up(len(data), align) - len(data)
+                if padding:
+                    output.write(zeroes[:padding])
+                if progress_cb:
+                    progress_cb(i + 1, total, progress_name)
+            output.flush()
+            os.fsync(output.fileno())
+        return None
+
     output = bytearray()
     output += hdr_section_body                          # CPK header (2048 b)
     output += toc_section                               # TOC
@@ -943,7 +990,14 @@ def build_cpk(entries: list[tuple[str, str, bytes]],
     # Write file data
     for i, (_d, _f, data) in enumerate(entries):
         assert len(output) == content_offset + file_offsets[i]
-        output += data
+        if isinstance(data, DiskPayload):
+            with open(data.path, "rb") as source:
+                file_data = source.read()
+            if len(file_data) != len(data):
+                raise EOFError("Input file changed while it was being packed")
+            output += crypt_jojo_asbr(file_data) if asbr_data_profile else file_data
+        else:
+            output += crypt_jojo_asbr(data) if asbr_data_profile else data
         # Align
         padded = _align_up(len(data), align)
         if padded > len(data):
@@ -982,6 +1036,97 @@ def collect_files_from_dir(root_dir: str) -> list[tuple[str, str, bytes]]:
                 data = f.read()
             entries.append((rel_dir, fname, data))
     return entries
+
+
+def collect_file_sources_from_dir(root_dir: str) -> list[tuple[str, str, DiskPayload]]:
+    """Collect deterministic disk-backed entries without reading payloads into RAM."""
+    entries = []
+    root_dir = os.path.abspath(root_dir)
+    for dirpath, dirs, filenames in os.walk(root_dir):
+        dirs.sort()
+        for fname in sorted(filenames):
+            fpath = os.path.join(dirpath, fname)
+            rel_dir = os.path.relpath(dirpath, root_dir).replace(os.sep, "/")
+            if rel_dir == ".":
+                rel_dir = ""
+            entries.append((rel_dir, fname, DiskPayload(fpath, os.path.getsize(fpath))))
+    entries.sort(key=lambda item: (item[0].casefold(), item[1].casefold()))
+    return entries
+
+
+def _copy_stream(source, destination, size: int):
+    remaining = size
+    while remaining:
+        chunk = source.read(min(1024 * 1024, remaining))
+        if not chunk:
+            raise EOFError("Input file changed while it was being packed")
+        destination.write(chunk)
+        remaining -= len(chunk)
+
+
+def _copy_jojo_encrypted(source, destination, size: int):
+    """Stream ASBR's symmetric per-file cipher without buffering the file."""
+    def u32(value):
+        return value & 0xFFFFFFFF
+
+    v1 = u32(size * 0x5F64 + 0x5DEC219F)
+    v1 = u32((v1 // 32) ^ u32(v1 * 0x1DA597))
+    v2 = u32((v1 // 32 + 0x85C9C2) ^ u32(v1 * 0x1DA597))
+    v3 = u32((v2 // 32 + 0x10B9384) ^ u32(v2 * 0x1DA597))
+    v4 = u32((v3 // 32 + 0x1915D46) ^ u32(v3 * 0x1DA597))
+    remaining = size
+
+    while remaining:
+        chunk = bytearray(source.read(min(1024 * 1024, remaining)))
+        if not chunk:
+            raise EOFError("Input file changed while it was being packed")
+        pos = 0
+        while pos < len(chunk):
+            v1 = u32(u32(v1 * 2048) ^ v1)
+            v5 = u32(v4 ^ (((v4 // 2048) ^ v1) // 256) ^ v1)
+            key = (v5 & 0xFF, (v5 >> 8) & 0xFF,
+                   (v5 >> 16) & 0xFF, (v5 >> 24) & 0xFF)
+            take = min(4, len(chunk) - pos)
+            for index in range(take):
+                chunk[pos + index] ^= key[index]
+            pos += take
+            v1, v2, v3, v4 = v2, v3, v4, v5
+        destination.write(chunk)
+        remaining -= len(chunk)
+
+
+def build_cpk_from_directory(root_dir: str, destination: str,
+                             progress_cb=None) -> int:
+    """Stream a folder into a verified ASBR data.cpk and atomically commit it."""
+    root_dir = os.path.abspath(root_dir)
+    destination = os.path.abspath(destination)
+    if not os.path.isdir(root_dir):
+        raise NotADirectoryError(root_dir)
+    entries = collect_file_sources_from_dir(root_dir)
+    if not entries:
+        raise ValueError("The input folder contains no files.")
+
+    parent = os.path.dirname(destination) or os.curdir
+    os.makedirs(parent, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".cpkforge-", suffix=".tmp", dir=parent)
+    os.close(fd)
+    os.unlink(temporary)
+    try:
+        build_cpk(entries, output_path=temporary, progress_cb=progress_cb,
+                  asbr_data_profile=True)
+        reader = CpkReader(temporary)
+        if reader.num_files != len(entries):
+            raise ValueError(
+                f"Verification failed: expected {len(entries)} files, found {reader.num_files}")
+        archive_size = os.path.getsize(temporary)
+        for entry in reader.entries:
+            if entry.absolute_offset < 0 or entry.absolute_offset + entry.file_size > archive_size:
+                raise ValueError(f"Verification failed for {entry.path}")
+        os.replace(temporary, destination)
+        return len(entries)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def replace_file_in_entries(existing: list[CpkEntry],
@@ -1054,3 +1199,66 @@ def replace_dir_in_entries(existing: list[CpkEntry],
             result.append((target_cpk_dir, fname, data))
 
     return result
+
+
+def entry_is_in_dir(entry: CpkEntry, cpk_dir: str) -> bool:
+    """Return whether *entry* belongs to the selected directory subtree."""
+    prefix = cpk_dir.rstrip("/")
+    return entry.dir_name == prefix or entry.dir_name.startswith(prefix + "/")
+
+
+def entries_after_delete(existing: list[CpkEntry], target_kind: str,
+                         target_value) -> list[CpkEntry]:
+    """Filter only the explicitly selected file or directory subtree."""
+    if target_kind == "file":
+        cpk_dir, file_name = target_value
+        return [
+            e for e in existing
+            if not (e.dir_name == cpk_dir and e.file_name == file_name)
+        ]
+    if target_kind == "dir":
+        return [e for e in existing if not entry_is_in_dir(e, target_value)]
+    raise ValueError(f"Unknown CPK delete target: {target_kind}")
+
+
+def delete_entries_from_cpk(cpk_path: str, target_kind: str, target_value,
+                            progress_cb=None) -> int:
+    """Atomically rebuild *cpk_path* without the selected archive entries."""
+    reader = CpkReader(cpk_path)
+    kept = entries_after_delete(reader.entries, target_kind, target_value)
+    removed = len(reader.entries) - len(kept)
+    if removed < 1:
+        raise ValueError("The selected item no longer exists in the CPK.")
+    if not kept:
+        raise ValueError("Deletion would leave the CPK empty.")
+
+    entries = []
+    total = len(kept)
+    for i, entry in enumerate(kept):
+        try:
+            data = reader.read_entry_data(entry, decompress=True)
+        except Exception:
+            data = reader.read_entry_data(entry, decompress=False)
+        entries.append((entry.dir_name, entry.file_name, data))
+        if progress_cb:
+            progress_cb(i + 1, total, entry.path)
+
+    cpk_data = build_cpk(entries)
+    parent = os.path.dirname(os.path.abspath(cpk_path))
+    temp_path = None
+    try:
+        fd, temp_path = tempfile.mkstemp(
+            prefix=".arrow-forge-delete-",
+            suffix=".cpk.tmp",
+            dir=parent,
+        )
+        with os.fdopen(fd, "wb") as f:
+            f.write(cpk_data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, cpk_path)
+        temp_path = None
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
+    return removed

@@ -108,6 +108,10 @@ def find_sofdec2_h264_encoder() -> str:
     return find_tool(executable_name("sofdec2encH264"), "sofdec2encH264", subdirs=("Sofdec2", "sofdec2"))
 
 
+def find_cpkforge() -> str:
+    return find_tool("CPKForge.exe", executable_name("cpkforge"), "CPKForge", subdirs=("cpkforge", "CPKForge"))
+
+
 def find_usm_repacker() -> str:
     return find_sofdec2_encoder() or find_tool(
         executable_name("usm_repack"),

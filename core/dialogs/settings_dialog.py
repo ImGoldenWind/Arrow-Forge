@@ -3,7 +3,7 @@ import os
 from PyQt6.QtCore import QSize, Qt, QUrl
 from PyQt6.QtGui import QCursor, QDesktopServices, QFont, QKeySequence
 from PyQt6.QtWidgets import (
-    QButtonGroup, QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QButtonGroup, QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QKeySequenceEdit, QMessageBox, QPushButton, QRadioButton, QScrollArea, QTabWidget,
     QVBoxLayout, QWidget,
 )
@@ -1010,6 +1010,10 @@ class SettingsDialogMixin:
         title_lbl.setStyleSheet(f"color: {P['accent']};")
         bar_layout.addWidget(title_lbl)
         bar_layout.addStretch()
+        support_top_btn = _make_styled_btn(
+            self.t("credit_support_button"), P["accent"], P["secondary"], P["bg_dark"],
+            QFont("Segoe UI", 11, QFont.Weight.Bold), width=132, height=30)
+        bar_layout.addWidget(support_top_btn)
         panel_layout.addWidget(bar)
 
         scroll = QScrollArea()
@@ -1087,6 +1091,99 @@ class SettingsDialogMixin:
 
             return w
 
+        support_status_lbl = QLabel("")
+        support_status_lbl.setFont(QFont("Segoe UI", 9))
+        support_status_lbl.setStyleSheet(f"color: {P['accent']}; border: none; background: transparent;")
+
+        _SUPPORT_WALLETS = (
+            ("ETH", "0xe1413293E921661A4E19445cDE0b34abbfF8a0BE"),
+            ("BTC", "bc1qglgl3zqjqhdkqn0y97thqlhfpg7hxvjg09tlv4"),
+            ("USDT TON", "UQCPKFpimcTqMY1-LivlDS0kITubfjZl6-XpPcf2GnroGxGy"),
+            ("USDT TRC20", "TUHTYAqsUJGnM9ooD459mYFVNLNrnhxxwR"),
+            ("USDT ERC20", "0xe1413293E921661A4E19445cDE0b34abbfF8a0BE"),
+            ("USDT SOL", "9f4JvSqbaWf97f33qKEy81E69CHZGMqYewKXHueLJKAq"),
+        )
+
+        def _copy_support_text(text):
+            QApplication.clipboard().setText(text)
+            support_status_lbl.setText(self.t("credit_support_copied"))
+
+        def _copy_all_support():
+            lines = [self.t("credit_support_note"), ""]
+            lines.extend(f"{name}: {address}" for name, address in _SUPPORT_WALLETS)
+            _copy_support_text("\n".join(lines))
+
+        def _support_entry(name, address):
+            row = QFrame()
+            row.setStyleSheet(
+                f"QFrame {{ background: {P['bg_dark']}; border: 1px solid {P['border']}; "
+                f"border-radius: 6px; }}"
+            )
+            row_l = QHBoxLayout(row)
+            row_l.setContentsMargins(10, 7, 8, 7)
+            row_l.setSpacing(10)
+
+            name_lbl = QLabel(name)
+            name_lbl.setMinimumWidth(86)
+            name_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            name_lbl.setStyleSheet(f"color: {P['accent']}; border: none; background: transparent;")
+            row_l.addWidget(name_lbl)
+
+            address_lbl = QLabel(address)
+            address_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            address_lbl.setFont(QFont("Consolas", 9))
+            address_lbl.setStyleSheet(f"color: {P['text_main']}; border: none; background: transparent;")
+            address_lbl.setWordWrap(True)
+            row_l.addWidget(address_lbl, 1)
+
+            copy_btn = _make_styled_btn(
+                self.t("credit_support_copy"), P["mid"], P["bg_card_hov"], P["secondary"],
+                QFont("Segoe UI", 9), width=96, height=26)
+            copy_btn.clicked.connect(lambda checked=False, value=address: _copy_support_text(value))
+            row_l.addWidget(copy_btn)
+            return row
+
+        def _support_card():
+            support = QFrame()
+            support.setObjectName("supportCreditsCard")
+            support.setStyleSheet(
+                f"QFrame#supportCreditsCard {{ background: {P['bg_panel']}; "
+                f"border: 1px solid {P['accent']}; border-radius: 8px; }}"
+            )
+            support_l = QVBoxLayout(support)
+            support_l.setContentsMargins(18, 16, 18, 16)
+            support_l.setSpacing(10)
+
+            head = QWidget()
+            head.setStyleSheet("background: transparent;")
+            head_l = QHBoxLayout(head)
+            head_l.setContentsMargins(0, 0, 0, 0)
+            head_l.setSpacing(10)
+
+            title = QLabel(self.t("credit_support_title"))
+            title.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
+            title.setStyleSheet(f"color: {P['accent']}; border: none; background: transparent;")
+            head_l.addWidget(title, 1)
+
+            copy_all_btn = _make_styled_btn(
+                self.t("credit_support_button"), P["accent"], P["secondary"], P["bg_dark"],
+                QFont("Segoe UI", 10, QFont.Weight.Bold), width=132, height=30)
+            copy_all_btn.clicked.connect(lambda checked=False: _copy_all_support())
+            head_l.addWidget(copy_all_btn)
+            support_l.addWidget(head)
+
+            note = QLabel(self.t("credit_support_note"))
+            note.setFont(QFont("Segoe UI", 10))
+            note.setWordWrap(True)
+            note.setStyleSheet(f"color: {P['text_sec']}; border: none; background: transparent;")
+            support_l.addWidget(note)
+
+            for name, address in _SUPPORT_WALLETS:
+                support_l.addWidget(_support_entry(name, address))
+
+            support_l.addWidget(support_status_lbl)
+            return support
+
         card_layout.addWidget(_section_label("Author"))
         card_layout.addWidget(_credit_entry("ImGoldenWind", [
             ("GitHub",    "https://github.com/ImGoldenWind"),
@@ -1131,9 +1228,14 @@ class SettingsDialogMixin:
         ], desc="for the inspiration"))
 
         scroll_layout.addWidget(card)
+        support_card = _support_card()
+        scroll_layout.addWidget(support_card)
         scroll_layout.addStretch()
 
         scroll.setWidget(scroll_content)
+        support_top_btn.clicked.connect(
+            lambda checked=False: scroll.verticalScrollBar().setValue(
+                scroll.verticalScrollBar().maximum()))
         panel_layout.addWidget(scroll, 1)
 
         self._show_frame(panel)

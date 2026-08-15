@@ -4,15 +4,16 @@ Embedded inline in the main window via _show_frame(), same as all other tools.
 """
 
 import os
+import subprocess
 
 import qtawesome as qta
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QTreeWidget, QTreeWidgetItem, QLabel, QPushButton, QProgressBar,
     QTextEdit, QFileDialog, QMessageBox, QFrame,
-    QApplication, QSizePolicy,
+    QApplication, QSizePolicy, QMenu,
 )
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import QFont, QColor, QAction
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
 
 from core.themes import P
@@ -108,6 +109,7 @@ class CpkTreeWidget(QTreeWidget):
         self.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)
         self.setRootIsDecorated(True)
         self.setAnimated(True)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
     def populate(self, reader):
         self.clear()
@@ -275,6 +277,13 @@ class CpkEditor(QWidget):
         self._btn_replace_file.setEnabled(False)
         pack_l.addWidget(self._btn_replace_file)
 
+        self._btn_delete = _make_btn(
+            self.t("cpk_btn_delete"), P["mid"], P["bg_card_hov"],
+            P["secondary"], font_btn, w=136, icon_name="fa6s.trash-can")
+        self._btn_delete.clicked.connect(self._delete_selected)
+        self._btn_delete.setEnabled(False)
+        pack_l.addWidget(self._btn_delete)
+
         self._btn_save_as = _make_btn(
             self.t("cpk_btn_save_as"), P["mid"], P["bg_card_hov"],
             P["secondary"], font_btn, w=200, icon_name="fa6s.floppy-disk")
@@ -314,6 +323,7 @@ class CpkEditor(QWidget):
         self._tree = CpkTreeWidget()
         tree_l.addWidget(self._tree, 1)
         self._tree.itemSelectionChanged.connect(self._on_selection_changed)
+        self._tree.customContextMenuRequested.connect(self._show_tree_context_menu)
         top_l.addWidget(tree_card, 1)
 
         splitter.addWidget(top_widget)
@@ -407,7 +417,7 @@ class CpkEditor(QWidget):
 
             for widget in (
                 self._btn_repack_dir, self._btn_replace_file,
-                self._btn_save_as,
+                self._btn_delete, self._btn_save_as,
             ):
                 self._toolbar_bottom_l.addWidget(widget)
             self._toolbar_bottom_l.addStretch()
@@ -420,7 +430,8 @@ class CpkEditor(QWidget):
         for widget in (
             self._btn_open, self._sep_after_open, self._btn_unpack_all,
             self._btn_unpack_dir, self._btn_unpack_file, self._sep_before_pack,
-            self._btn_repack_dir, self._btn_replace_file, self._btn_save_as,
+            self._btn_repack_dir, self._btn_replace_file, self._btn_delete,
+            self._btn_save_as,
         ):
             self._toolbar_top_l.addWidget(widget)
         self._toolbar_top_l.addStretch()
@@ -440,6 +451,7 @@ class CpkEditor(QWidget):
                 (self._btn_unpack_file, "", 38),
                 (self._btn_repack_dir, "", 38),
                 (self._btn_replace_file, "", 38),
+                (self._btn_delete, "", 38),
                 (self._btn_save_as, self.t("ui_texture_save_as"), 136),
             )
             self._path_lbl.setMaximumWidth(140)
@@ -451,6 +463,7 @@ class CpkEditor(QWidget):
                 (self._btn_unpack_file, "", 38),
                 (self._btn_repack_dir, "", 38),
                 (self._btn_replace_file, "", 38),
+                (self._btn_delete, "", 38),
                 (self._btn_save_as, self.t("ui_texture_save_as"), 136),
             )
             self._path_lbl.setMaximumWidth(400)
@@ -464,7 +477,8 @@ class CpkEditor(QWidget):
         widgets = (
             self._btn_open, self._sep_after_open, self._btn_unpack_all,
             self._btn_unpack_dir, self._btn_unpack_file, self._sep_before_pack,
-            self._btn_repack_dir, self._btn_replace_file, self._btn_save_as,
+            self._btn_repack_dir, self._btn_replace_file, self._btn_delete,
+            self._btn_save_as,
         )
         margins = self._toolbar_l.contentsMargins()
         spacing = self._toolbar_top_l.spacing() * (len(widgets) - 1)
@@ -545,6 +559,63 @@ class CpkEditor(QWidget):
         self._btn_unpack_file.setEnabled(has_file)
         self._btn_repack_dir.setEnabled(has_dir)
         self._btn_replace_file.setEnabled(has_file)
+        self._btn_delete.setEnabled(has_dir or has_file)
+
+    def _show_tree_context_menu(self, pos):
+        item = self._tree.itemAt(pos)
+        if item is None or self._reader is None:
+            return
+        self._tree.setCurrentItem(item)
+        action = QAction(self.t("cpk_delete_context"), self)
+        action.triggered.connect(self._delete_selected)
+        menu = QMenu(self._tree)
+        menu.addAction(action)
+        menu.exec(self._tree.viewport().mapToGlobal(pos))
+
+    def _delete_selected(self):
+        if not self._reader or not self._cpk_path:
+            return
+        entry = self._tree.selected_entry()
+        cpk_dir = None if entry else self._tree.selected_dir()
+        if entry:
+            paths = [entry.path]
+            target_kind, target_value = "file", (entry.dir_name, entry.file_name)
+            prompt = self.t("cpk_delete_file_confirm", path=entry.path)
+        elif cpk_dir is not None:
+            prefix = cpk_dir.rstrip("/")
+            paths = [
+                e.path for e in self._reader.entries
+                if e.dir_name == prefix or e.dir_name.startswith(prefix + "/")
+            ]
+            target_kind, target_value = "dir", cpk_dir
+            prompt = self.t("cpk_delete_dir_confirm", path=cpk_dir, count=len(paths))
+        else:
+            return
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(self.t("cpk_delete_confirm_title"))
+        box.setText(prompt)
+        box.setInformativeText(self.t("cpk_delete_irreversible"))
+        box.setDetailedText("\n".join(paths))
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        self._log(self.t(
+            "cpk_log_delete",
+            count=len(paths),
+            target=entry.path if entry else cpk_dir,
+        ))
+        self._start_worker(
+            _task_delete_entries,
+            self._cpk_path,
+            target_kind,
+            target_value,
+        )
 
     # Unpack all
 
@@ -718,7 +789,8 @@ class CpkEditor(QWidget):
     def _set_buttons_enabled(self, enabled: bool):
         for btn in (self._btn_open, self._btn_unpack_all, self._btn_unpack_dir,
                     self._btn_unpack_file, self._btn_repack_dir,
-                    self._btn_replace_file, self._btn_save_as):
+                    self._btn_replace_file, self._btn_delete,
+                    self._btn_save_as):
             btn.setEnabled(enabled and (
                 btn is self._btn_open or self._reader is not None))
         if enabled:
@@ -766,6 +838,33 @@ class CpkEditor(QWidget):
 
 def _task_extract_all(cpk_path: str, out_dir: str,
                       progress_cb=None, log_cb=None):
+    from core.external_tools import find_cpkforge, tool_command
+
+    helper = find_cpkforge()
+    if helper:
+        if log_cb:
+            log_cb(f"Fast unpack via CPKForge: {cpk_path}")
+        if progress_cb:
+            progress_cb(0, 0, os.path.basename(cpk_path))
+        result = subprocess.run(
+            [*tool_command(helper), "unpack", cpk_path, out_dir],
+            capture_output=True,
+            text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode:
+            details = (result.stderr or result.stdout or "").strip()
+            if log_cb:
+                suffix = f": {details}" if details else ""
+                log_cb(
+                    f"[WARN] CPKForge failed with exit code "
+                    f"{result.returncode}{suffix}")
+                log_cb("Falling back to the Python CPK extractor.")
+        else:
+            if log_cb:
+                log_cb(f"Fast unpack completed: {out_dir}")
+            return
+
     from parsers.cpk_parser import CpkReader
     reader = CpkReader(cpk_path)
     total  = reader.num_files
@@ -925,3 +1024,19 @@ def _task_replace_dir(cpk_path: str, cpk_dir: str, src_dir: str,
         progress_cb(total, total, cpk_path)
     if log_cb:
         log_cb(ui_text("cpk_done"))
+
+
+def _task_delete_entries(cpk_path: str, target_kind: str, target_value,
+                         progress_cb=None, log_cb=None):
+    """Rebuild a CPK without one file or directory, then replace it atomically."""
+    from parsers.cpk_parser import delete_entries_from_cpk
+
+    removed = delete_entries_from_cpk(
+        cpk_path,
+        target_kind,
+        target_value,
+        progress_cb=progress_cb,
+    )
+
+    if log_cb:
+        log_cb(ui_text("cpk_delete_done", count=removed))
