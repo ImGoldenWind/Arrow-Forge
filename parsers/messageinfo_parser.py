@@ -29,7 +29,6 @@ Pointer resolution (matches 010 Editor template logic):
 """
 
 import struct
-import zlib
 
 
 # constants
@@ -37,6 +36,23 @@ import zlib
 ENTRY_SIZE   = 40   # bytes per entry record
 HEADER_SIZE  = 16   # version(4) + count(4) + first_pointer(8)
 _INNER_SIZE_FIELD = 4  # leading BE uint32 in payload
+
+
+def _build_crc32_table() -> tuple[int, ...]:
+    poly = 0x04C11DB7
+    table = []
+    for value in range(256):
+        crc = value << 24
+        for _ in range(8):
+            if crc & 0x80000000:
+                crc = ((crc << 1) ^ poly) & 0xFFFFFFFF
+            else:
+                crc = (crc << 1) & 0xFFFFFFFF
+        table.append(crc)
+    return tuple(table)
+
+
+_CRC32_TABLE = _build_crc32_table()
 
 
 # helpers
@@ -82,8 +98,12 @@ def _find_binary_chunk(data: bytes | bytearray):
 
 
 def crc32_of(key: str) -> int:
-    """Compute CRC32 of a UTF-8 encoded string (unsigned 32-bit)."""
-    return zlib.crc32(key.encode("utf-8")) & 0xFFFFFFFF
+    """Compute ASBR's messageInfo CRC32 for a UTF-8 string ID."""
+    crc = 0xFFFFFFFF
+    for byte in key.encode("utf-8"):
+        crc = ((crc << 8) & 0xFFFFFFFF) ^ _CRC32_TABLE[((crc >> 24) ^ byte) & 0xFF]
+    crc ^= 0xFFFFFFFF
+    return int.from_bytes(crc.to_bytes(4, "big"), "little")
 
 
 # public API

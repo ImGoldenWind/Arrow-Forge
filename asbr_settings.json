@@ -7,11 +7,11 @@
   "last_update_check": "",
   "recent_tools": [
     "dlg_game_text",
+    "dlg_char_skill",
     "dlg_font",
     "dlg_sound",
     "dlg_char_viewer",
     "dlg_texture",
-    "dlg_char_skill",
     "dlg_char_id",
     "dlg_char_stats",
     "dlg_lip_sync",
@@ -84,7 +84,7 @@
   "workspace": {
     "active_tool_id": "dlg_game_text",
     "active_file_path": "",
-    "updated_at": "2026-08-10T17:58:08+00:00"
+    "updated_at": "2026-08-15T21:19:37+00:00"
   },
   "restore_workspace_on_startup": false,
   "change_summary_disabled_by_tool": {},
