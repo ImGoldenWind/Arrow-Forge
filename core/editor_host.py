@@ -10,10 +10,13 @@ def _walk_parents(widget):
 
 
 def notify_editor_file_loaded(editor, path: str) -> None:
+    embedded_editor = editor
     for widget in _walk_parents(editor):
+        if getattr(widget, "objectName", lambda: "")() == "EmbeddedToolEditor":
+            embedded_editor = widget
         callback = getattr(widget, "_on_embedded_editor_file_loaded", None)
         if callable(callback):
-            callback(editor, path)
+            callback(embedded_editor, path)
             return
 
 

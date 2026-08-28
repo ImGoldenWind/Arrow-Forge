@@ -1,5 +1,6 @@
 import os
 
+from core.editor_host import notify_editor_file_loaded
 from core.style_helpers import (
     ss_file_label,
     ss_file_label_dirty,
@@ -22,6 +23,8 @@ def set_file_label(label, path_or_name: str | None = None, *, dirty: bool = Fals
     label.setStyleSheet(ss_file_label_dirty() if dirty else ss_file_label_loaded())
     if path_or_name:
         label.setToolTip(path_or_name)
+        if not dirty and os.path.isfile(path_or_name):
+            notify_editor_file_loaded(label, path_or_name)
 
 
 def set_file_label_empty(label, text: str) -> None:

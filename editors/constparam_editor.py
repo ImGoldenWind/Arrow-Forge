@@ -18,6 +18,7 @@ from core.style_helpers import (
     TOOLBAR_H, TOOLBAR_BTN_H,
 )
 from core.editor_file_state import set_file_label
+from core.themes import P
 from parsers.constparam_parser import parse_constparam_xfbin, save_constparam_xfbin
 from core.translations import ui_text
 from core.settings import create_backup_on_open, game_files_dialog_dir

@@ -113,6 +113,35 @@ ship `VGAudioCli.exe`; Linux import/encode features need a custom native
 `VGAudioCli` build or a dotnet-runnable `VGAudioCli.dll` bundle. The app also
 checks `PATH` and the directory set by `ASBR_TOOLS_TOOLS_DIR`.
 
+The bundled Linux `vgmstream-cli` and `rhubarb` executables are x86-64 builds.
+Arrow Forge restores their user execute bit automatically if an archive tool
+removed it. Native tools are always preferred. When only a Windows helper is
+available, Arrow Forge can launch managed `.exe` files with Mono and other
+Windows `.exe` files with Wine. The runtime paths can be overridden with
+`ASBR_TOOLS_DOTNET`, `ASBR_TOOLS_MONO`, and `ASBR_TOOLS_WINE`.
+
+On Debian/Ubuntu, install the common Linux runtimes with:
+
+```bash
+sudo apt install ffmpeg
+# Optional: needed only to use bundled Windows-only helpers.
+sudo apt install mono-runtime wine
+```
+
+Linux helper availability:
+
+| Feature | Preferred helper | Fallback |
+| --- | --- | --- |
+| Game-audio decoding | Bundled `vgmstream-cli` | Native tool from `PATH` |
+| Lip-sync generation | Bundled `rhubarb` | Native tool from `PATH` |
+| Media probing/export | Native `ffmpeg` and `ffprobe` | Bundled `.exe` through Wine |
+| VGAudio conversion | Native `VGAudioCli` or `VGAudioCli.dll` + dotnet | Bundled managed `.exe` through Mono/Wine |
+| Sofdec2 USM encoding | Native-compatible encoder | Bundled encoder through Wine |
+| Fast CPK unpacking | Native `cpkforge` | Bundled managed `.exe` through Mono/Wine, then the Python extractor |
+
+Wine/Mono fallbacks are intended for x86-64 Linux. Native tools from the
+distribution remain the recommended option wherever they are available.
+
 On Linux and macOS, user settings are written outside the application folder:
 `$XDG_CONFIG_HOME/arrow-forge/asbr_settings.json` on Linux, or
 `~/.config/arrow-forge/asbr_settings.json` when `XDG_CONFIG_HOME` is not set.

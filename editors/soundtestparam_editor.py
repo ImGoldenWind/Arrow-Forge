@@ -38,7 +38,6 @@ from core.style_helpers import (
     ss_dim_label,
     ss_field_label,
     ss_file_label,
-    ss_file_label_loaded,
     ss_input,
     ss_panel,
     ss_placeholder,
@@ -58,6 +57,7 @@ from parsers.soundtestparam_parser import (
 )
 from core.translations import ui_text
 from core.settings import create_backup_on_open, game_files_dialog_dir
+from core.editor_file_state import set_file_label
 
 
 _UNLOCK_LABELS = {
@@ -290,8 +290,7 @@ class SoundTestParamEditor(QWidget):
         self._current_idx = None
         self._dirty = False
 
-        self._file_label.setText(os.path.basename(path))
-        self._file_label.setStyleSheet(ss_file_label_loaded())
+        set_file_label(self._file_label, path)
         self._btn_save.setEnabled(True)
         self._add_btn.setEnabled(True)
         self._dup_btn.setEnabled(bool(entries))
@@ -314,8 +313,7 @@ class SoundTestParamEditor(QWidget):
                 self._entries,
             )
             self._dirty = False
-            self._file_label.setText(os.path.basename(self._filepath))
-            self._file_label.setStyleSheet(ss_file_label_loaded())
+            set_file_label(self._file_label, self._filepath)
         except Exception as exc:
             QMessageBox.critical(
                 self,

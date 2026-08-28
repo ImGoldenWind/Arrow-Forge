@@ -304,6 +304,13 @@ class EditorPanelMixin:
     def _on_embedded_editor_file_loaded(self, editor, path: str):
         if editor is not self._embedded_editor:
             return
+        try:
+            observed_path = os.path.normcase(os.path.abspath(path))
+        except (TypeError, ValueError):
+            return
+        if observed_path == getattr(editor, "_host_observed_file_path", ""):
+            return
+        editor._host_observed_file_path = observed_path
         tool_id = getattr(self, "_current_tool_id", None)
         changed = False
         changed = with_recent_file(self._settings, tool_id, path) or changed
@@ -394,7 +401,7 @@ class EditorPanelMixin:
         editor = self._embedded_editor
         if editor is None:
             return ""
-        for attr in ("_filepath", "_xfbin_path", "_path"):
+        for attr in ("_filepath", "_xfbin_path", "_original_path", "_cpk_path", "_path"):
             path = getattr(editor, attr, None)
             if path:
                 return str(path)
@@ -835,16 +842,20 @@ class EditorPanelMixin:
             forget_btn.clicked.connect(self._forget_workspace_file)
             add_widget(forget_btn)
 
-        recent_entries = self._settings.get("recent_files_by_tool", {}).get(tool_id, [])
-        if recent_entries:
+        if self._editor_supports_generic_compare():
+            recent_entries = self._settings.get("recent_files_by_tool", {}).get(tool_id, [])
             recent_menu = QMenu(self)
             recent_menu.setStyleSheet(ss_menu())
-            for entry in recent_entries:
-                path = entry.get("path", "")
-                action = recent_menu.addAction(entry.get("name") or path)
-                action.setToolTip(path)
-                action.setEnabled(bool(path and os.path.isfile(path) and self._embedded_editor_load_path_method()))
-                action.triggered.connect(lambda _checked=False, p=path: self._open_recent_editor_file(p))
+            if recent_entries:
+                for entry in recent_entries:
+                    path = entry.get("path", "")
+                    action = recent_menu.addAction(entry.get("name") or path)
+                    action.setToolTip(path)
+                    action.setEnabled(bool(path and os.path.isfile(path)))
+                    action.triggered.connect(lambda _checked=False, p=path: self._open_recent_editor_file(p))
+            else:
+                empty_action = recent_menu.addAction(self.t("qol_no_recent_files"))
+                empty_action.setEnabled(False)
             recent_btn = _make_styled_btn(
                 self.t("qol_recent_files"), P["mid"], P["bg_card_hov"], P["secondary"],
                 QFont("Segoe UI", 11), width=110, height=30)
@@ -1062,6 +1073,7 @@ class EditorPanelMixin:
         self._embedded_editor = editor
         editor.setObjectName("EmbeddedToolEditor")
         editor._tool_id = getattr(self, "_current_tool_id", None)
+        editor._host_observed_file_path = ""
         install_file_drop(editor)
         polish_widget_tree(editor)
         layout.addWidget(editor, 1)

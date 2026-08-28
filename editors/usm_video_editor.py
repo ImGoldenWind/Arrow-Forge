@@ -37,6 +37,7 @@ from core.external_tools import (
     find_ffprobe,
     find_sofdec2_encoder,
     find_sofdec2_h264_encoder,
+    tool_command,
 )
 from core.settings import create_backup_on_open, game_files_dialog_dir
 from core.style_helpers import (
@@ -434,7 +435,7 @@ class UsmVideoEditor(QWidget):
             raise RuntimeError(self.t("usm_error_ffprobe_missing"))
         result = subprocess.run(
             [
-                ffprobe,
+                *tool_command(ffprobe),
                 "-v",
                 "error",
                 "-print_format",
@@ -843,8 +844,9 @@ class UsmVideoEditor(QWidget):
             self._on_busy_progress("", 0, 0)
 
         process = QProcess(self)
-        process.setProgram(program)
-        process.setArguments(args)
+        command = tool_command(program)
+        process.setProgram(command[0])
+        process.setArguments([*command[1:], *args])
         if workdir:
             process.setWorkingDirectory(workdir)
         process.readyReadStandardError.connect(self._read_process_output)
@@ -1018,8 +1020,9 @@ class UsmVideoEditor(QWidget):
             poster_path,
         ]
         process = QProcess(self)
-        process.setProgram(ffmpeg)
-        process.setArguments(args)
+        command = tool_command(ffmpeg)
+        process.setProgram(command[0])
+        process.setArguments([*command[1:], *args])
         process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         process.finished.connect(lambda exit_code, _status, p=poster_path, t=token: self._on_preview_poster_done(t, p, exit_code == 0))
         self._poster_process = process
