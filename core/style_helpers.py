@@ -1159,7 +1159,7 @@ def ss_settings_tab_widget() -> str:
         f"QTabBar {{ background: transparent; border: none; padding: 0px; min-height: 44px; }}"
         f"QTabBar::tab {{ background: {tab_bg}; color: {tab_text}; "
         f"border: 1px solid {tab_border}; border-bottom: 1px solid {tab_border}; "
-        f"height: 34px; padding: 0px 28px; margin: 8px 5px 0px 5px; min-width: 160px; "
+        f"height: 34px; padding: 0px 18px; margin: 8px 4px 0px 4px; min-width: 108px; "
         f"border-top-left-radius: {tab_radius}; border-top-right-radius: {tab_radius}; "
         f"border-bottom-left-radius: 0px; border-bottom-right-radius: 0px; "
         f"font-family: 'Segoe UI'; font-size: 13px; font-weight: 500; }}"

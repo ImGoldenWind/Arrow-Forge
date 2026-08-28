@@ -26,11 +26,11 @@ DEFAULT_SETTINGS = {
     "recent_tools_on_top": True,
     "favorite_tools": [],
     "pinned_tools": {},
+    "disabled_tools": [],
     "recent_files_by_tool": {},
     "workspace": {},
     "restore_workspace_on_startup": True,
     "change_summary_disabled_by_tool": {},
-    "experimental_generic_compare_copy": False,
     "backup_history": [],
     "animation_card_perspective": True,
     "animation_editor_fade": True,
@@ -66,9 +66,17 @@ def _merge_settings(data: dict) -> dict:
     merged = copy.deepcopy(DEFAULT_SETTINGS)
     merged.update(data)
     merged["shortcuts"] = normalize_shortcut_settings(data.get("shortcuts", {}))
+    disabled_tools = data.get("disabled_tools", [])
+    if not isinstance(disabled_tools, list):
+        disabled_tools = []
+    merged["disabled_tools"] = list(dict.fromkeys(
+        tool_id for tool_id in disabled_tools
+        if isinstance(tool_id, str) and tool_id.strip()
+    ))
     merged["recent_files_by_tool"] = normalise_recent_files_by_tool(data.get("recent_files_by_tool", {}))
     merged["workspace"] = normalise_workspace(data.get("workspace", {}))
     merged["backup_history"] = normalise_backup_history(data.get("backup_history", []))
+    merged.pop("experimental_generic_compare_copy", None)
     if not isinstance(merged.get("change_summary_disabled_by_tool"), dict):
         merged["change_summary_disabled_by_tool"] = {}
     return merged

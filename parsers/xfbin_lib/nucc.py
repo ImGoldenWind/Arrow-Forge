@@ -355,6 +355,47 @@ class NuccChunkBinary(NuccChunk):
         self.binary_data = br_chunk.binary_data
 
 
+class NuccChunkAnm(NuccChunk):
+    def init_data(self, br_chunk, chunk_list, chunk_indices, chunk_refs):
+        from .anm import AnmClump, AnmEntry
+
+        self.data = br_chunk.data
+        self.has_data = True
+        self.frame_count = br_chunk.frame_count
+        self.frame_size = br_chunk.frame_size
+        self.loop_flag = br_chunk.loop_flag
+        initial_chunks = [chunk_list[index] for index in chunk_indices]
+        self.clumps = []
+        for source in br_chunk.clumps:
+            clump = AnmClump()
+            clump.init_data(source, chunk_refs, initial_chunks)
+            self.clumps.append(clump)
+        for relation in br_chunk.coord_parents:
+            indices = (
+                relation.parent_clump_index, relation.parent_coord_index,
+                relation.child_clump_index, relation.child_coord_index,
+            )
+            if -1 in indices:
+                continue
+            try:
+                parent = self.clumps[indices[0]].children[indices[1]]
+                child = self.clumps[indices[2]].children[indices[3]]
+            except IndexError:
+                continue
+            child.parent = parent
+            parent.children.append(child)
+        other_chunks = []
+        for index in br_chunk.other_entry_indices:
+            if 0 <= index < len(chunk_indices):
+                other_chunks.append(chunk_list[chunk_indices[index]])
+        self.entries = []
+        for source in br_chunk.entries:
+            entry = AnmEntry()
+            entry.init_data(source, self.frame_size, self.clumps, other_chunks)
+            self.entries.append(entry)
+        self.other_entries = [entry for entry in self.entries if entry.clump is None]
+
+
 # Populate registry
 _NUCC_REGISTRY.update({
     'NuccChunkNull':    NuccChunkNull,
@@ -367,4 +408,5 @@ _NUCC_REGISTRY.update({
     'NuccChunkModel': NuccChunkModel,
     'NuccChunkMaterial': NuccChunkMaterial,
     'NuccChunkBinary':  NuccChunkBinary,
+    'NuccChunkAnm': NuccChunkAnm,
 })

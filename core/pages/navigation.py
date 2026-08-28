@@ -292,6 +292,13 @@ class NavigationMixin:
         if self._loading:
             self._current_cat = cat_key
             return
+        if cat_key is None:
+            self._current_cat = None
+            self._set_sidebar_buttons_hidden(False)
+            if self._settings.get("show_guide", True):
+                self._show_char_panel()
+            self._show_frame(self._build_empty_catalog_frame(), animate=False)
+            return
         self._current_cat = cat_key
         if cat_key == self._SECRET_CAT:
             self._set_sidebar_buttons_hidden(True)

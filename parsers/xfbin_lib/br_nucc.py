@@ -1,5 +1,6 @@
 from .binary_reader import BrStruct, BinaryReader, Endian, Whence
 from .iterative_dict import IterativeDict
+from .br_anm import BrAnmClump, BrAnmCoordParent, BrAnmEntry
 
 # Dynamic Br type registry
 _BR_REGISTRY: dict = {}
@@ -372,6 +373,25 @@ class BrNuccChunkBinary(BrNuccChunk):
         br.write_bytes(self.nuccChunk.binary_data)
 
 
+class BrNuccChunkAnm(BrNuccChunk):
+    """Animation chunk reader (frame units are hundredths of a frame)."""
+
+    def init_data(self, br: BinaryReader):
+        super().init_data(br)
+        self.frame_count = br.read_uint32()
+        self.frame_size = br.read_uint32() if self.version > 101 else 100
+        self.entry_count = br.read_uint16()
+        self.loop_flag = br.read_uint16()
+        self.clump_count = br.read_uint16()
+        self.other_entry_count = br.read_uint16()
+        self.other_index_count = br.read_uint16()
+        self.coord_count = br.read_uint16()
+        self.clumps = br.read_struct(BrAnmClump, self.clump_count)
+        self.other_entry_indices = br.read_uint32(self.other_entry_count + self.other_index_count)
+        self.coord_parents = br.read_struct(BrAnmCoordParent, self.coord_count)
+        self.entries = br.read_struct(BrAnmEntry, self.entry_count)
+
+
 # Populate registry
 _BR_REGISTRY.update({
     'BrNuccChunkNull':    BrNuccChunkNull,
@@ -384,4 +404,5 @@ _BR_REGISTRY.update({
     'BrNuccChunkMaterial': BrNuccChunkMaterial,
     'BrNuccChunkCoord': BrNuccChunkCoord,
     'BrNuccChunkBinary':  BrNuccChunkBinary,
+    'BrNuccChunkAnm': BrNuccChunkAnm,
 })

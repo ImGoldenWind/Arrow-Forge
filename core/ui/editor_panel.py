@@ -228,6 +228,8 @@ class EditorPanelMixin:
 
         lookup = self._tool_lookup()
         for tool_id, (cat_key, file_hint, _icon_fn, tool_label_key, desc_key) in lookup.items():
+            if not self._is_tool_enabled(tool_id):
+                continue
             commands.append(Command(
                 id=f"tool.{tool_id}",
                 label=self.t(tool_label_key),
@@ -381,8 +383,6 @@ class EditorPanelMixin:
         self._refresh_editor_toolbar_actions()
 
     def _editor_supports_compare(self) -> bool:
-        if not self._settings.get("experimental_generic_compare_copy", False):
-            return False
         return self._editor_supports_detailed_compare() or self._editor_supports_generic_compare()
 
     def _editor_supports_detailed_compare(self) -> bool:

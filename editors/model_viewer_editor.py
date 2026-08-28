@@ -5,17 +5,18 @@ import fnmatch
 import math
 import os
 import re
+import time
 
 import numpy as np
 from PIL import Image
-from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QSize, pyqtSignal
+from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QSize, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDoubleSpinBox, QFileDialog,
+    QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
     QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QScrollArea, QSizePolicy, QSpinBox, QTabWidget, QTextEdit,
-    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QTabWidget, QTextEdit,
+    QToolTip, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from core.editor_file_state import set_file_label, set_file_label_empty
@@ -35,9 +36,9 @@ from core.style_helpers import (
 from core.themes import P
 from core.translations import ui_text
 from parsers.model_xfbin_parser import (
-    MissingTextureRef, ModelXfbinDocument, RenderScene, ResolvedTextureRef,
+    AnimationClip, MissingTextureRef, ModelXfbinDocument, RenderScene, ResolvedTextureRef,
     add_texture_xfbin, available_texture_refs,
-    build_render_scene, load_model_xfbin, material_texture_refs,
+    apply_animation, build_render_scene, load_animation_clips, load_model_xfbin, material_texture_refs,
     save_model_xfbin, set_material_texture,
 )
 from parsers.xfbin_lib import (
@@ -69,6 +70,14 @@ class ModelViewerEditor(QWidget):
         self._current_variant_index = -1
         self._current_palette_index = -1
         self._compact_layout = None
+        self._animation_clips: list[AnimationClip] = []
+        self._animation_cache: dict[tuple[str, ...], list[AnimationClip]] = {}
+        self._animation_playhead = 0.0
+        self._last_animation_tick = 0.0
+        self._animation_timer = QTimer(self)
+        self._animation_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._animation_timer.setInterval(16)
+        self._animation_timer.timeout.connect(self._advance_animation)
         self.setStyleSheet(ss_bg_dark())
         self._build_ui()
 
@@ -194,6 +203,10 @@ class ModelViewerEditor(QWidget):
         self._viewport_frame.set_axis_gizmo(axis_gizmo)
         center_lay.addWidget(self._viewport_frame, 1)
 
+        self._animation_bar = self._build_animation_bar(center)
+        self._animation_bar.hide()
+        center_lay.addWidget(self._animation_bar)
+
         self._empty_hint_card, empty_hint_lay = make_editor_card(center, margins=(14, 12, 14, 12), spacing=8)
         add_editor_card_title(
             empty_hint_lay,
@@ -220,6 +233,50 @@ class ModelViewerEditor(QWidget):
         self._inspector.value_changed.connect(self._on_value_changed)
         main.addWidget(self._inspector, 0)
         self._apply_responsive_layout()
+
+    def _build_animation_bar(self, parent):
+        bar = QFrame(parent)
+        bar.setStyleSheet(ss_bg_panel())
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(7)
+        label = QLabel(self.t("ui_model_viewer_animation"))
+        label.setStyleSheet(ss_dim_label())
+        layout.addWidget(label)
+        self._animation_combo = QComboBox()
+        self._animation_combo.setMinimumWidth(180)
+        self._animation_combo.setMaximumWidth(360)
+        self._animation_combo.setStyleSheet(ss_input())
+        self._animation_combo.currentIndexChanged.connect(self._on_animation_changed)
+        layout.addWidget(self._animation_combo)
+        self._animation_open_btn = QPushButton()
+        self._animation_open_btn.setIcon(_themed_icon("fa6s.folder-open", color=P.get("button_text", P["text_main"]), size=14))
+        self._animation_open_btn.setToolTip(self.t("ui_model_viewer_open_animation"))
+        self._animation_open_btn.setFixedSize(34, 30)
+        self._animation_open_btn.setStyleSheet(ss_btn())
+        self._animation_open_btn.clicked.connect(self._open_animation_dialog)
+        layout.addWidget(self._animation_open_btn)
+        self._animation_play_btn = QPushButton()
+        self._animation_play_btn.setCheckable(True)
+        self._animation_play_btn.setIcon(_themed_icon("fa6s.play", color=P.get("button_text", P["text_main"]), size=14))
+        self._animation_play_btn.setToolTip(self.t("ui_model_viewer_play_animation"))
+        self._animation_play_btn.setFixedSize(34, 30)
+        self._animation_play_btn.setStyleSheet(ss_toggle_btn())
+        self._animation_play_btn.toggled.connect(self._toggle_animation_playback)
+        layout.addWidget(self._animation_play_btn)
+        self._animation_loop = QCheckBox(self.t("ui_model_viewer_loop_animation"))
+        self._animation_loop.setToolTip(self.t("ui_model_viewer_loop_animation_tooltip"))
+        layout.addWidget(self._animation_loop)
+        self._animation_slider = QSlider(Qt.Orientation.Horizontal)
+        self._animation_slider.setRange(0, 0)
+        self._animation_slider.valueChanged.connect(self._on_animation_frame_changed)
+        layout.addWidget(self._animation_slider, 1)
+        self._animation_frame_lbl = QLabel("0 / 0")
+        self._animation_frame_lbl.setMinimumWidth(72)
+        self._animation_frame_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._animation_frame_lbl.setStyleSheet(ss_dim_label())
+        layout.addWidget(self._animation_frame_lbl)
+        return bar
 
     def _tool_btn(self, key: str, accent: bool = False) -> QPushButton:
         text = self.t(key)
@@ -304,6 +361,7 @@ class ModelViewerEditor(QWidget):
             self._doc = load_model_xfbin(variant.path, texture_paths, palette_alias_index=0)
             self._dirty = False
             self._selected = None
+            self._load_animations_for_variant(variant)
             self._rebuild_scene(keep_camera=keep_camera)
             self._sidebar.load(self._doc)
             self._inspector.set_context(self._doc, None)
@@ -715,6 +773,14 @@ class ModelViewerEditor(QWidget):
         if not self._doc:
             return
         self._scene = build_render_scene(self._doc)
+        clip = self._current_animation()
+        if clip:
+            apply_animation(
+                self._scene,
+                clip,
+                self._animation_playhead,
+                skin_meshes=not self._viewport.uses_gpu_skinning(),
+            )
         self._viewport.set_scene(self._scene, reset_camera=not keep_camera)
         self._empty_hint_card.hide()
         self._sync_view_toggles()
@@ -749,6 +815,162 @@ class ModelViewerEditor(QWidget):
                 continue
             texture_paths.append(path)
         return variant.path, self._unique_existing_paths(texture_paths, exclude=variant.path)
+
+    def _animation_paths_for_variant(self, variant: _CharacterModelVariant) -> list[str]:
+        folder = os.path.dirname(variant.path)
+        candidates = []
+        animation_code = self._animation_owner_code(variant)
+        try:
+            filenames = sorted(os.listdir(folder))
+        except OSError:
+            return []
+        for filename in filenames:
+            lowered = filename.lower()
+            if lowered.startswith(animation_code.lower()) and "mot" in lowered and lowered.endswith(".xfbin"):
+                candidates.append(os.path.join(folder, filename))
+        return self._unique_existing_paths(candidates)
+
+    def _animation_owner_code(self, variant: _CharacterModelVariant) -> str:
+        match = re.match(r"^(?P<base>.*?)(?P<variant>\d)(?P<slot>\d)$", variant.code)
+        if not match:
+            return variant.code
+        canonical = f"{match.group('base')}0{match.group('slot')}"
+        canonical_model = os.path.join(os.path.dirname(variant.path), f"{canonical}bod1.xfbin")
+        return canonical if os.path.isfile(canonical_model) else variant.code
+
+    def _load_animations_for_variant(self, variant: _CharacterModelVariant):
+        self._stop_animation()
+        paths = self._animation_paths_for_variant(variant)
+        key = tuple(os.path.abspath(path).lower() for path in paths)
+        try:
+            if key not in self._animation_cache:
+                self._animation_cache[key] = load_animation_clips(paths)
+            self._set_animation_clips(self._animation_cache[key])
+        except Exception as exc:
+            self._set_animation_clips([])
+            self._set_status(self.t("ui_model_viewer_animation_load_failed", p0=str(exc)))
+
+    def _set_animation_clips(self, clips: list[AnimationClip]):
+        previous_name = self._current_animation().name if self._current_animation() else ""
+        self._animation_clips = list(clips)
+        self._animation_combo.blockSignals(True)
+        self._animation_combo.clear()
+        self._animation_combo.addItem(self.t("ui_model_viewer_bind_pose"))
+        for clip in self._animation_clips:
+            self._animation_combo.addItem(clip.name)
+        index = next((i + 1 for i, clip in enumerate(self._animation_clips) if clip.name == previous_name), 0)
+        self._animation_combo.setCurrentIndex(index)
+        self._animation_combo.blockSignals(False)
+        self._animation_bar.setVisible(bool(self._doc))
+        self._animation_combo.setEnabled(bool(self._animation_clips))
+        self._configure_animation_range()
+
+    def _open_animation_dialog(self):
+        if not self._doc:
+            return
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            self.t("ui_model_viewer_open_animation"),
+            os.path.dirname(self._doc.path),
+            self.t("ui_model_viewer_xfbin_filter"),
+        )
+        if not paths:
+            return
+        try:
+            clips = load_animation_clips(paths)
+            self._set_animation_clips(clips)
+            if clips:
+                self._animation_combo.setCurrentIndex(1)
+        except Exception as exc:
+            QMessageBox.critical(self, self.t("dlg_title_error"), str(exc))
+
+    def _current_animation(self) -> AnimationClip | None:
+        index = self._animation_combo.currentIndex() if hasattr(self, "_animation_combo") else -1
+        return self._animation_clips[index - 1] if 1 <= index <= len(self._animation_clips) else None
+
+    def _configure_animation_range(self):
+        clip = self._current_animation()
+        maximum = clip.frame_count if clip else 0
+        self._animation_slider.blockSignals(True)
+        self._animation_slider.setRange(0, maximum)
+        self._animation_slider.setValue(0)
+        self._animation_slider.blockSignals(False)
+        self._animation_frame_lbl.setText(f"0 / {maximum}")
+        self._animation_play_btn.setEnabled(clip is not None)
+        self._animation_playhead = 0.0
+        self._animation_loop.blockSignals(True)
+        self._animation_loop.setChecked(bool(clip and (clip.looped or clip.name.lower().endswith("_lp"))))
+        self._animation_loop.blockSignals(False)
+
+    def _on_animation_changed(self, _index: int):
+        self._stop_animation()
+        self._configure_animation_range()
+        self._on_animation_frame_changed(0)
+
+    def _on_animation_frame_changed(self, frame: int):
+        self._animation_playhead = float(frame)
+        self._render_animation_frame(self._animation_playhead)
+
+    def _render_animation_frame(self, frame: float):
+        clip = self._current_animation()
+        maximum = clip.frame_count if clip else 0
+        frame_text = f"{frame:.1f}" if abs(frame - round(frame)) > 0.01 else str(int(round(frame)))
+        self._animation_frame_lbl.setText(f"{frame_text} / {maximum}")
+        if self._scene:
+            apply_animation(
+                self._scene,
+                clip,
+                frame,
+                skin_meshes=not self._viewport.uses_gpu_skinning(),
+            )
+            self._viewport.geometry_changed()
+
+    def _toggle_animation_playback(self, playing: bool):
+        clip = self._current_animation()
+        if playing and clip:
+            if self._animation_playhead >= clip.frame_count - 1e-6:
+                self._set_animation_playhead(0.0)
+            self._animation_play_btn.setIcon(_themed_icon("fa6s.pause", color=P.get("button_text", P["text_main"]), size=14))
+            self._last_animation_tick = time.perf_counter()
+            self._animation_timer.start()
+        else:
+            self._animation_play_btn.setIcon(_themed_icon("fa6s.play", color=P.get("button_text", P["text_main"]), size=14))
+            self._animation_timer.stop()
+
+    def _stop_animation(self):
+        self._animation_timer.stop()
+        self._last_animation_tick = 0.0
+        if hasattr(self, "_animation_play_btn"):
+            self._animation_play_btn.blockSignals(True)
+            self._animation_play_btn.setChecked(False)
+            self._animation_play_btn.blockSignals(False)
+            self._animation_play_btn.setIcon(_themed_icon("fa6s.play", color=P.get("button_text", P["text_main"]), size=14))
+
+    def _advance_animation(self):
+        clip = self._current_animation()
+        if not clip:
+            self._stop_animation()
+            return
+        now = time.perf_counter()
+        elapsed = max(0.0, min(0.1, now - self._last_animation_tick)) if self._last_animation_tick else (1.0 / 60.0)
+        self._last_animation_tick = now
+        value = self._animation_playhead + elapsed * 60.0
+        maximum = float(self._animation_slider.maximum())
+        if value > maximum:
+            if self._animation_loop.isChecked() and maximum > 0.0:
+                value %= maximum
+            else:
+                self._set_animation_playhead(maximum)
+                self._stop_animation()
+                return
+        self._set_animation_playhead(value)
+
+    def _set_animation_playhead(self, value: float):
+        self._animation_playhead = max(0.0, min(float(self._animation_slider.maximum()), float(value)))
+        self._animation_slider.blockSignals(True)
+        self._animation_slider.setValue(int(round(self._animation_playhead)))
+        self._animation_slider.blockSignals(False)
+        self._render_animation_frame(self._animation_playhead)
 
     def _is_palette_path_for_code(self, path: str, code: str) -> bool:
         return re.match(rf"^{re.escape(code)}col\d+\.xfbin$", os.path.basename(path), re.IGNORECASE) is not None
@@ -1485,6 +1707,15 @@ class _ModelOpenGLViewport(QOpenGLWidget):
         self._selected = None
         self._textures = {}
         self._mesh_lists = {}
+        self._shader_program = 0
+        self._uniform_locations: dict[tuple[int, str], int] = {}
+        self._attribute_locations: dict[tuple[int, str], int] = {}
+        self._bone_matrix_texture = 0
+        self._bone_texture_height = 0
+        self._gpu_skinning_supported = False
+        self._gpu_skinning_ready = False
+        self._hovered_bone = ""
+        self._bone_screen_segments: list[tuple[str, QPointF, QPointF]] = []
         self._last_pos = QPoint()
         self._yaw = 25.0
         self._pitch = 20.0
@@ -1500,14 +1731,25 @@ class _ModelOpenGLViewport(QOpenGLWidget):
         }
         self.setMinimumSize(400, 300)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMouseTracking(True)
 
     def set_scene(self, scene: RenderScene, reset_camera: bool = True):
         self._scene = scene
         self._textures.clear()
         self._mesh_lists.clear()
+        self._bone_texture_height = 0
         if reset_camera:
             self.reset_camera()
         self.update()
+
+    def geometry_changed(self):
+        # Geometry is submitted through client arrays, so animation updates do
+        # not require rebuilding OpenGL display lists or GPU objects.
+        self._mesh_lists.clear()
+        self.update()
+
+    def uses_gpu_skinning(self) -> bool:
+        return bool(self._shader_program and self._gpu_skinning_supported)
 
     def set_selected(self, obj):
         self._selected = obj
@@ -1515,6 +1757,10 @@ class _ModelOpenGLViewport(QOpenGLWidget):
 
     def set_options(self, **options):
         self._options.update(options)
+        if not self._options.get("bones"):
+            self._hovered_bone = ""
+            self._bone_screen_segments = []
+            QToolTip.hideText()
         self.update()
 
     def reset_camera(self):
@@ -1547,8 +1793,11 @@ class _ModelOpenGLViewport(QOpenGLWidget):
             GL.glEnable(GL.GL_BLEND)
             GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
             GL.glShadeModel(GL.GL_SMOOTH)
+            self._shader_program = self._create_asbr_shader(GL)
+            self._gpu_skinning_supported = int(GL.glGetIntegerv(GL.GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS)) > 0
         except Exception:
-            pass
+            self._shader_program = 0
+            self._gpu_skinning_supported = False
 
     def resizeGL(self, w, h):
         try:
@@ -1585,6 +1834,7 @@ class _ModelOpenGLViewport(QOpenGLWidget):
             self._draw_grid(GL)
         if not self._scene:
             return
+        self._prepare_gpu_skinning(GL)
         for mesh in self._scene.meshes:
             if mesh.visible:
                 self._draw_mesh(GL, mesh)
@@ -1597,6 +1847,9 @@ class _ModelOpenGLViewport(QOpenGLWidget):
     def _draw_mesh(self, GL, mesh):
         selected = self._selected is mesh.model_chunk or self._selected is mesh.material_chunk
         textured = self._options["textured"] and isinstance(mesh.texture, ResolvedTextureRef) and mesh.texture.pil_image is not None
+        if self._shader_program:
+            self._draw_mesh_shaded(GL, mesh, textured, selected)
+            return
         if textured:
             tex_id = self._texture_id(GL, mesh.texture)
             GL.glEnable(GL.GL_TEXTURE_2D)
@@ -1616,6 +1869,319 @@ class _ModelOpenGLViewport(QOpenGLWidget):
         GL.glCallList(self._mesh_list(GL, mesh, use_texcoords=textured, use_vertex_colors=use_vertex_colors))
         GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
         GL.glDisable(GL.GL_TEXTURE_2D)
+
+    def _draw_mesh_shaded(self, GL, mesh, textured: bool, selected: bool):
+        program = self._shader_program
+        GL.glUseProgram(program)
+        self._uniform_i(GL, program, "uTextured", int(textured))
+        self._uniform_i(GL, program, "uSelected", int(selected))
+        self._uniform_i(GL, program, "uWireframe", int(self._options["wireframe"]))
+        self._uniform_i(GL, program, "uUseSkinning", int(self._gpu_skinning_ready))
+        self._uniform_i(GL, program, "uBoneMatrices", 4)
+        self._uniform_f(GL, program, "uBoneTextureHeight", float(max(1, len(self._scene.pose_world_matrices) if self._scene else 1)))
+
+        detail = mesh.texture_slots.get("detail")
+        normal = mesh.texture_slots.get("normal")
+        secondary = detail if isinstance(detail, ResolvedTextureRef) else normal
+        secondary_mode = 1 if isinstance(detail, ResolvedTextureRef) else (2 if isinstance(normal, ResolvedTextureRef) else 0)
+        hatching = mesh.texture_slots.get("hatching")
+        specular = mesh.texture_slots.get("specular") or mesh.texture_slots.get("mask")
+        self._bind_shader_texture(GL, program, "uTex0", 0, mesh.texture if textured else None)
+        self._bind_shader_texture(GL, program, "uTex1", 1, secondary if textured else None)
+        self._bind_shader_texture(GL, program, "uHatching", 2, hatching if textured else None)
+        self._bind_shader_texture(GL, program, "uSpecular", 3, specular if textured else None)
+        self._uniform_i(GL, program, "uSecondaryMode", secondary_mode)
+        hatching_mode = 1 if isinstance(hatching, ResolvedTextureRef) and textured else (2 if "NU_hatchingParam" in mesh.material_params else 0)
+        self._uniform_i(GL, program, "uHasHatching", hatching_mode)
+        self._uniform_i(GL, program, "uHasSpecular", int(isinstance(specular, ResolvedTextureRef) and textured))
+
+        lighting = mesh.material_params.get("NU_lightingParam", (0.10,))
+        hatching_param = mesh.material_params.get("NU_hatchingParam", (1.0,))
+        specular_param = mesh.material_params.get("NU_specularParam", (1.0, 2.0))
+        outline_param = mesh.material_params.get("NU_outline0Param", (0.15,))
+        self._uniform_f(GL, program, "uToneOffset", float(lighting[0]) if lighting else 0.1)
+        self._uniform_f(GL, program, "uHatchingStrength", min(1.0, max(0.0, float(hatching_param[0]) / 3.0)) if hatching_param else 0.35)
+        self._uniform_f(GL, program, "uSpecularStrength", min(2.0, max(0.0, float(specular_param[0]) / 3.0)) if specular_param else 0.35)
+        self._uniform_f(GL, program, "uSpecularPower", 10.0 + (float(specular_param[1]) * 7.0 if len(specular_param) > 1 else 14.0))
+
+        self._enable_mesh_arrays(GL, mesh)
+        outline_width = 0.06 + min(0.45, max(0.0, float(outline_param[0]) * 0.22 if outline_param else 0.08))
+        if not self._options["wireframe"]:
+            self._uniform_i(GL, program, "uOutlinePass", 1)
+            self._uniform_f(GL, program, "uOutlineWidth", outline_width)
+            GL.glEnable(GL.GL_CULL_FACE)
+            GL.glCullFace(GL.GL_FRONT)
+            self._draw_mesh_arrays(GL, mesh)
+
+        self._uniform_i(GL, program, "uOutlinePass", 0)
+        self._uniform_f(GL, program, "uOutlineWidth", 0.0)
+        if self._options["culling"] or mesh.cull_mode in (1028, 1029):
+            GL.glEnable(GL.GL_CULL_FACE)
+            GL.glCullFace(GL.GL_BACK)
+        else:
+            GL.glDisable(GL.GL_CULL_FACE)
+        GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_LINE if self._options["wireframe"] else GL.GL_FILL)
+        self._draw_mesh_arrays(GL, mesh)
+        GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
+        self._disable_mesh_arrays(GL)
+        for unit in range(4):
+            GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+        GL.glActiveTexture(GL.GL_TEXTURE0)
+        GL.glUseProgram(0)
+
+    def _enable_mesh_arrays(self, GL, mesh):
+        GL.glEnableClientState(GL.GL_VERTEX_ARRAY)
+        vertices = mesh.gpu_bind_vertices if self._gpu_skinning_ready else mesh.vertices
+        normals = mesh.gpu_bind_normals if self._gpu_skinning_ready else mesh.normals
+        GL.glVertexPointer(3, GL.GL_FLOAT, 0, np.ascontiguousarray(vertices, dtype=np.float32))
+        if normals is not None:
+            GL.glEnableClientState(GL.GL_NORMAL_ARRAY)
+            GL.glNormalPointer(GL.GL_FLOAT, 0, np.ascontiguousarray(normals, dtype=np.float32))
+        if mesh.uvs is not None:
+            GL.glClientActiveTexture(GL.GL_TEXTURE0)
+            GL.glEnableClientState(GL.GL_TEXTURE_COORD_ARRAY)
+            GL.glTexCoordPointer(2, GL.GL_FLOAT, 0, np.ascontiguousarray(mesh.uvs, dtype=np.float32))
+            GL.glClientActiveTexture(GL.GL_TEXTURE1)
+            GL.glEnableClientState(GL.GL_TEXTURE_COORD_ARRAY)
+            detail_uvs = mesh.uvs2 if mesh.uvs2 is not None else mesh.uvs
+            GL.glTexCoordPointer(2, GL.GL_FLOAT, 0, np.ascontiguousarray(detail_uvs, dtype=np.float32))
+        if mesh.colors is not None and mesh.colors.shape[1] >= 4:
+            GL.glEnableClientState(GL.GL_COLOR_ARRAY)
+            GL.glColorPointer(4, GL.GL_FLOAT, 0, np.ascontiguousarray(mesh.colors[:, :4], dtype=np.float32))
+        else:
+            GL.glColor4f(1.0, 1.0, 1.0, 1.0)
+        if self._gpu_skinning_ready:
+            ids_location = self._attribute_location(GL, self._shader_program, "aBoneIds")
+            weights_location = self._attribute_location(GL, self._shader_program, "aBoneWeights")
+            if ids_location >= 0:
+                GL.glEnableVertexAttribArray(ids_location)
+                GL.glVertexAttribPointer(ids_location, 4, GL.GL_FLOAT, False, 0, mesh.gpu_bone_ids)
+            if weights_location >= 0:
+                GL.glEnableVertexAttribArray(weights_location)
+                GL.glVertexAttribPointer(weights_location, 4, GL.GL_FLOAT, False, 0, mesh.gpu_bone_weights)
+
+    def _disable_mesh_arrays(self, GL):
+        GL.glDisableClientState(GL.GL_VERTEX_ARRAY)
+        GL.glDisableClientState(GL.GL_NORMAL_ARRAY)
+        GL.glDisableClientState(GL.GL_COLOR_ARRAY)
+        GL.glClientActiveTexture(GL.GL_TEXTURE1)
+        GL.glDisableClientState(GL.GL_TEXTURE_COORD_ARRAY)
+        GL.glClientActiveTexture(GL.GL_TEXTURE0)
+        GL.glDisableClientState(GL.GL_TEXTURE_COORD_ARRAY)
+        for name in ("aBoneIds", "aBoneWeights"):
+            location = self._attribute_location(GL, self._shader_program, name) if self._shader_program else -1
+            if location >= 0:
+                GL.glDisableVertexAttribArray(location)
+
+    def _draw_mesh_arrays(self, GL, mesh):
+        faces = np.ascontiguousarray(mesh.faces, dtype=np.uint32)
+        if faces.size:
+            GL.glDrawElements(GL.GL_TRIANGLES, int(faces.size), GL.GL_UNSIGNED_INT, faces)
+
+    def _bind_shader_texture(self, GL, program, uniform, unit, ref):
+        GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
+        if isinstance(ref, ResolvedTextureRef) and ref.pil_image is not None:
+            GL.glBindTexture(GL.GL_TEXTURE_2D, self._texture_id(GL, ref))
+        else:
+            GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+        self._uniform_i(GL, program, uniform, unit)
+
+    def _prepare_gpu_skinning(self, GL):
+        self._gpu_skinning_ready = False
+        if not (self._scene and self.uses_gpu_skinning() and self._scene.pose_world_matrices):
+            return
+        try:
+            pose = np.stack(self._scene.pose_world_matrices).astype(np.float32, copy=False)
+            inverse_bind = np.stack(self._scene.inverse_bind_matrices).astype(np.float32, copy=False)
+            skin = np.matmul(pose, inverse_bind)
+            conversion = np.array([
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, -1.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ], dtype=np.float32)
+            inverse_conversion = np.array([
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ], dtype=np.float32)
+            view_skin = np.matmul(np.matmul(conversion[None, :, :], skin), inverse_conversion[None, :, :])
+            data = np.ascontiguousarray(view_skin, dtype=np.float32)
+            if not self._bone_matrix_texture:
+                self._bone_matrix_texture = GL.glGenTextures(1)
+            GL.glActiveTexture(GL.GL_TEXTURE4)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, self._bone_matrix_texture)
+            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST)
+            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST)
+            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
+            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
+            if self._bone_texture_height != len(data):
+                GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA32F, 4, len(data), 0, GL.GL_RGBA, GL.GL_FLOAT, data)
+                self._bone_texture_height = len(data)
+            else:
+                GL.glTexSubImage2D(GL.GL_TEXTURE_2D, 0, 0, 0, 4, len(data), GL.GL_RGBA, GL.GL_FLOAT, data)
+            GL.glActiveTexture(GL.GL_TEXTURE0)
+            self._gpu_skinning_ready = True
+        except Exception:
+            self._gpu_skinning_supported = False
+            self._gpu_skinning_ready = False
+
+    def _uniform_i(self, GL, program, name, value):
+        location = self._uniform_location(GL, program, name)
+        if location >= 0:
+            GL.glUniform1i(location, int(value))
+
+    def _uniform_f(self, GL, program, name, value):
+        location = self._uniform_location(GL, program, name)
+        if location >= 0:
+            GL.glUniform1f(location, float(value))
+
+    def _uniform_location(self, GL, program: int, name: str) -> int:
+        key = (int(program), name)
+        if key not in self._uniform_locations:
+            self._uniform_locations[key] = int(GL.glGetUniformLocation(program, name))
+        return self._uniform_locations[key]
+
+    def _attribute_location(self, GL, program: int, name: str) -> int:
+        key = (int(program), name)
+        if key not in self._attribute_locations:
+            self._attribute_locations[key] = int(GL.glGetAttribLocation(program, name))
+        return self._attribute_locations[key]
+
+    def _create_asbr_shader(self, GL):
+        from OpenGL.GL import shaders
+        vertex_source = r"""
+            #version 120
+            attribute vec4 aBoneIds;
+            attribute vec4 aBoneWeights;
+            uniform sampler2D uBoneMatrices;
+            uniform float uBoneTextureHeight;
+            uniform int uUseSkinning;
+            uniform int uOutlinePass;
+            uniform float uOutlineWidth;
+            varying vec2 vUv;
+            varying vec2 vUv1;
+            varying vec4 vColor;
+            varying vec3 vNormal;
+            varying vec3 vView;
+            varying vec3 vEyePos;
+            mat4 boneMatrix(float boneIndex) {
+                float y = (boneIndex + 0.5) / uBoneTextureHeight;
+                vec4 r0 = texture2D(uBoneMatrices, vec2(0.125, y));
+                vec4 r1 = texture2D(uBoneMatrices, vec2(0.375, y));
+                vec4 r2 = texture2D(uBoneMatrices, vec2(0.625, y));
+                vec4 r3 = texture2D(uBoneMatrices, vec2(0.875, y));
+                return mat4(
+                    r0.x, r1.x, r2.x, r3.x,
+                    r0.y, r1.y, r2.y, r3.y,
+                    r0.z, r1.z, r2.z, r3.z,
+                    r0.w, r1.w, r2.w, r3.w
+                );
+            }
+            void main() {
+                mat4 skin = mat4(1.0);
+                float totalWeight = dot(aBoneWeights, vec4(1.0));
+                if (uUseSkinning == 1 && totalWeight > 0.0001) {
+                    skin = boneMatrix(aBoneIds.x) * aBoneWeights.x
+                         + boneMatrix(aBoneIds.y) * aBoneWeights.y
+                         + boneMatrix(aBoneIds.z) * aBoneWeights.z
+                         + boneMatrix(aBoneIds.w) * aBoneWeights.w;
+                }
+                vec4 position = skin * gl_Vertex;
+                vec3 skinnedNormal = normalize(mat3(skin) * gl_Normal);
+                if (uOutlinePass == 1) position.xyz += skinnedNormal * uOutlineWidth;
+                vec4 eyePosition = gl_ModelViewMatrix * position;
+                gl_Position = gl_ProjectionMatrix * eyePosition;
+                vUv = gl_MultiTexCoord0.xy;
+                vUv1 = gl_MultiTexCoord1.xy;
+                vColor = gl_Color;
+                vNormal = normalize(gl_NormalMatrix * skinnedNormal);
+                vView = normalize(-eyePosition.xyz);
+                vEyePos = eyePosition.xyz;
+            }
+        """
+        fragment_source = r"""
+            #version 120
+            uniform sampler2D uTex0;
+            uniform sampler2D uTex1;
+            uniform sampler2D uHatching;
+            uniform sampler2D uSpecular;
+            uniform int uTextured;
+            uniform int uSelected;
+            uniform int uOutlinePass;
+            uniform int uSecondaryMode;
+            uniform int uHasHatching;
+            uniform int uHasSpecular;
+            uniform float uToneOffset;
+            uniform float uHatchingStrength;
+            uniform float uSpecularStrength;
+            uniform float uSpecularPower;
+            varying vec2 vUv;
+            varying vec2 vUv1;
+            varying vec4 vColor;
+            varying vec3 vNormal;
+            varying vec3 vView;
+            varying vec3 vEyePos;
+            void main() {
+                if (uOutlinePass == 1) {
+                    gl_FragColor = vec4(0.018, 0.014, 0.025, 1.0);
+                    return;
+                }
+                vec4 base = uTextured == 1 ? texture2D(uTex0, vUv) : vec4(0.62, 0.65, 0.72, 1.0);
+                base *= vColor;
+                if (uSecondaryMode == 1) {
+                    vec4 detail = texture2D(uTex1, vUv1);
+                    base.rgb = mix(base.rgb, detail.rgb, detail.a);
+                }
+                if (base.a < 0.035) discard;
+                vec3 normal = normalize(vNormal);
+                if (uSecondaryMode == 2) {
+                    vec3 mapNormal = texture2D(uTex1, vUv).xyz * 2.0 - 1.0;
+                    vec3 dp1 = dFdx(vEyePos);
+                    vec3 dp2 = dFdy(vEyePos);
+                    vec2 duv1 = dFdx(vUv);
+                    vec2 duv2 = dFdy(vUv);
+                    vec3 tangent = normalize(dp1 * duv2.y - dp2 * duv1.y);
+                    vec3 bitangent = normalize(-dp1 * duv2.x + dp2 * duv1.x);
+                    normal = normalize(mat3(tangent, bitangent, normal) * mapNormal);
+                }
+                vec3 lightDir = normalize(vec3(-0.38, 0.62, 0.69));
+                float diffuse = dot(normal, lightDir) + uToneOffset;
+                float midBand = smoothstep(-0.16, 0.02, diffuse);
+                float lightBand = smoothstep(0.38, 0.52, diffuse);
+                float toon = mix(0.42, 0.72, midBand) + 0.28 * lightBand;
+                if (uHasHatching != 0) {
+                    float hatch = texture2D(uHatching, vUv * 2.0).r;
+                    if (uHasHatching == 2) {
+                        vec2 pixel = gl_FragCoord.xy;
+                        float phaseA = fract(dot(pixel, normalize(vec2(0.86, 0.52))) / 5.2);
+                        float phaseB = fract(dot(pixel, normalize(vec2(-0.68, 0.73))) / 7.4);
+                        float distanceA = min(phaseA, 1.0 - phaseA);
+                        float distanceB = min(phaseB, 1.0 - phaseB);
+                        float lineA = 1.0 - smoothstep(0.025, 0.085, distanceA);
+                        float lineB = 1.0 - smoothstep(0.018, 0.068, distanceB);
+                        float deepShadow = 1.0 - smoothstep(-0.18, 0.12, diffuse);
+                        float ink = clamp(lineA * 0.72 + lineB * 0.48 * deepShadow, 0.0, 1.0);
+                        hatch = 1.0 - ink;
+                    }
+                    toon *= mix(1.0, 0.58 + hatch * 0.42, uHatchingStrength * (1.0 - lightBand));
+                }
+                vec3 halfVector = normalize(lightDir + normalize(vView));
+                float spec = pow(max(dot(normal, halfVector), 0.0), uSpecularPower) * uSpecularStrength;
+                if (uHasSpecular == 1) spec *= texture2D(uSpecular, vUv).r;
+                vec3 color = base.rgb * toon + vec3(spec);
+                float rim = pow(1.0 - abs(dot(normal, normalize(vView))), 3.0);
+                color *= 1.0 - rim * 0.22;
+                if (uSelected == 1) color = mix(color, vec3(0.36, 0.62, 1.0), 0.28);
+                gl_FragColor = vec4(color, base.a);
+            }
+        """
+        return shaders.compileProgram(
+            shaders.compileShader(vertex_source, GL.GL_VERTEX_SHADER),
+            shaders.compileShader(fragment_source, GL.GL_FRAGMENT_SHADER),
+        )
 
     def _mesh_list(self, GL, mesh, *, use_texcoords: bool, use_vertex_colors: bool):
         key = (id(mesh), use_texcoords, use_vertex_colors)
@@ -1674,13 +2240,77 @@ class _ModelOpenGLViewport(QOpenGLWidget):
     def _draw_bones(self, GL):
         if not self._scene:
             return
+        self._update_bone_screen_segments(GL)
+        depth_enabled = bool(GL.glIsEnabled(GL.GL_DEPTH_TEST))
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        GL.glDisable(GL.GL_TEXTURE_2D)
         color = QColor(P["accent"])
         GL.glColor4f(color.redF(), color.greenF(), color.blueF(), 0.85)
+        GL.glLineWidth(3.0)
         GL.glBegin(GL.GL_LINES)
-        for _, start, end in self._scene.bones:
+        for name, start, end in self._scene.bones:
+            if name == self._hovered_bone:
+                continue
             GL.glVertex3f(*[float(x) for x in start])
             GL.glVertex3f(*[float(x) for x in end])
         GL.glEnd()
+        GL.glPointSize(6.0)
+        GL.glBegin(GL.GL_POINTS)
+        for _, _, end in self._scene.bones:
+            GL.glVertex3f(*[float(x) for x in end])
+        GL.glEnd()
+        if self._hovered_bone:
+            highlight = QColor(P.get("warning", "#ffd166"))
+            GL.glColor4f(highlight.redF(), highlight.greenF(), highlight.blueF(), 1.0)
+            GL.glLineWidth(5.0)
+            GL.glBegin(GL.GL_LINES)
+            for name, start, end in self._scene.bones:
+                if name == self._hovered_bone:
+                    GL.glVertex3f(*[float(x) for x in start])
+                    GL.glVertex3f(*[float(x) for x in end])
+            GL.glEnd()
+        GL.glLineWidth(1.0)
+        GL.glPointSize(1.0)
+        if depth_enabled:
+            GL.glEnable(GL.GL_DEPTH_TEST)
+
+    def _update_bone_screen_segments(self, GL):
+        try:
+            from OpenGL import GLU
+            model = GL.glGetDoublev(GL.GL_MODELVIEW_MATRIX)
+            projection = GL.glGetDoublev(GL.GL_PROJECTION_MATRIX)
+            viewport = GL.glGetIntegerv(GL.GL_VIEWPORT)
+            scale_x = float(viewport[2]) / max(1.0, float(self.width()))
+            scale_y = float(viewport[3]) / max(1.0, float(self.height()))
+            segments = []
+            for name, start, end in self._scene.bones:
+                sx, sy, _ = GLU.gluProject(*start, model, projection, viewport)
+                ex, ey, _ = GLU.gluProject(*end, model, projection, viewport)
+                segments.append((
+                    name,
+                    QPointF(float(sx) / scale_x, self.height() - float(sy) / scale_y),
+                    QPointF(float(ex) / scale_x, self.height() - float(ey) / scale_y),
+                ))
+            self._bone_screen_segments = segments
+        except Exception:
+            self._bone_screen_segments = []
+
+    def _bone_at_position(self, position: QPointF) -> str:
+        best_name = ""
+        best_distance = 9.0
+        px, py = position.x(), position.y()
+        for name, start, end in self._bone_screen_segments:
+            dx = end.x() - start.x()
+            dy = end.y() - start.y()
+            length_sq = dx * dx + dy * dy
+            amount = 0.0 if length_sq <= 1e-8 else max(0.0, min(1.0, ((px - start.x()) * dx + (py - start.y()) * dy) / length_sq))
+            closest_x = start.x() + dx * amount
+            closest_y = start.y() + dy * amount
+            distance = math.hypot(px - closest_x, py - closest_y)
+            if distance < best_distance:
+                best_distance = distance
+                best_name = name
+        return best_name
 
     def _draw_bounds(self, GL):
         if not self._scene:
@@ -1715,7 +2345,20 @@ class _ModelOpenGLViewport(QOpenGLWidget):
         elif event.buttons() & Qt.MouseButton.RightButton:
             self._center[0] -= delta.x() * self._distance * 0.002
             self._center[1] += delta.y() * self._distance * 0.002
+        elif self._options["bones"]:
+            bone = self._bone_at_position(event.position())
+            if bone != self._hovered_bone:
+                self._hovered_bone = bone
+                if bone:
+                    QToolTip.showText(event.globalPosition().toPoint(), bone, self)
+                else:
+                    QToolTip.hideText()
         self.update()
+
+    def leaveEvent(self, event):
+        self._hovered_bone = ""
+        QToolTip.hideText()
+        super().leaveEvent(event)
 
     def wheelEvent(self, event):
         steps = event.angleDelta().y() / 120.0

@@ -3,7 +3,7 @@ import os
 from PyQt6.QtCore import QSize, Qt, QUrl
 from PyQt6.QtGui import QCursor, QDesktopServices, QFont, QKeySequence
 from PyQt6.QtWidgets import (
-    QApplication, QButtonGroup, QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QButtonGroup, QCheckBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QKeySequenceEdit, QMessageBox, QPushButton, QRadioButton, QScrollArea, QTabWidget,
     QVBoxLayout, QWidget,
 )
@@ -33,6 +33,7 @@ from core.style_helpers import (
     ss_settings_tab_widget, ss_settings_top_card, ss_theme_lock_button,
 )
 from core.themes import P, THEMES, apply_theme, is_theme_available, visible_theme_keys
+from core.tool_data import CAT_KEYS, CAT_META, TOOLS
 from core.translations import TRANSLATIONS, available_languages, ui_text
 from core.utils.ui_helpers import _make_styled_btn
 from core.widgets.tool_card import ToolCard
@@ -107,11 +108,11 @@ class SettingsDialogMixin:
             return scroll_layout
 
         general_layout = _make_settings_tab("settings_tab_general")
+        tools_layout = _make_settings_tab("settings_tab_tools")
         appearance_layout = _make_settings_tab("settings_tab_appearance")
         files_layout = _make_settings_tab("settings_tab_files")
         updates_tab_layout = _make_settings_tab("settings_tab_updates")
         hotkeys_layout = _make_settings_tab("settings_tab_hotkeys")
-        experimental_layout = _make_settings_tab("settings_tab_experimental")
 
         def _settings_checkbox(text_key, setting_key, callback, indent=0, default=True):
             checkbox = QCheckBox(self.t(text_key))
@@ -463,40 +464,7 @@ class SettingsDialogMixin:
         updates_tab_layout.addStretch()
 
         self._build_shortcuts_settings_tab(hotkeys_layout)
-
-        # Experimental section
-        experimental_card = QFrame()
-        experimental_card.setStyleSheet(ss_settings_top_card())
-        experimental_card_layout = QVBoxLayout(experimental_card)
-        experimental_card_layout.setContentsMargins(20, 18, 20, 18)
-        experimental_card_layout.setSpacing(10)
-
-        experimental_title = QLabel(self.t("experimental_title"))
-        experimental_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
-        experimental_title.setStyleSheet(f"color: {P['accent']}; border: none;")
-        experimental_card_layout.addWidget(experimental_title)
-
-        experimental_hint = QLabel(self.t("experimental_hint"))
-        experimental_hint.setFont(QFont("Segoe UI", 12))
-        experimental_hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
-        experimental_hint.setWordWrap(True)
-        experimental_card_layout.addWidget(experimental_hint)
-
-        experimental_card_layout.addWidget(_settings_checkbox(
-            "experimental_generic_compare_copy",
-            "experimental_generic_compare_copy",
-            self._set_experimental_generic_compare_copy,
-            default=False,
-        ))
-
-        generic_compare_hint = QLabel(self.t("experimental_generic_compare_copy_hint"))
-        generic_compare_hint.setFont(QFont("Segoe UI", 12))
-        generic_compare_hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
-        generic_compare_hint.setWordWrap(True)
-        experimental_card_layout.addWidget(generic_compare_hint)
-
-        experimental_layout.addWidget(experimental_card)
-        experimental_layout.addStretch()
+        self._build_tool_visibility_settings_tab(tools_layout)
 
         # Guide Character section
         guide_card = QFrame()
@@ -537,6 +505,219 @@ class SettingsDialogMixin:
         panel_layout.addWidget(tabs, 1)
 
         self._show_frame(panel)
+
+    def _build_tool_visibility_settings_tab(self, layout):
+        self._tool_visibility_dirty = False
+        self._tool_visibility_checkboxes = {}
+        self._category_visibility_checkboxes = {}
+        self._category_visibility_status_labels = {}
+
+        intro_card = QFrame()
+        intro_card.setStyleSheet(ss_settings_top_card())
+        intro_layout = QVBoxLayout(intro_card)
+        intro_layout.setContentsMargins(20, 18, 20, 18)
+        intro_layout.setSpacing(10)
+
+        title = QLabel(self.t("tools_visibility_title"))
+        title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {P['accent']}; border: none;")
+        intro_layout.addWidget(title)
+
+        hint = QLabel(self.t("tools_visibility_hint"))
+        hint.setFont(QFont("Segoe UI", 12))
+        hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
+        hint.setWordWrap(True)
+        intro_layout.addWidget(hint)
+
+        actions = QWidget()
+        actions.setStyleSheet("background: transparent; border: none;")
+        actions_layout = QHBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 4, 0, 0)
+        actions_layout.setSpacing(8)
+
+        enable_all = _make_styled_btn(
+            self.t("tools_visibility_enable_all"), P["accent"], P["secondary"], P["bg_dark"],
+            QFont("Segoe UI", 10, QFont.Weight.Bold), width=132, height=30)
+        enable_all.clicked.connect(lambda _checked=False: self._set_all_tools_enabled(True))
+        actions_layout.addWidget(enable_all)
+
+        disable_all = _make_styled_btn(
+            self.t("tools_visibility_disable_all"), P["mid"], P["bg_card_hov"], P["secondary"],
+            QFont("Segoe UI", 10), width=132, height=30)
+        disable_all.clicked.connect(lambda _checked=False: self._set_all_tools_enabled(False))
+        actions_layout.addWidget(disable_all)
+        actions_layout.addStretch()
+
+        self._tool_visibility_total_label = QLabel()
+        self._tool_visibility_total_label.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self._tool_visibility_total_label.setStyleSheet(f"color: {P['text_sec']}; border: none;")
+        actions_layout.addWidget(self._tool_visibility_total_label)
+        intro_layout.addWidget(actions)
+
+        apply_hint = QLabel(self.t("tools_visibility_apply_hint"))
+        apply_hint.setFont(QFont("Segoe UI", 10))
+        apply_hint.setStyleSheet(f"color: {P['text_dim']}; font-style: italic; border: none;")
+        apply_hint.setWordWrap(True)
+        intro_layout.addWidget(apply_hint)
+
+        layout.addWidget(intro_card)
+        layout.addSpacing(16)
+
+        tool_row_style = (
+            f"QFrame#ToolVisibilityRow {{ background: {P['bg_card']}; border: 1px solid {P['border']}; "
+            "border-radius: 7px; }}"
+            f"QFrame#ToolVisibilityRow:hover {{ background: {P['bg_card_hov']}; border-color: {P['border_hov']}; }}"
+        )
+
+        for cat_key in CAT_KEYS:
+            card = QFrame()
+            card.setStyleSheet(ss_settings_card())
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(18, 16, 18, 18)
+            card_layout.setSpacing(12)
+
+            header = QWidget()
+            header.setStyleSheet("background: transparent; border: none;")
+            header_layout = QHBoxLayout(header)
+            header_layout.setContentsMargins(0, 0, 0, 0)
+            header_layout.setSpacing(10)
+
+            category_icon = QLabel()
+            category_icon.setFixedSize(24, 24)
+            category_icon.setPixmap(CAT_META[cat_key][0](size=24).pixmap(24, 24))
+            category_icon.setStyleSheet("background: transparent; border: none;")
+            header_layout.addWidget(category_icon)
+
+            category_check = QCheckBox(self.t(CAT_META[cat_key][1]))
+            category_check.setTristate(True)
+            category_check.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+            category_check.setStyleSheet(ss_settings_check())
+            category_check.clicked.connect(
+                lambda checked, category=cat_key: self._set_category_tools_enabled(category, checked)
+            )
+            self._category_visibility_checkboxes[cat_key] = category_check
+            header_layout.addWidget(category_check, 1)
+
+            status = QLabel()
+            status.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+            status.setStyleSheet(
+                f"color: {P['text_sec']}; background: {P['bg_card']}; border: 1px solid {P['border']}; "
+                "border-radius: 9px; padding: 3px 8px;"
+            )
+            self._category_visibility_status_labels[cat_key] = status
+            header_layout.addWidget(status)
+            card_layout.addWidget(header)
+
+            grid = QGridLayout()
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setHorizontalSpacing(8)
+            grid.setVerticalSpacing(8)
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 1)
+
+            for index, (file_hint, icon_fn, title_key, tool_id) in enumerate(TOOLS[cat_key]):
+                row = QFrame()
+                row.setObjectName("ToolVisibilityRow")
+                row.setStyleSheet(tool_row_style)
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(10, 8, 10, 8)
+                row_layout.setSpacing(9)
+
+                icon_label = QLabel()
+                icon_label.setFixedSize(22, 22)
+                icon_label.setPixmap(icon_fn().pixmap(20, 20))
+                icon_label.setStyleSheet("background: transparent; border: none;")
+                row_layout.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignTop)
+
+                details = QWidget()
+                details.setStyleSheet("background: transparent; border: none;")
+                details_layout = QVBoxLayout(details)
+                details_layout.setContentsMargins(0, 0, 0, 0)
+                details_layout.setSpacing(2)
+
+                checkbox = QCheckBox(self.t(title_key))
+                checkbox.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+                checkbox.setStyleSheet(ss_settings_check())
+                checkbox.toggled.connect(
+                    lambda enabled, current_tool_id=tool_id:
+                    self._set_tool_enabled(current_tool_id, enabled)
+                )
+                self._tool_visibility_checkboxes[tool_id] = checkbox
+                details_layout.addWidget(checkbox)
+
+                file_label = QLabel(file_hint)
+                file_label.setFont(QFont("Consolas", 9))
+                file_label.setStyleSheet(f"color: {P['text_dim']}; background: transparent; border: none;")
+                file_label.setWordWrap(True)
+                details_layout.addWidget(file_label)
+                row_layout.addWidget(details, 1)
+                grid.addWidget(row, index // 2, index % 2)
+
+            card_layout.addLayout(grid)
+            layout.addWidget(card)
+            layout.addSpacing(12)
+
+        layout.addStretch()
+        self._refresh_tool_visibility_settings()
+
+    def _ordered_disabled_tools(self, disabled):
+        return [tool_id for tool_id in self._tool_lookup() if tool_id in disabled]
+
+    def _save_disabled_tools(self, disabled):
+        self._disabled_tools = self._ordered_disabled_tools(disabled)
+        self._settings["disabled_tools"] = self._disabled_tools
+        self._tool_visibility_dirty = True
+        save_settings(self._settings)
+        self._refresh_tool_visibility_settings()
+
+    def _set_tool_enabled(self, tool_id, enabled):
+        disabled = set(self._disabled_tools)
+        if enabled:
+            disabled.discard(tool_id)
+        else:
+            disabled.add(tool_id)
+        self._save_disabled_tools(disabled)
+
+    def _set_category_tools_enabled(self, cat_key, enabled):
+        disabled = set(self._disabled_tools)
+        tool_ids = {row[3] for row in TOOLS[cat_key]}
+        if enabled:
+            disabled.difference_update(tool_ids)
+        else:
+            disabled.update(tool_ids)
+        self._save_disabled_tools(disabled)
+
+    def _set_all_tools_enabled(self, enabled):
+        disabled = set() if enabled else set(self._tool_lookup())
+        self._save_disabled_tools(disabled)
+
+    def _refresh_tool_visibility_settings(self):
+        disabled = set(self._disabled_tools)
+        total = len(self._tool_lookup())
+        enabled_total = total - len(disabled)
+        total_label = getattr(self, "_tool_visibility_total_label", None)
+        if total_label is not None:
+            total_label.setText(self.t("tools_visibility_count", enabled=enabled_total, total=total))
+
+        for tool_id, checkbox in getattr(self, "_tool_visibility_checkboxes", {}).items():
+            checkbox.blockSignals(True)
+            checkbox.setChecked(tool_id not in disabled)
+            checkbox.blockSignals(False)
+
+        for cat_key, checkbox in getattr(self, "_category_visibility_checkboxes", {}).items():
+            tool_ids = [row[3] for row in TOOLS[cat_key]]
+            enabled_count = sum(tool_id not in disabled for tool_id in tool_ids)
+            if enabled_count == 0:
+                state = Qt.CheckState.Unchecked
+            elif enabled_count == len(tool_ids):
+                state = Qt.CheckState.Checked
+            else:
+                state = Qt.CheckState.PartiallyChecked
+            checkbox.blockSignals(True)
+            checkbox.setCheckState(state)
+            checkbox.blockSignals(False)
+            status = self._category_visibility_status_labels[cat_key]
+            status.setText(self.t("tools_visibility_count", enabled=enabled_count, total=len(tool_ids)))
 
     def _build_shortcuts_settings_tab(self, layout):
         self._shortcut_editors = {}
@@ -973,10 +1154,6 @@ class SettingsDialogMixin:
         self._settings["restore_workspace_on_startup"] = value
         save_settings(self._settings)
 
-    def _set_experimental_generic_compare_copy(self, value: bool):
-        self._settings["experimental_generic_compare_copy"] = value
-        save_settings(self._settings)
-
     def _open_credits(self):
         if self._settings_win:
             self._close_settings_inline()
@@ -1241,10 +1418,15 @@ class SettingsDialogMixin:
         self._show_frame(panel)
 
     def _close_settings_inline(self):
+        rebuild_catalog = bool(getattr(self, "_tool_visibility_dirty", False))
         if self._settings_win:
             self._settings_win.deleteLater()
             self._settings_win = None
         self._update_status_label = None
+        if rebuild_catalog:
+            self._tool_visibility_dirty = False
+            self._rebuild_ui()
+            return
         if self._settings.get("show_guide", True):
             self._show_char_panel()
         if self._tool_search_query:

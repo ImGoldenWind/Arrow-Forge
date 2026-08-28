@@ -1,47 +1,24 @@
 {
   "language": "en",
   "theme": "Wonder of U",
-  "game_files_dir": "",
+  "game_files_dir": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data",
   "backup_on_open": false,
   "check_updates_on_startup": false,
   "last_update_check": "",
   "recent_tools": [
-    "dlg_char_stats",
-    "dlg_sound",
-    "dlg_char_viewer",
-    "dlg_gimmick_dmg",
-    "dlg_char_id",
-    "dlg_costume",
-    "dlg_game_text",
-    "dlg_char_skill",
-    "dlg_font",
-    "dlg_texture",
-    "dlg_lip_sync",
-    "dlg_command_list_param",
-    "dlg_projectile",
-    "dlg_anmofs",
-    "dlg_movelist",
-    "dlg_asb_acf",
-    "dlg_sound_param",
-    "dlg_effect",
-    "dlg_usm_video",
-    "dlg_xfbin_audio",
     "dlg_model_viewer",
-    "dlg_online_mission",
-    "dlg_net_result",
-    "dlg_net_rank",
-    "dlg_trophy_param",
-    "dlg_player_title",
-    "dlg_custom_card",
     "dlg_sound_test",
     "dlg_gallery_param",
     "dlg_custom_default",
     "dlg_dictionary",
+    "dlg_char_viewer",
     "dlg_ui_coll",
+    "dlg_gimmick_dmg",
     "dlg_gimmick",
     "dlg_stage_info",
     "dlg_tutorial_param",
     "dlg_term_list",
+    "dlg_game_text",
     "dlg_guide_char",
     "dlg_dialogue",
     "dlg_support_item",
@@ -55,13 +32,42 @@
     "dlg_char_const",
     "dlg_cpu_ai",
     "dlg_assist",
-    "dlg_dlc_info"
+    "dlg_projectile",
+    "dlg_command_list_param",
+    "dlg_anmofs",
+    "dlg_lip_sync",
+    "dlg_movelist",
+    "dlg_char_skill",
+    "dlg_dlc_info",
+    "dlg_costume",
+    "dlg_char_id",
+    "dlg_char_stats",
+    "dlg_texture",
+    "dlg_sound",
+    "dlg_font",
+    "dlg_asb_acf",
+    "dlg_sound_param",
+    "dlg_effect",
+    "dlg_usm_video",
+    "dlg_xfbin_audio",
+    "dlg_online_mission",
+    "dlg_net_result",
+    "dlg_net_rank",
+    "dlg_trophy_param",
+    "dlg_player_title",
+    "dlg_custom_card"
   ],
   "recent_tools_on_top": false,
   "favorite_tools": [],
   "pinned_tools": {},
+  "disabled_tools": [],
   "recent_files_by_tool": {
     "dlg_char_stats": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\spc\\duelPlayerParam.xfbin",
+        "name": "duelPlayerParam.xfbin",
+        "opened_at": "2026-08-28T15:54:00+00:00"
+      },
       {
         "path": "D:\\Users\\ImGoldenWind\\Documents\\.ASBR MODDING\\ASBR files\\data\\spc\\duelPlayerParam.xfbin",
         "name": "duelPlayerParam.xfbin",
@@ -69,6 +75,11 @@
       }
     ],
     "dlg_anmofs": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\spc\\7vtn01_anmofs.xfbin",
+        "name": "7vtn01_anmofs.xfbin",
+        "opened_at": "2026-08-28T15:57:53+00:00"
+      },
       {
         "path": "D:\\Users\\ImGoldenWind\\Documents\\.ASBR MODDING\\ASBR files\\data\\spc\\7jny01_anmofs.xfbin",
         "name": "7jny01_anmofs.xfbin",
@@ -79,16 +90,239 @@
         "name": "7scm02_anmofs.xfbin",
         "opened_at": "2026-08-10T16:11:34+00:00"
       }
+    ],
+    "dlg_char_id": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\spc\\characode.bin.xfbin",
+        "name": "characode.bin.xfbin",
+        "opened_at": "2026-08-28T15:54:22+00:00"
+      }
+    ],
+    "dlg_costume": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\battle\\PlayerColorParam.bin.xfbin",
+        "name": "PlayerColorParam.bin.xfbin",
+        "opened_at": "2026-08-28T15:54:52+00:00"
+      }
+    ],
+    "dlg_dlc_info": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\DlcInfoParam.bin.xfbin",
+        "name": "DlcInfoParam.bin.xfbin",
+        "opened_at": "2026-08-28T15:55:02+00:00"
+      }
+    ],
+    "dlg_char_skill": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\spc\\8wou01prm.bin.xfbin",
+        "name": "8wou01prm.bin.xfbin",
+        "opened_at": "2026-08-28T15:55:37+00:00"
+      }
+    ],
+    "dlg_movelist": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\spm\\1zpl01_SPM.xfbin",
+        "name": "1zpl01_SPM.xfbin",
+        "opened_at": "2026-08-28T15:56:24+00:00"
+      }
+    ],
+    "dlg_lip_sync": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\sound\\LipSync\\1jnt01_lip.xfbin",
+        "name": "1jnt01_lip.xfbin",
+        "opened_at": "2026-08-28T15:57:23+00:00"
+      }
+    ],
+    "dlg_command_list_param": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\battle\\CommandListParam.bin.xfbin",
+        "name": "CommandListParam.bin.xfbin",
+        "opened_at": "2026-08-28T15:58:10+00:00"
+      }
+    ],
+    "dlg_projectile": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\skill\\1sdw01_x.xfbin",
+        "name": "1sdw01_x.xfbin",
+        "opened_at": "2026-08-28T15:58:23+00:00"
+      }
+    ],
+    "dlg_assist": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\battle\\SupportCharaParam.bin.xfbin",
+        "name": "SupportCharaParam.bin.xfbin",
+        "opened_at": "2026-08-28T15:58:36+00:00"
+      }
+    ],
+    "dlg_cpu_ai": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\cpu\\0bao01_cpu_p_DEFAULT.xfbin",
+        "name": "0bao01_cpu_p_DEFAULT.xfbin",
+        "opened_at": "2026-08-28T15:58:54+00:00"
+      }
+    ],
+    "dlg_char_const": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\spc_param\\0bao01_constParam.xfbin",
+        "name": "0bao01_constParam.xfbin",
+        "opened_at": "2026-08-28T15:59:19+00:00"
+      }
+    ],
+    "dlg_hit_react": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\spc\\damageprm.bin.xfbin",
+        "name": "damageprm.bin.xfbin",
+        "opened_at": "2026-08-28T15:59:26+00:00"
+      }
+    ],
+    "dlg_dmg_effect": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\spc\\damageeff.bin.xfbin",
+        "name": "damageeff.bin.xfbin",
+        "opened_at": "2026-08-28T15:59:38+00:00"
+      }
+    ],
+    "dlg_battle_adj": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\spc\\btladjprm.bin.xfbin",
+        "name": "btladjprm.bin.xfbin",
+        "opened_at": "2026-08-28T15:59:49+00:00"
+      }
+    ],
+    "dlg_duel_setting": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\main_mode\\DuelSettingParam.bin.xfbin",
+        "name": "DuelSettingParam.bin.xfbin",
+        "opened_at": "2026-08-28T15:59:56+00:00"
+      }
+    ],
+    "dlg_battle_result": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\battle\\BattleResultParam.bin.xfbin",
+        "name": "BattleResultParam.bin.xfbin",
+        "opened_at": "2026-08-28T16:00:11+00:00"
+      }
+    ],
+    "dlg_arcade_reward": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\arcade\\ArcadeRewardParam.bin.xfbin",
+        "name": "ArcadeRewardParam.bin.xfbin",
+        "opened_at": "2026-08-28T16:00:17+00:00"
+      }
+    ],
+    "dlg_story": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\main_mode\\MainModeParam.bin.xfbin",
+        "name": "MainModeParam.bin.xfbin",
+        "opened_at": "2026-08-28T16:00:27+00:00"
+      }
+    ],
+    "dlg_support_item": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\SupportItemParam.bin.xfbin",
+        "name": "SupportItemParam.bin.xfbin",
+        "opened_at": "2026-08-28T16:00:58+00:00"
+      }
+    ],
+    "dlg_dialogue": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\battle\\SpeakingLineParam.bin.xfbin",
+        "name": "SpeakingLineParam.bin.xfbin",
+        "opened_at": "2026-08-28T16:01:08+00:00"
+      }
+    ],
+    "dlg_guide_char": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\GuideCharParam.bin.xfbin",
+        "name": "GuideCharParam.bin.xfbin",
+        "opened_at": "2026-08-28T16:01:35+00:00"
+      }
+    ],
+    "dlg_game_text": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\message\\WIN64\\chs\\messageInfo.bin.xfbin",
+        "name": "messageInfo.bin.xfbin",
+        "opened_at": "2026-08-28T16:01:46+00:00"
+      }
+    ],
+    "dlg_term_list": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\battle\\TermListParam.bin.xfbin",
+        "name": "TermListParam.bin.xfbin",
+        "opened_at": "2026-08-28T16:01:53+00:00"
+      }
+    ],
+    "dlg_tutorial_param": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\TutorialParam.bin.xfbin",
+        "name": "TutorialParam.bin.xfbin",
+        "opened_at": "2026-08-28T16:02:16+00:00"
+      }
+    ],
+    "dlg_stage_info": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\stage\\HIGH_SPEC\\StageInfo.bin.xfbin",
+        "name": "StageInfo.bin.xfbin",
+        "opened_at": "2026-08-28T16:02:31+00:00"
+      }
+    ],
+    "dlg_gimmick": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\spc\\Xcmnsfprm.bin.xfbin",
+        "name": "Xcmnsfprm.bin.xfbin",
+        "opened_at": "2026-08-28T16:02:51+00:00"
+      }
+    ],
+    "dlg_ui_coll": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\ui\\collision\\info.xfbin",
+        "name": "info.xfbin",
+        "opened_at": "2026-08-28T16:03:14+00:00"
+      }
+    ],
+    "dlg_char_viewer": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\gallery\\CharViewerParam.bin.xfbin",
+        "name": "CharViewerParam.bin.xfbin",
+        "opened_at": "2026-08-28T16:05:24+00:00"
+      }
+    ],
+    "dlg_dictionary": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\gallery\\DictionaryParam.bin.xfbin",
+        "name": "DictionaryParam.bin.xfbin",
+        "opened_at": "2026-08-28T16:05:32+00:00"
+      }
+    ],
+    "dlg_custom_default": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\customize\\CustomizeDefaultParam.bin.xfbin",
+        "name": "CustomizeDefaultParam.bin.xfbin",
+        "opened_at": "2026-08-28T16:05:47+00:00"
+      }
+    ],
+    "dlg_gallery_param": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\gallery\\GalleryArtParam.bin.xfbin",
+        "name": "GalleryArtParam.bin.xfbin",
+        "opened_at": "2026-08-28T16:05:59+00:00"
+      }
+    ],
+    "dlg_sound_test": [
+      {
+        "path": "D:\\Users\\ImGoldenWind\\Documents\\ASBR Files\\data\\param\\gallery\\SoundTestParam.bin.xfbin",
+        "name": "SoundTestParam.bin.xfbin",
+        "opened_at": "2026-08-28T16:06:04+00:00"
+      }
     ]
   },
   "workspace": {
-    "active_tool_id": "dlg_char_stats",
+    "active_tool_id": "dlg_model_viewer",
     "active_file_path": "",
-    "updated_at": "2026-08-28T14:42:47+00:00"
+    "updated_at": "2026-08-28T20:56:36+00:00"
   },
   "restore_workspace_on_startup": false,
   "change_summary_disabled_by_tool": {},
-  "experimental_generic_compare_copy": false,
   "backup_history": [],
   "animation_card_perspective": true,
   "animation_editor_fade": true,

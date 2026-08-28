@@ -13,9 +13,9 @@ from core.icons import (
 )
 from core.runtime_paths import app_path
 from core.skeleton import reset_palette
-from core.style_helpers import ss_home_grid_scrollarea, ss_search
+from core.style_helpers import make_empty_state, ss_home_grid_scrollarea, ss_search
 from core.themes import P
-from core.tool_data import CAT_META, CAT_PORTRAIT, TOOLS
+from core.tool_data import CAT_META, CAT_PORTRAIT
 from core.ui.sidebar import _SidebarBtn
 from core.utils.ui_helpers import (
     _clear_layout, _make_label_background_transparent, _make_styled_btn,
@@ -42,8 +42,9 @@ class AppLayoutMixin:
         self._sidebar = None
         self._sidebar_highlight = None
         self._current_frame = None
-        if self._current_cat not in self._visible_cat_keys():
-            self._current_cat = "CHARACTER"
+        visible_cat_keys = self._visible_cat_keys()
+        if self._current_cat not in visible_cat_keys:
+            self._current_cat = visible_cat_keys[0] if visible_cat_keys else None
 
         _clear_layout(self._root_layout)
         if hasattr(self, "_avatar_label") and self._avatar_label is not None:
@@ -102,7 +103,7 @@ class AppLayoutMixin:
         # Build category frames incrementally
         self._cat_frames = {}
         self._search_frame = None
-        self._pending_cats = self._visible_cat_keys()
+        self._pending_cats = visible_cat_keys
         QTimer.singleShot(20, self._build_next_cat_frame)
         if hasattr(self, "_sync_death13_chaos"):
             self._sync_death13_chaos()
@@ -128,6 +129,8 @@ class AppLayoutMixin:
             self._loading = False
             if self._tool_search_query:
                 self._show_tool_search_results()
+            elif self._current_cat is None:
+                self._show_frame(self._build_empty_catalog_frame(), animate=False)
             else:
                 self._show_category(self._current_cat)
             QTimer.singleShot(100, self._reposition_portrait)
@@ -430,9 +433,11 @@ class AppLayoutMixin:
             return self._build_secret_frame()
 
         i18n_key = self._category_i18n_key(cat_key)
-        tool_rows = self._favorite_tool_rows() if cat_key == "FAVORITES" else [
-            (cat_key, fh, icon_fn, tk, dk) for fh, icon_fn, tk, dk in TOOLS[cat_key]
-        ]
+        tool_rows = (
+            self._favorite_tool_rows()
+            if cat_key == "FAVORITES"
+            else self._enabled_tool_rows_for_category(cat_key)
+        )
         if cat_key != "FAVORITES":
             tool_rows = self._sort_tool_rows_for_category(tool_rows, cat_key)
 
@@ -504,6 +509,22 @@ class AppLayoutMixin:
         scroll.setWidget(scroll_content)
         frame_layout.addWidget(scroll, 1)
 
+        return frame
+
+    def _build_empty_catalog_frame(self):
+        frame = QWidget()
+        frame.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(28, 28, 28, 28)
+        card = make_empty_state(
+            frame,
+            title=self.t("tools_visibility_empty_title"),
+            text=self.t("tools_visibility_empty_hint"),
+            icon_name="fa6s.sliders",
+        )
+        layout.addStretch()
+        layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addStretch()
         return frame
 
     def _build_secret_frame(self):

@@ -58,14 +58,17 @@ class App(
         if self._settings.get("theme") != self._theme_key:
             self._settings["theme"] = self._theme_key
             save_settings(self._settings)
+        self._disabled_tools = self._normalise_disabled_tools(self._settings.get("disabled_tools", []))
         self._favorite_tools = self._normalise_favorites(self._settings.get("favorite_tools", []))
         self._recent_tools = self._normalise_recent_tools(self._settings.get("recent_tools", []))
         self._pinned_tools = self._normalise_pinned_tools(self._settings.get("pinned_tools", {}))
         if (
-            self._settings.get("favorite_tools", []) != self._favorite_tools
+            self._settings.get("disabled_tools", []) != self._disabled_tools
+            or self._settings.get("favorite_tools", []) != self._favorite_tools
             or self._settings.get("recent_tools", []) != self._recent_tools
             or self._settings.get("pinned_tools", {}) != self._pinned_tools
         ):
+            self._settings["disabled_tools"] = self._disabled_tools
             self._settings["favorite_tools"] = self._favorite_tools
             self._settings["recent_tools"] = self._recent_tools
             self._settings["pinned_tools"] = self._pinned_tools
@@ -201,7 +204,7 @@ class App(
             return
         lookup = self._tool_lookup()
         row = lookup.get(tool_id)
-        if not row:
+        if not row or not self._is_tool_enabled(tool_id):
             self._workspace_restore_attempted = True
             return
         _cat_key, file_hint, _icon_fn, tool_label_key, _desc_key = row

@@ -4,6 +4,7 @@ from .nucc import (
     NuccChunk, NuccChunkNull, NuccChunkPage, NuccChunkTexture, NuccChunkBinary,
     NuccChunkDynamics, NuccChunkClump, NuccChunkCoord, NuccChunkModel,
     NuccChunkMaterial, RiggingFlag,
+    NuccChunkAnm,
 )
 from .nut import Nut, NutTexture
 from .nud import Nud, NudMeshGroup, NudMesh, NudVertex, NudMaterial
@@ -16,6 +17,7 @@ __all__ = [
     'NuccChunk', 'NuccChunkNull', 'NuccChunkPage', 'NuccChunkTexture', 'NuccChunkBinary',
     'NuccChunkDynamics', 'NuccChunkClump', 'NuccChunkCoord', 'NuccChunkModel',
     'NuccChunkMaterial', 'RiggingFlag',
+    'NuccChunkAnm',
     'Nut', 'NutTexture', 'Nud', 'NudMeshGroup', 'NudMesh', 'NudVertex', 'NudMaterial',
     'Xfbin', 'Page', 'ChunkReference',
     'BinaryReader', 'Endian', 'Whence', 'BrStruct',

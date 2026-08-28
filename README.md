@@ -80,8 +80,9 @@ Download the current source archive:
   projectiles, effects, stage information, stage motion, and main mode data.
 - Text and profile editors for messages, dictionaries, gallery art, sound test
   data, player titles, custom cards, DLC information, and info tables.
-- Texture, model, and audio helpers for XFBIN textures, ASBR character model
-  previews, NUS3BANK/AWB-related workflows, and bundled HCA decoding support.
+- Texture, model, and audio helpers for XFBIN textures, ASBR-style cel-shaded
+  character previews with skeletal animation playback, NUS3BANK/AWB-related
+  workflows, and bundled HCA decoding support.
 - CPK unpacking support and shared UI systems for themes, translations, icons,
   settings, and update checks.
 

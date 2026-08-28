@@ -27,6 +27,30 @@ class AppStateMixin:
                 seen.add(tool_id)
         return result
 
+    def _normalise_disabled_tools(self, disabled_tools):
+        lookup = self._tool_lookup()
+        result = []
+        seen = set()
+        if not isinstance(disabled_tools, list):
+            return result
+        for tool_id in disabled_tools:
+            if not isinstance(tool_id, str):
+                continue
+            if tool_id in lookup and tool_id not in seen:
+                result.append(tool_id)
+                seen.add(tool_id)
+        return result
+
+    def _is_tool_enabled(self, tool_id):
+        return tool_id not in self._disabled_tools
+
+    def _enabled_tool_rows_for_category(self, cat_key):
+        return [
+            (cat_key, fh, icon_fn, tk, dk)
+            for fh, icon_fn, tk, dk in TOOLS[cat_key]
+            if self._is_tool_enabled(dk)
+        ]
+
     def _normalise_recent_tools(self, recent_tools):
         lookup = self._tool_lookup()
         result = []
@@ -88,7 +112,10 @@ class AppStateMixin:
         ]
 
     def _visible_cat_keys(self):
-        keys = (["FAVORITES"] if self._favorite_tools else []) + list(CAT_KEYS)
+        keys = []
+        if self._favorite_tool_rows():
+            keys.append("FAVORITES")
+        keys.extend(cat_key for cat_key in CAT_KEYS if self._enabled_tool_rows_for_category(cat_key))
         if self._secret_unlocked:
             keys.append(self._SECRET_CAT)
         return keys
@@ -122,13 +149,16 @@ class AppStateMixin:
 
     def _favorite_tool_rows(self):
         lookup = self._tool_lookup()
-        rows = [lookup[tool_id] for tool_id in self._favorite_tools if tool_id in lookup]
+        rows = [
+            lookup[tool_id] for tool_id in self._favorite_tools
+            if tool_id in lookup and self._is_tool_enabled(tool_id)
+        ]
         return self._sort_tool_rows_for_category(rows, "FAVORITES")
 
     def _all_tool_rows(self):
         rows = []
         for cat_key in CAT_KEYS:
-            rows.extend((cat_key, fh, icon_fn, tk, dk) for fh, icon_fn, tk, dk in TOOLS[cat_key])
+            rows.extend(self._enabled_tool_rows_for_category(cat_key))
         return rows
 
     def _is_favorite_tool(self, tool_id):
