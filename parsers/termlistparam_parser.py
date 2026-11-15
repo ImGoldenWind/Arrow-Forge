@@ -19,7 +19,9 @@ Each entry is 48 bytes:
 from __future__ import annotations
 
 import copy
+import os
 import struct
+import tempfile
 
 
 ENTRY_SIZE = 48
@@ -76,7 +78,10 @@ def _read_cstr(data: bytes | bytearray, off: int, limit: int) -> str:
 def parse_termlistparam_xfbin(filepath: str) -> tuple[bytearray, dict]:
     with open(filepath, "rb") as fh:
         data = bytearray(fh.read())
+    return data, _parse_data(data)
 
+
+def _parse_data(data):
     chunk_hdr_off, chunk_size = _find_binary_chunk(data)
     payload_off = chunk_hdr_off + 12
     term_off = payload_off + INNER_SIZE_FIELD
@@ -111,7 +116,7 @@ def parse_termlistparam_xfbin(filepath: str) -> tuple[bytearray, dict]:
             entry[key] = "" if ptr == 0 else _read_cstr(data, base + field_off + ptr, chunk_end)
         entries.append(entry)
 
-    return data, {
+    return {
         "version": version,
         "notes": bytes(data[notes_off:notes_off + notes_len]),
         "entries": entries,
@@ -133,7 +138,10 @@ def make_default_entry(source: dict | None = None) -> dict:
 
 def _pad_string(pool: bytearray, text: str) -> int:
     off = len(pool)
-    pool.extend(str(text).encode("ascii", errors="replace") + b"\x00")
+    text = str(text)
+    if '\0' in text:
+        raise ValueError('Message IDs and asset references cannot contain null bytes.')
+    pool.extend(text.encode("ascii") + b"\x00")
     rem = len(pool) % 8
     if rem:
         pool.extend(b"\x00" * (8 - rem))
@@ -179,6 +187,9 @@ def _build_inner(version: int, notes: bytes, entries: list[dict]) -> bytes:
 
 
 def save_termlistparam_xfbin(filepath: str, original_data: bytearray, result: dict) -> None:
+    if _parse_data(original_data) == result:
+        _atomic_write(filepath, bytes(original_data))
+        return
     inner = _build_inner(
         int(result.get("version", 1000)),
         bytes(result.get("notes", b"")),
@@ -196,5 +207,16 @@ def save_termlistparam_xfbin(filepath: str, original_data: bytearray, result: di
     if orig_end % 4:
         orig_end += 4 - orig_end % 4
 
-    with open(filepath, "wb") as fh:
-        fh.write(bytes(original_data[:chunk_hdr_off]) + bytes(chunk_hdr) + payload + bytes(original_data[orig_end:]))
+    _atomic_write(filepath, bytes(original_data[:chunk_hdr_off]) + bytes(chunk_hdr) + payload + bytes(original_data[orig_end:]))
+
+
+def _atomic_write(filepath, data):
+    directory = os.path.dirname(os.path.abspath(filepath))
+    fd, temporary = tempfile.mkstemp(prefix='.arrow-terms-', dir=directory)
+    try:
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(data)
+        os.replace(temporary, filepath)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)

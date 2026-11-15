@@ -9,15 +9,18 @@ Confirmed sample layout inside the nuccChunkBinary payload:
 
 Each entry is 8 bytes:
   +0 uint32 LE - trophy id
-  +4 uint32 LE - requirement value / threshold
+  +4 uint32 LE - raw value (legacy key: requirement_value); consumer unresolved
 
-The retail sample contains no strings or explicit field names.
+The retail sample contains no strings or explicit field names. The PC executable
+uses separate hardcoded achievement tables; no file-to-PC ID mapping is proven.
 """
 
 from __future__ import annotations
 
 import copy
+import os
 import struct
+import tempfile
 
 
 ENTRY_SIZE = 8
@@ -34,12 +37,16 @@ def _find_binary_chunk(data: bytes | bytearray) -> tuple[int, int]:
     offset = 28 + table_size
     if offset % 4:
         offset += 4 - offset % 4
+    if offset > len(data):
+        raise ValueError("TrophyParam chunk table exceeds the file size.")
 
     best_off = -1
     best_size = 0
     while offset + 12 <= len(data):
         size = struct.unpack_from(">I", data, offset)[0]
         map_idx = struct.unpack_from(">I", data, offset + 4)[0]
+        if offset + 12 + size > len(data):
+            raise ValueError("Truncated TrophyParam XFBIN chunk.")
         if map_idx == 1 and size >= INNER_SIZE_FIELD + HEADER_SIZE and size > best_size:
             best_off = offset
             best_size = size
@@ -66,7 +73,7 @@ def parse_trophyparam_xfbin(filepath: str) -> tuple[bytearray, dict]:
     inner_end = payload_off + INNER_SIZE_FIELD + struct.unpack_from(">I", data, payload_off)[0]
     chunk_end = payload_off + chunk_size
 
-    if inner_end > chunk_end:
+    if inner_end > chunk_end or inner_end > len(data) or inner_end < body_off + HEADER_SIZE:
         raise ValueError("Invalid TrophyParam inner size.")
 
     version = struct.unpack_from("<I", data, body_off)[0]
@@ -113,11 +120,16 @@ def make_default_entry(source: dict | None = None, trophy_id: int = 0) -> dict:
 
 
 def _build_inner(version: int, prefix_bytes: bytes, tail_bytes: bytes, entries: list[dict]) -> bytes:
+    def word(value):
+        if not isinstance(value, int) or not 0 <= value <= 0xFFFFFFFF:
+            raise ValueError("TrophyParam values must be unsigned 32-bit integers.")
+        return value
+
     prefix_bytes = bytes(prefix_bytes or b"")
     tail_bytes = bytes(tail_bytes or b"")
 
     buf = bytearray()
-    buf += struct.pack("<I", int(version) & 0xFFFFFFFF)
+    buf += struct.pack("<I", word(version))
     buf += struct.pack("<I", len(entries))
     buf += struct.pack("<Q", 8 + len(prefix_bytes))
     buf += prefix_bytes
@@ -125,36 +137,45 @@ def _build_inner(version: int, prefix_bytes: bytes, tail_bytes: bytes, entries: 
     for entry in entries:
         buf += struct.pack(
             "<II",
-            int(entry.get("trophy_id", 0)) & 0xFFFFFFFF,
-            int(entry.get("requirement_value", 0)) & 0xFFFFFFFF,
+            word(entry.get("trophy_id", 0)),
+            word(entry.get("requirement_value", 0)),
         )
 
     buf += tail_bytes
-    if len(buf) % 4:
-        buf += b"\x00" * (4 - len(buf) % 4)
     return bytes(buf)
 
 
 def save_trophyparam_xfbin(filepath: str, original_data: bytearray, result: dict) -> None:
     inner = _build_inner(
-        int(result.get("version", DEFAULT_VERSION)),
+        result.get("version", DEFAULT_VERSION),
         bytes(result.get("prefix_bytes", b"")),
         bytes(result.get("tail_bytes", b"")),
         list(result.get("entries", [])),
     )
-    payload = struct.pack(">I", len(inner)) + inner
-    if len(payload) % 4:
-        payload += b"\x00" * (4 - len(payload) % 4)
-
     chunk_hdr_off, orig_chunk_size = _find_binary_chunk(original_data)
+    payload_off = chunk_hdr_off + 12
+    old_inner_size = struct.unpack_from(">I", original_data, payload_off)[0]
+    if not HEADER_SIZE <= old_inner_size <= orig_chunk_size - INNER_SIZE_FIELD:
+        raise ValueError("Invalid original TrophyParam inner size.")
+    # Bytes outside the declared inner body are opaque, not disposable padding.
+    suffix = bytes(original_data[payload_off + INNER_SIZE_FIELD + old_inner_size:payload_off + orig_chunk_size])
+    payload = struct.pack(">I", len(inner)) + inner + suffix
     prefix = bytes(original_data[:chunk_hdr_off])
     chunk_hdr = bytearray(original_data[chunk_hdr_off:chunk_hdr_off + 12])
     struct.pack_into(">I", chunk_hdr, 0, len(payload))
 
-    orig_payload_end = chunk_hdr_off + 12 + orig_chunk_size
-    if orig_payload_end % 4:
-        orig_payload_end += 4 - orig_payload_end % 4
-    trailing = bytes(original_data[orig_payload_end:])
-
-    with open(filepath, "wb") as fh:
-        fh.write(prefix + bytes(chunk_hdr) + payload + trailing)
+    old_end = payload_off + orig_chunk_size
+    aligned_end = (old_end + 3) & ~3
+    pad_size = (-(payload_off + len(payload))) % 4
+    old_padding = bytes(original_data[old_end:aligned_end])
+    padding = old_padding if len(old_padding) == pad_size else bytes(pad_size)
+    output = prefix + bytes(chunk_hdr) + payload + padding + bytes(original_data[aligned_end:])
+    destination = os.path.abspath(filepath)
+    fd, temporary = tempfile.mkstemp(prefix='.arrow-trophy-', dir=os.path.dirname(destination))
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(output)
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)

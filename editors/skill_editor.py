@@ -1,36 +1,71 @@
+from core.design_tokens import (
+    Insets,
+    LayoutRole,
+    Size,
+    TypeSize,
+    ui_font,
+)
+from core.style_helpers import (
+    add_editor_card_title,
+    make_editor_card,
+    make_editor_card_frame,
+    make_editor_field_shell,
+    make_empty_state,
+    ss_bg_dark,
+    ss_dialog,
+    ss_input_validation,
+    ss_main_label,
+    ss_sidebar_btn,
+    ss_tab_bar,
+    ss_tab_widget,
+    ss_transparent,
+)
+from core.ui.editor_widgets import (
+    EditorActionRow,
+    EditorListRow,
+    EditorSeparator,
+    EditorSidebar,
+    EditorToolbar,
+    configure_button,
+    configure_file_label,
+    configure_input,
+    configure_layout,
+    configure_scrollarea,
+    configure_search,
+    configure_table,
+)
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.editor_actions import install_file_actions
 import copy
 import os
+import math
+import struct
 
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QScrollArea,
     QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QMessageBox,
-    QTabWidget, QComboBox,
+    QTabWidget, QComboBox, QInputDialog, QDialog, QTableWidget, QTableWidgetItem,
+    QHeaderView, QAbstractItemView, QMenu, QTextEdit, QSplitter, QLayout,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from core.themes import P
-from core.style_helpers import (
-    add_editor_card_title, make_editor_card, make_editor_field_shell, make_empty_state,
-    ss_bg_dark, ss_bg_panel,
-    ss_btn, ss_accent_sep, ss_input, ss_search, ss_sidebar_btn,
-    ss_field_label, ss_file_label, ss_scrollarea, ss_sep,
-    ss_scrollarea_transparent, ss_sidebar_frame, ss_tab_widget, ss_tab_bar,
-    ss_editor_card, ss_main_label, ss_dim_label, ss_transparent,
-    TOOLBAR_H, TOOLBAR_BTN_H,
-)
 from core.editor_file_state import set_file_label, set_file_label_empty
 from parsers.skill_parser import (
     parse_prm_xfbin, save_prm_xfbin,
     parse_prmload_xfbin, save_prmload_xfbin,
     write_mot_entry, write_mot_subentry,
     make_default_mot_entry, make_default_mot_subentry, write_mot,
-    DATA_TYPE_MAP, FUNC_MAP_1B, PRMLOAD_TYPE_NAMES, ANM_SPEED_FUNC_NAMES,
+    DATA_TYPE_MAP, FUNC_MAP_1B, FUNC_MAP_2B, PRMLOAD_TYPE_NAMES, ANM_SPEED_FUNC_NAMES,
     FWD_VELOCITY_FUNC_NAMES, GION_FUNC_NAMES, ATKHIT_FUNC_NAMES,
-    MOT_HDR_SIZE, MOT_SUB_SIZE,
+    MOT_HDR_SIZE, MOT_SUB_SIZE, function_name, function_opcode, motion_subentry_size,
+    parse_motion_subentry,
 )
 from core.translations import ui_text
-from core.settings import create_backup_on_open, game_files_dialog_dir
+from core.settings import create_backup_on_open, game_files_dialog_dir, load_settings
+from parsers.skill_tools import (validate_skills, related_resources, shift_frames,
+                                export_move, import_move, frame_label)
 
 FUNC_PARAM_FIELD_NAMES = {
     'ME_CANCEL_OP_ADD', 'ME_CANCEL_OP_SUB', 'ME_CANCEL_OP_SET',
@@ -57,12 +92,10 @@ def _clear_layout(layout):
 
 def _make_field(label_text, value_text):
     """Returns (container_widget, QLineEdit)."""
-    f, fl, _label, _hint = make_editor_field_shell(label_text, label_font_size=12, spacing=3)
+    f, fl, _label, _hint = make_editor_field_shell(label_text)
     e = QLineEdit(str(value_text))
-    e.setFixedHeight(30)
     e.setMinimumWidth(0)
-    e.setFont(QFont("Consolas", 13))
-    e.setStyleSheet(ss_input())
+    configure_input(e, monospace=True)
     e.setCursorPosition(0)
     fl.addWidget(e)
     return f, e
@@ -70,15 +103,13 @@ def _make_field(label_text, value_text):
 
 def _make_combo_field(label_text, items, current):
     """Returns (container_widget, QComboBox)."""
-    f, fl, _label, _hint = make_editor_field_shell(label_text, label_font_size=12, spacing=3)
+    f, fl, _label, _hint = make_editor_field_shell(label_text)
     cb = QComboBox()
     cb.addItems(items)
-    cb.setFixedHeight(30)
     cb.setMinimumWidth(0)
     cb.setMinimumContentsLength(1)
     cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-    cb.setFont(QFont("Consolas", 13))
-    cb.setStyleSheet(ss_input())
+    configure_input(cb, monospace=True)
     cb.blockSignals(True)
     cb.setCurrentText(str(current))
     cb.blockSignals(False)
@@ -89,39 +120,36 @@ def _make_combo_field(label_text, items, current):
 
 def _section_label(text):
     lbl = QLabel(text)
-    lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
+    lbl.setFont(ui_font(TypeSize.SECTION, QFont.Weight.Bold))
     lbl.setStyleSheet(ss_main_label())
     lbl.setContentsMargins(20, 10, 0, 2)
     return lbl
 
 
 def _card_frame():
-    f = QFrame()
-    f.setObjectName("EditorCard")
-    f.setStyleSheet(ss_editor_card())
-    return f
+    return make_editor_card_frame()
 
 
-def _card_with_layout(parent=None, *, margins=(12, 12, 12, 12), spacing=8):
+def _card_with_layout(parent=None, *, margins=Insets.CARD, spacing=Size.CARD_GAP):
     return make_editor_card(parent, margins=margins, spacing=spacing)
 
 
 def _make_sidebar(width=260):
-    sidebar = QFrame()
-    sidebar.setFixedWidth(width)
-    sidebar.setStyleSheet(ss_sidebar_frame())
-    layout = QVBoxLayout(sidebar)
-    layout.setContentsMargins(8, 8, 8, 4)
-    layout.setSpacing(4)
+    sidebar = EditorSidebar(width=width)
+
+
+    layout = sidebar.content_layout
+
+
     return sidebar, layout
 
 
 def _sidebar_actions_row(*buttons):
-    frame = QWidget()
-    frame.setStyleSheet(ss_transparent())
-    layout = QHBoxLayout(frame)
-    layout.setContentsMargins(0, 2, 0, 4)
-    layout.setSpacing(4)
+    frame = EditorActionRow()
+
+    layout = frame.content_layout
+
+
     for button in buttons:
         button.setMinimumWidth(0)
         layout.addWidget(button, 1)
@@ -131,66 +159,56 @@ def _sidebar_actions_row(*buttons):
 def _sidebar_search(placeholder):
     e = QLineEdit()
     e.setPlaceholderText(placeholder)
-    e.setFixedHeight(32)
-    e.setFont(QFont("Segoe UI", 13))
-    e.setStyleSheet(ss_search())
+    configure_search(e)
     return e
 
 
 def _sidebar_scroll():
     scroll = QScrollArea()
-    scroll.setWidgetResizable(True)
-    scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+
     scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    scroll.setStyleSheet(ss_scrollarea_transparent())
+    configure_scrollarea(scroll, transparent=True)
     inner = QWidget()
     inner.setMinimumWidth(0)
     inner.setStyleSheet(ss_transparent())
     layout = QVBoxLayout(inner)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(1)
+    configure_layout(layout, LayoutRole.LIST)
     layout.addStretch()
     scroll.setWidget(inner)
     return scroll, inner, layout
 
 
 def _entry_btn(title, subtitle, selected, on_click):
-    btn = QPushButton()
-    btn.setFixedHeight(44)
-    btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setStyleSheet(ss_sidebar_btn(selected=selected))
-    bl = QVBoxLayout(btn)
-    bl.setContentsMargins(10, 3, 10, 3)
-    bl.setSpacing(0)
-    name_lbl = QLabel(title)
-    name_lbl.setMinimumWidth(0)
-    name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-    name_lbl.setStyleSheet(ss_main_label())
-    name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-    bl.addWidget(name_lbl)
+    btn = EditorListRow()
+
+
+    bl = btn.content_layout
+
+
+    name_lbl = btn.add_title(title)
+
+
     if subtitle:
-        sub_lbl = QLabel(subtitle)
-        sub_lbl.setMinimumWidth(0)
-        sub_lbl.setFont(QFont("Segoe UI", 11))
-        sub_lbl.setStyleSheet(ss_dim_label())
-        sub_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        bl.addWidget(sub_lbl)
+        sub_lbl = btn.add_subtitle(subtitle, value_font=ui_font(TypeSize.CODE))
+
+
     btn.clicked.connect(on_click)
     return btn
 
 
 def _right_scroll():
     scroll = QScrollArea()
-    scroll.setWidgetResizable(True)
-    scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+
     scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    scroll.setStyleSheet(ss_scrollarea())
+    configure_scrollarea(scroll)
     inner = QWidget()
     inner.setMinimumWidth(0)
     inner.setStyleSheet(ss_bg_dark())
     layout = QVBoxLayout(inner)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(8)
+    layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+    configure_layout(layout, LayoutRole.PAGE)
     scroll.setWidget(inner)
     return scroll, layout
 
@@ -229,8 +247,7 @@ class _SklslotTab(QWidget):
 
     def _build_ui(self):
         root = QHBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        configure_layout(root, LayoutRole.ROOT)
 
         # Sidebar
         sidebar, sl = _make_sidebar(260)
@@ -239,40 +256,37 @@ class _SklslotTab(QWidget):
         self._search.textChanged.connect(self._filter_list)
         sl.addWidget(self._search)
 
-        bf = QFont("Segoe UI", 10)
+        bf = ui_font(TypeSize.BODY)
 
         self._new_btn = QPushButton(ui_text("btn_new"))
-        self._new_btn.setFixedHeight(28)
-        self._new_btn.setFont(bf)
-        self._new_btn.setStyleSheet(ss_btn())
+        configure_button(self._new_btn, height=Size.COMPACT_CONTROL)
         self._new_btn.setEnabled(False)
         self._new_btn.setToolTip(ui_text("ui_skill_add_slot_tooltip"))
         self._new_btn.clicked.connect(self._add_slot)
+        self._new_btn.setProperty("designAction", 'new')
 
         self._dup_btn = QPushButton(ui_text("btn_duplicate"))
-        self._dup_btn.setFixedHeight(28)
-        self._dup_btn.setFont(bf)
-        self._dup_btn.setStyleSheet(ss_btn())
+        configure_button(self._dup_btn, height=Size.COMPACT_CONTROL)
         self._dup_btn.setEnabled(False)
         self._dup_btn.setToolTip(ui_text("ui_skill_duplicate_slot_tooltip"))
         self._dup_btn.clicked.connect(self._dup_slot)
+        self._dup_btn.setProperty("designAction", 'duplicate')
 
         self._del_btn = QPushButton(ui_text("btn_delete"))
-        self._del_btn.setFixedHeight(28)
-        self._del_btn.setFont(bf)
-        self._del_btn.setStyleSheet(ss_btn(danger=True))
+        configure_button(self._del_btn, danger=True, height=Size.COMPACT_CONTROL)
         self._del_btn.setEnabled(False)
         self._del_btn.setToolTip(ui_text("ui_skill_delete_slot_tooltip"))
         self._del_btn.clicked.connect(self._del_slot)
+        self._del_btn.setProperty("designAction", 'delete')
         sl.addWidget(_sidebar_actions_row(self._new_btn, self._dup_btn, self._del_btn))
 
         self._list_scroll, self._list_widget, self._list_layout = _sidebar_scroll()
         sl.addWidget(self._list_scroll)
         root.addWidget(sidebar)
 
-        div = QFrame()
-        div.setFixedWidth(1)
-        div.setStyleSheet(ss_sep())
+        div = EditorSeparator(orientation=Qt.Orientation.Vertical)
+
+
         root.addWidget(div)
 
         self._editor_scroll, self._editor_layout = _right_scroll()
@@ -398,9 +412,7 @@ class _SklslotTab(QWidget):
         inner = QWidget(card)
         inner.setStyleSheet(ss_transparent())
         grid = QGridLayout(inner)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(8)
+        configure_layout(grid, LayoutRole.GRID)
         card_main.addWidget(inner)
 
         for ci, (key, label) in enumerate([
@@ -502,8 +514,7 @@ class _LoadTab(QWidget):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        configure_layout(root, LayoutRole.ROOT)
         self._editor_scroll, self._editor_layout = _right_scroll()
         self._editor_layout.addStretch()
         root.addWidget(self._editor_scroll, 1)
@@ -523,19 +534,15 @@ class _LoadTab(QWidget):
 
     def _make_card(self, i, e):
         tname = _LOAD_TYPE_NAMES.get(e['type'], str(e['type']))
-        card = _card_frame()
-        cl = QVBoxLayout(card)
-        cl.setContentsMargins(12, 12, 12, 12)
-        cl.setSpacing(8)
+        card, cl = make_editor_card()
 
         hdr = QLabel(ui_text("ui_mainmodeparam_value_value", p0=i, p1=tname))
-        hdr.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        hdr.setFont(ui_font(TypeSize.TITLE, QFont.Weight.Bold))
         hdr.setStyleSheet(ss_main_label())
         cl.addWidget(hdr)
 
         grid = QGridLayout()
-        grid.setSpacing(8)
-        grid.setContentsMargins(0, 0, 0, 0)
+        configure_layout(grid, LayoutRole.GRID)
 
         fw0, f_type = _make_field(ui_text("ui_dlcinfoparam_type"), e['type'])
         grid.addWidget(fw0, 0, 0)
@@ -590,8 +597,7 @@ class _PrmLoadStandaloneTab(QWidget):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        configure_layout(root, LayoutRole.ROOT)
         self._editor_scroll, self._editor_layout = _right_scroll()
         self._editor_layout.addStretch()
         root.addWidget(self._editor_scroll, 1)
@@ -611,19 +617,15 @@ class _PrmLoadStandaloneTab(QWidget):
 
     def _make_card(self, i, e):
         tname = PRMLOAD_TYPE_NAMES.get(e['type'], str(e['type']))
-        card = _card_frame()
-        cl = QVBoxLayout(card)
-        cl.setContentsMargins(12, 12, 12, 12)
-        cl.setSpacing(8)
+        card, cl = make_editor_card()
 
         hdr = QLabel(ui_text("ui_mainmodeparam_value_value", p0=i, p1=tname))
-        hdr.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        hdr.setFont(ui_font(TypeSize.TITLE, QFont.Weight.Bold))
         hdr.setStyleSheet(ss_main_label())
         cl.addWidget(hdr)
 
         grid = QGridLayout()
-        grid.setSpacing(8)
-        grid.setContentsMargins(0, 0, 0, 0)
+        configure_layout(grid, LayoutRole.GRID)
 
         fw0, f_type = _make_field(ui_text("ui_dlcinfoparam_type"), e['type'])
         grid.addWidget(fw0, 0, 0)
@@ -668,6 +670,7 @@ class _PrmLoadStandaloneTab(QWidget):
 # Motion Data Tab
 class _MotTab(QWidget):
     changed = pyqtSignal()
+    selected = pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -684,8 +687,7 @@ class _MotTab(QWidget):
 
     def _build_ui(self):
         root = QHBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        configure_layout(root, LayoutRole.ROOT)
 
         # Sidebar
         sidebar, sl = _make_sidebar(260)
@@ -694,40 +696,37 @@ class _MotTab(QWidget):
         self._search.textChanged.connect(self._filter_entries)
         sl.addWidget(self._search)
 
-        bf = QFont("Segoe UI", 10)
+        bf = ui_font(TypeSize.BODY)
 
         self._entry_add_btn = QPushButton(ui_text("btn_new"))
-        self._entry_add_btn.setFixedHeight(28)
-        self._entry_add_btn.setFont(bf)
-        self._entry_add_btn.setStyleSheet(ss_btn())
+        configure_button(self._entry_add_btn, height=Size.COMPACT_CONTROL)
         self._entry_add_btn.setEnabled(False)
         self._entry_add_btn.setToolTip(ui_text("ui_skill_add_motion_entry_tooltip"))
         self._entry_add_btn.clicked.connect(self._add_entry)
+        self._entry_add_btn.setProperty("designAction", 'new')
 
         self._entry_dup_btn = QPushButton(ui_text("btn_duplicate"))
-        self._entry_dup_btn.setFixedHeight(28)
-        self._entry_dup_btn.setFont(bf)
-        self._entry_dup_btn.setStyleSheet(ss_btn())
+        configure_button(self._entry_dup_btn, height=Size.COMPACT_CONTROL)
         self._entry_dup_btn.setEnabled(False)
         self._entry_dup_btn.setToolTip(ui_text("ui_skill_duplicate_motion_entry_tooltip"))
         self._entry_dup_btn.clicked.connect(self._dup_entry)
+        self._entry_dup_btn.setProperty("designAction", 'duplicate')
 
         self._entry_del_btn = QPushButton(ui_text("btn_delete"))
-        self._entry_del_btn.setFixedHeight(28)
-        self._entry_del_btn.setFont(bf)
-        self._entry_del_btn.setStyleSheet(ss_btn(danger=True))
+        configure_button(self._entry_del_btn, danger=True, height=Size.COMPACT_CONTROL)
         self._entry_del_btn.setEnabled(False)
         self._entry_del_btn.setToolTip(ui_text("ui_skill_delete_motion_entry_tooltip"))
         self._entry_del_btn.clicked.connect(self._del_entry)
+        self._entry_del_btn.setProperty("designAction", 'delete')
         sl.addWidget(_sidebar_actions_row(self._entry_add_btn, self._entry_dup_btn, self._entry_del_btn))
 
         self._list_scroll, self._list_widget, self._list_layout = _sidebar_scroll()
         sl.addWidget(self._list_scroll)
         root.addWidget(sidebar)
 
-        div = QFrame()
-        div.setFixedWidth(1)
-        div.setStyleSheet(ss_sep())
+        div = EditorSeparator(orientation=Qt.Orientation.Vertical)
+
+
         root.addWidget(div)
 
         self._editor_scroll, self._editor_layout = _right_scroll()
@@ -748,6 +747,8 @@ class _MotTab(QWidget):
         self._entry_del_btn.setEnabled(loaded and selected and len(self._entries) > 1)
 
     def load(self, entries, mot_raw):
+        self._command_flushers = []
+        self._operand_suggestions = {}
         self._entries = entries
         self._mot_raw = mot_raw
         self._cur_entry = None
@@ -765,17 +766,16 @@ class _MotTab(QWidget):
                 if (
                     func_name
                     and func_name not in self._subentry_templates
-                    and not sub.get('dmg_label')
                     and len(raw_bytes) >= MOT_SUB_SIZE
                 ):
-                    self._subentry_templates[func_name] = bytes(raw_bytes)[:MOT_SUB_SIZE]
+                    self._subentry_templates[func_name] = bytes(raw_bytes)
 
     def _apply_subentry_template(self, sub, func_name):
         raw_template = self._subentry_templates.get(func_name)
         sub['raw_bytes'] = (
             bytes(raw_template)
             if raw_template is not None
-            else bytes(MOT_SUB_SIZE)
+            else bytes(motion_subentry_size(function_opcode(func_name)))
         )
         sub['raw_func_name'] = func_name
 
@@ -784,7 +784,7 @@ class _MotTab(QWidget):
         self._entry_btns = []
         for e in entries:
             n = e.get('n_subs', len(e.get('subentries', [])))
-            subtitle = f"{n} subs" if n > 0 else None
+            subtitle = None
             btn = _entry_btn(
                 e['event_id'], subtitle,
                 selected=(e is self._cur_entry),
@@ -812,16 +812,24 @@ class _MotTab(QWidget):
         self._populate_list(filtered)
 
     def _on_entry_click(self, entry):
+        if not self._flush_command_edits():
+            return
         self._cur_entry = entry
         for btn, e in self._entry_btns:
             btn.setStyleSheet(ss_sidebar_btn(selected=(e is entry)))
         self._set_action_state()
         self._show_entry(entry)
+        self.selected.emit(entry)
 
     def get_entries(self):
         return self._entries
 
+    def _flush_command_edits(self):
+        return all([commit() for commit in getattr(self, '_command_flushers', [])])
+
     def get_raw(self):
+        if not self._flush_command_edits():
+            raise ValueError(ui_text('skill_invalid_fields'))
         if self._mot_raw is None:
             return None
         if self._structural_dirty:
@@ -849,7 +857,7 @@ class _MotTab(QWidget):
         raw_size = int(entry.get('raw_size') or 0)
         if raw_size < MOT_HDR_SIZE:
             return len(entry.get('subentries', []))
-        return (raw_size - MOT_HDR_SIZE) // MOT_SUB_SIZE
+        return len(entry.get('subentries', []))
 
     def _unique_entry_id(self, candidate):
         existing = {e.get('event_id', '') for e in self._entries}
@@ -866,6 +874,8 @@ class _MotTab(QWidget):
         return candidate[:32]
 
     def _add_entry(self):
+        if not self._flush_command_edits():
+            return
         new_entry = make_default_mot_entry(len(self._entries))
         new_entry['event_id'] = self._unique_entry_id(new_entry.get('event_id'))
         self._entries.append(new_entry)
@@ -876,6 +886,8 @@ class _MotTab(QWidget):
         self.changed.emit()
 
     def _dup_entry(self):
+        if not self._flush_command_edits():
+            return
         if self._cur_entry is None:
             return
         try:
@@ -898,6 +910,8 @@ class _MotTab(QWidget):
         self.changed.emit()
 
     def _del_entry(self):
+        if not self._flush_command_edits():
+            return
         if self._cur_entry is None:
             return
         if len(self._entries) <= 1:
@@ -922,6 +936,9 @@ class _MotTab(QWidget):
         self.changed.emit()
 
     def _show_entry(self, entry):
+        if not self._flush_command_edits():
+            return
+        self._command_flushers = []
         _clear_layout(self._editor_layout)
         compact = self._editor_scroll.viewport().width() < 760
 
@@ -931,9 +948,7 @@ class _MotTab(QWidget):
         inner = QWidget(card)
         inner.setStyleSheet(ss_transparent())
         grid = QGridLayout(inner)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(8)
+        configure_layout(grid, LayoutRole.GRID)
         cm.addWidget(inner)
 
         fw_ev, f_ev = _make_field(ui_text("ui_guidecharparam_event_id"), entry['event_id'])
@@ -944,8 +959,9 @@ class _MotTab(QWidget):
 
         fw_an, f_an = _make_field(ui_text("ui_playertitleparam_anim_id"), entry['anim_id'])
         grid.addWidget(fw_an, 1 if compact else 0, 0 if compact else 2, 1, 2)
-        grid.setColumnStretch(2, 1)
-        grid.setColumnStretch(3, 1)
+        if not compact:
+            grid.setColumnStretch(2, 1)
+            grid.setColumnStretch(3, 1)
         f_an.textEdited.connect(lambda t, e=entry: self._on_an_edited(t, e))
 
         flag_defs = [
@@ -953,15 +969,24 @@ class _MotTab(QWidget):
             ('no_frame_skip',         ui_text("ui_skill_nofrmskip")),
             ('fix_position',          ui_text("ui_skill_fixpos")),
             ('frame_skip',            ui_text("ui_skill_frmskip")),
-            ('file_id',               ui_text("ui_skill_fileid")),
+
         ]
-        flag_start_row = 2 if compact else 1
+        flag_panel = QWidget()
+        flag_panel.setStyleSheet(ss_transparent())
+        flag_grid = QGridLayout(flag_panel)
+        configure_layout(flag_grid, LayoutRole.GRID)
+        cm.addWidget(flag_panel)
+        flag_start_row = 0
         flag_cols = 2 if compact else len(flag_defs)
         for col, (key, label) in enumerate(flag_defs):
             fw, fe = _make_field(label, entry.get(key, 0))
-            grid.addWidget(fw, flag_start_row + (col // flag_cols), col % flag_cols)
-            grid.setColumnStretch(col % flag_cols, 1)
+            fe.setObjectName('skill_motion_' + key)
+            flag_grid.addWidget(fw, flag_start_row + (col // flag_cols), col % flag_cols)
+            flag_grid.setColumnStretch(col % flag_cols, 1)
             fe.editingFinished.connect(
+                lambda k=key, f=fe, e=entry: self._on_flag_edited(k, f, e)
+            )
+            self._command_flushers.append(
                 lambda k=key, f=fe, e=entry: self._on_flag_edited(k, f, e)
             )
 
@@ -970,57 +995,67 @@ class _MotTab(QWidget):
         action_row = QWidget()
         action_row.setStyleSheet(ss_transparent())
         action_layout = QVBoxLayout(action_row) if compact else QHBoxLayout(action_row)
-        action_layout.setContentsMargins(20, 0, 20, 0)
-        action_layout.setSpacing(6)
-        bf = QFont("Segoe UI", 10)
+        configure_layout(action_layout, LayoutRole.ACTIONS)
+        bf = ui_font(TypeSize.BODY)
 
         add_sub_btn = QPushButton(ui_text("ui_skill_add_subentry"))
-        add_sub_btn.setFixedHeight(28)
-        add_sub_btn.setFont(bf)
-        add_sub_btn.setStyleSheet(ss_btn())
+        configure_button(add_sub_btn, height=Size.COMPACT_CONTROL)
         add_sub_btn.clicked.connect(lambda _, e=entry: self._add_subentry(e))
+        add_sub_btn.setProperty("designAction", 'new')
         action_layout.addWidget(add_sub_btn)
 
+        tools_btn = QPushButton(ui_text('skill_move_tools'))
+        configure_button(tools_btn)
+        tools_btn.clicked.connect(lambda: self._move_tools(entry))
+        action_layout.addWidget(tools_btn)
+
         dup_sub_btn = QPushButton(ui_text("ui_skill_duplicate_last_subentry"))
-        dup_sub_btn.setFixedHeight(28)
-        dup_sub_btn.setFont(bf)
-        dup_sub_btn.setStyleSheet(ss_btn())
+        configure_button(dup_sub_btn, height=Size.COMPACT_CONTROL)
         dup_sub_btn.setEnabled(bool(entry.get('subentries')))
         dup_sub_btn.clicked.connect(lambda _, e=entry: self._dup_last_subentry(e))
+        dup_sub_btn.setProperty("designAction", 'duplicate')
         action_layout.addWidget(dup_sub_btn)
 
         del_sub_btn = QPushButton(ui_text("ui_skill_delete_last_subentry"))
-        del_sub_btn.setFixedHeight(28)
-        del_sub_btn.setFont(bf)
-        del_sub_btn.setStyleSheet(ss_btn(danger=True))
+        configure_button(del_sub_btn, danger=True, height=Size.COMPACT_CONTROL)
         del_sub_btn.setEnabled(bool(entry.get('subentries')))
         del_sub_btn.clicked.connect(lambda _, e=entry: self._del_last_subentry(e))
+        del_sub_btn.setProperty("designAction", 'delete')
         action_layout.addWidget(del_sub_btn)
 
         if not compact:
             action_layout.addStretch()
         self._editor_layout.addWidget(action_row)
 
+        self._sub_cards = []
         # Subentry cards
         subs = entry.get('subentries', [])
         if subs:
             for r, s in enumerate(subs):
                 title = ui_text("ui_skill_subentries") if r == 0 else None
-                self._editor_layout.addWidget(self._make_sub_card(entry, r, s, title))
+                sub_card = self._make_sub_card(entry, r, s, title)
+                self._sub_cards.append(sub_card)
+                self._editor_layout.addWidget(sub_card)
 
         self._editor_layout.addStretch()
 
     def _add_subentry(self, entry):
+        if not self._flush_command_edits():
+            return
         subs = entry.setdefault('subentries', [])
         self._insert_subentry(entry, len(subs))
 
     def _dup_last_subentry(self, entry):
+        if not self._flush_command_edits():
+            return
         subs = entry.setdefault('subentries', [])
         if not subs:
             return
         self._duplicate_subentry(entry, len(subs) - 1)
 
     def _del_last_subentry(self, entry):
+        if not self._flush_command_edits():
+            return
         subs = entry.setdefault('subentries', [])
         if not subs:
             return
@@ -1050,9 +1085,7 @@ class _MotTab(QWidget):
         if default_template is not None:
             new_sub['raw_bytes'] = bytes(default_template)
             new_sub['raw_func_name'] = new_sub.get('func_name')
-        elif raw_template is not None:
-            new_sub['raw_bytes'] = bytes(raw_template.get('raw_bytes', b''))[:MOT_SUB_SIZE]
-            new_sub['raw_func_name'] = raw_template.get('func_name', new_sub.get('func_name'))
+        # A new command keeps its zero template when this opcode has no sample.
 
         if direct is not None and not direct.get('dmg_label'):
             new_sub['bone'] = direct.get('bone', '')
@@ -1062,6 +1095,8 @@ class _MotTab(QWidget):
         return new_sub
 
     def _insert_subentry(self, entry, index, template=None):
+        if not self._flush_command_edits():
+            return
         subs = entry.setdefault('subentries', [])
         index = max(0, min(index, len(subs)))
         new_sub = copy.deepcopy(template) if template is not None else self._make_inserted_subentry(entry, index)
@@ -1074,12 +1109,16 @@ class _MotTab(QWidget):
         self.changed.emit()
 
     def _duplicate_subentry(self, entry, index):
+        if not self._flush_command_edits():
+            return
         subs = entry.setdefault('subentries', [])
         if not (0 <= index < len(subs)):
             return
         self._insert_subentry(entry, index + 1, subs[index])
 
     def _delete_subentry(self, entry, index):
+        if not self._flush_command_edits():
+            return
         subs = entry.setdefault('subentries', [])
         if not (0 <= index < len(subs)):
             return
@@ -1091,338 +1130,142 @@ class _MotTab(QWidget):
         self.changed.emit()
 
     def _make_sub_card(self, entry, r, s, section_title=None):
-        compact = self._editor_scroll.viewport().width() < 760
-        card = _card_frame()
-        cl = QVBoxLayout(card)
-        cl.setContentsMargins(12, 12, 12, 12)
-        cl.setSpacing(8)
-        if section_title:
-            add_editor_card_title(cl, section_title, "fa6s.sliders")
+        from editors.skill_command_card import make_command_card
+        return make_command_card(self, entry, r, s)
 
-        hdr_lbl = QLabel(ui_text("ui_skill_value_value_value", p0=r, p1=s.get('bone', ''), p2=s.get('func_name', '')))
-        hdr_lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        hdr_lbl.setStyleSheet(ss_main_label())
-        cl.addWidget(hdr_lbl)
-
-        header_sep = QFrame()
-        header_sep.setFixedHeight(1)
-        header_sep.setStyleSheet(ss_sep())
-        cl.addWidget(header_sep)
-
-        sub_action_row = QWidget()
-        sub_action_row.setStyleSheet(ss_transparent())
-        sub_action_layout = QGridLayout(sub_action_row) if compact else QHBoxLayout(sub_action_row)
-        sub_action_layout.setContentsMargins(0, 0, 0, 0)
-        sub_action_layout.setSpacing(6)
-        sf = QFont("Segoe UI", 9)
-
-        insert_above_btn = QPushButton(ui_text("ui_skill_insert_subentry_above"))
-        insert_above_btn.setFixedHeight(26)
-        insert_above_btn.setFont(sf)
-        insert_above_btn.setStyleSheet(ss_btn())
-        insert_above_btn.clicked.connect(lambda _, e=entry, idx=r: self._insert_subentry(e, idx))
-        sub_action_layout.addWidget(insert_above_btn, 0, 0) if compact else sub_action_layout.addWidget(insert_above_btn)
-
-        insert_below_btn = QPushButton(ui_text("ui_skill_insert_subentry_below"))
-        insert_below_btn.setFixedHeight(26)
-        insert_below_btn.setFont(sf)
-        insert_below_btn.setStyleSheet(ss_btn())
-        insert_below_btn.clicked.connect(lambda _, e=entry, idx=r: self._insert_subentry(e, idx + 1))
-        sub_action_layout.addWidget(insert_below_btn, 0, 1) if compact else sub_action_layout.addWidget(insert_below_btn)
-
-        duplicate_here_btn = QPushButton(ui_text("ui_skill_duplicate_subentry_here"))
-        duplicate_here_btn.setFixedHeight(26)
-        duplicate_here_btn.setFont(sf)
-        duplicate_here_btn.setStyleSheet(ss_btn())
-        duplicate_here_btn.clicked.connect(lambda _, e=entry, idx=r: self._duplicate_subentry(e, idx))
-        sub_action_layout.addWidget(duplicate_here_btn, 1, 0) if compact else sub_action_layout.addWidget(duplicate_here_btn)
-
-        delete_here_btn = QPushButton(ui_text("ui_skill_delete_subentry_here"))
-        delete_here_btn.setFixedHeight(26)
-        delete_here_btn.setFont(sf)
-        delete_here_btn.setStyleSheet(ss_btn(danger=True))
-        delete_here_btn.clicked.connect(lambda _, e=entry, idx=r: self._delete_subentry(e, idx))
-        sub_action_layout.addWidget(delete_here_btn, 1, 1) if compact else sub_action_layout.addWidget(delete_here_btn)
-
-        if not compact:
-            sub_action_layout.addStretch()
-        cl.addWidget(sub_action_row)
-
-        grid = QGridLayout()
-        grid.setSpacing(8)
-        grid.setContentsMargins(0, 0, 0, 0)
-
-        # Row 0: Bone | Type | Frame | Attack
-        fw0, f_bone  = _make_field(ui_text("bone_col_bone"),  s.get('bone', ''))
-        fw1, f_type  = _make_field(ui_text("ui_dlcinfoparam_type"),  s.get('dtype', 0))
-        fw2, f_frame = _make_field(ui_text("skill_field_frame_num"), s.get('frame_str', ''))
-        fw3, f_attack = _make_combo_field(
-            ui_text("ui_skill_attack"),
-            ['', 'high', 'middle', 'low', 'unblockable'],
-            s.get('attack', ''),
-        )
-        grid_cols = 2 if compact else 4
-        def add_field(widget, index, colspan=1):
-            row = index // grid_cols
-            col = index % grid_cols
-            span = min(colspan, grid_cols - col)
-            grid.addWidget(widget, row, col, 1, span)
-            grid.setColumnStretch(col, 1)
-
-        add_field(fw0, 0)
-        add_field(fw1, 1)
-        add_field(fw2, 2)
-        add_field(fw3, 3)
-
-        # Row 1: Dmg | Grd | X | Y
-        fw4, f_dmg = _make_field(ui_text("ui_skill_dmg"), s.get('dmg', 0) or 0)
-        fw5, f_grd = _make_field(ui_text("ui_skill_grd"), s.get('grd', 0) or 0)
-        fw6, f_x   = _make_field("X",   f"{s['x']:.6g}" if s.get('x') else '0')
-        fw7, f_y   = _make_field("Y",   f"{s['y']:.6g}" if s.get('y') else '0')
-        add_field(fw4, 4)
-        add_field(fw5, 5)
-        add_field(fw6, 6)
-        add_field(fw7, 7)
-
-        # Row 2: Push | Speed/FWD params | Function (spans 2 cols)
-        fw8, f_push = _make_field(ui_text("ui_skill_push"), s.get('push', 0))
-        add_field(fw8, 8)
-
-        fw_speed, f_speed = _make_field(
-            ui_text("skill_field_speed"),
-            f"{s.get('speed_multiplier', 1.0):.6g}",
-        )
-        add_field(fw_speed, 9)
-
-        fw_fwd_vel, f_fwd_vel = _make_field(
-            ui_text("skill_field_fwd_velocity"),
-            s.get('fwd_velocity', 0),
-        )
-        add_field(fw_fwd_vel, 10)
-
-        fw_fwd_dur, f_fwd_dur = _make_field(
-            ui_text("skill_field_duration_frames"),
-            s.get('fwd_velocity_duration', 0),
-        )
-        add_field(fw_fwd_dur, 11)
-
-        fw_gion_id, f_gion_id = _make_field(
-            ui_text("skill_field_gion_id"),
-            s.get('gion_id', ''),
-        )
-        add_field(fw_gion_id, 12)
-
-        fw_gion_scale, f_gion_scale = _make_field(
-            ui_text("skill_field_gion_scale"),
-            f"{s.get('gion_scale', 1.0):.6g}",
-        )
-        add_field(fw_gion_scale, 13)
-
-        atkhit_values = list(s.get('atkhit_params', [0, 0, 0, 0, 0]))
-        atkhit_values.extend([0] * (5 - len(atkhit_values)))
-        atkhit_fields = []
-        for i in range(5):
-            fw_param, f_param = _make_field(
-                ui_text("skill_field_atkhit_param_n", n=i + 1),
-                atkhit_values[i],
-            )
-            add_field(fw_param, 14 + i)
-            atkhit_fields.append((fw_param, f_param))
-
-        func_param_values = list(s.get('func_param_bytes', [0, 0, 0]))
-        func_param_values.extend([0] * (3 - len(func_param_values)))
-        func_param_fields = []
-        for i in range(3):
-            fw_param, f_param = _make_field(
-                ui_text("skill_field_func_byte_n", n=i + 1),
-                func_param_values[i],
-            )
-            add_field(fw_param, 19 + i)
-            func_param_fields.append((fw_param, f_param))
-
-        fw_func_w, f_func = _make_combo_field(ui_text("skill_field_function"), [], s.get('func_name', ''))
-        f_func.setEditable(True)
-        f_func.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        f_func.blockSignals(True)
-        for name in sorted({v for v in FUNC_MAP_1B.values() if v}):
-            f_func.addItem(name)
-        f_func.setCurrentText(s.get('func_name', ''))
-        f_func.blockSignals(False)
-        add_field(fw_func_w, 22, 2)
-
-        def update_func_param_visibility():
-            is_speed_func = f_func.currentText().strip() in ANM_SPEED_FUNC_NAMES
-            is_fwd_velocity_func = f_func.currentText().strip() in FWD_VELOCITY_FUNC_NAMES
-            is_gion_func = f_func.currentText().strip() in GION_FUNC_NAMES
-            is_atkhit_func = f_func.currentText().strip() in ATKHIT_FUNC_NAMES
-            func_params = list(s.get('func_param_bytes', [0, 0, 0]))
-            show_func_params = (
-                f_func.currentText().strip() in FUNC_PARAM_FIELD_NAMES
-                or any(int(v or 0) for v in func_params)
-            )
-            fw_speed.setVisible(is_speed_func)
-            f_speed.setEnabled(is_speed_func)
-            fw_fwd_vel.setVisible(is_fwd_velocity_func)
-            f_fwd_vel.setEnabled(is_fwd_velocity_func)
-            fw_fwd_dur.setVisible(is_fwd_velocity_func)
-            f_fwd_dur.setEnabled(is_fwd_velocity_func)
-            fw_gion_id.setVisible(is_gion_func)
-            f_gion_id.setEnabled(is_gion_func)
-            fw_gion_scale.setVisible(is_gion_func)
-            f_gion_scale.setEnabled(is_gion_func)
-            for fw_param, f_param in atkhit_fields:
-                fw_param.setVisible(is_atkhit_func)
-                f_param.setEnabled(is_atkhit_func)
-            for fw_param, f_param in func_param_fields:
-                fw_param.setVisible(show_func_params)
-                f_param.setEnabled(show_func_params)
-
-        update_func_param_visibility()
-
-        cl.addLayout(grid)
-
-        def commit():
-            s['bone'] = f_bone.text()
-            try:
-                s['dtype'] = int(f_type.text())
-            except Exception:
-                pass
-            fw_v = f_frame.text()
-            if fw_v == ui_text("ui_skill_start"):
-                s['frame_w'] = 0x270E; s['frame_str'] = ui_text("ui_skill_start")
-            elif fw_v == ui_text("ui_skill_end"):
-                s['frame_w'] = 0x270F; s['frame_str'] = ui_text("ui_skill_end")
-            else:
-                try:
-                    fv = int(fw_v); s['frame_w'] = fv; s['frame_str'] = str(fv)
-                except Exception:
-                    pass
-            s['attack'] = f_attack.currentText()
-            try:
-                s['dmg'] = max(0, min(255, int(f_dmg.text())))
-            except Exception:
-                pass
-            try:
-                s['grd'] = max(0, min(255, int(f_grd.text())))
-            except Exception:
-                pass
-            try:
-                s['x'] = float(f_x.text())
-            except Exception:
-                pass
-            try:
-                s['y'] = float(f_y.text())
-            except Exception:
-                pass
-            try:
-                s['push'] = int(f_push.text())
-            except Exception:
-                pass
-            try:
-                s['speed_multiplier'] = float(f_speed.text())
-            except Exception:
-                pass
-            try:
-                s['fwd_velocity'] = int(f_fwd_vel.text())
-            except Exception:
-                pass
-            try:
-                s['fwd_velocity_duration'] = int(f_fwd_dur.text())
-            except Exception:
-                pass
-            s['gion_id'] = f_gion_id.text()
-            try:
-                s['gion_scale'] = float(f_gion_scale.text())
-            except Exception:
-                pass
-            atkhit_params = list(s.get('atkhit_params', [0, 0, 0, 0, 0]))
-            atkhit_params.extend([0] * (5 - len(atkhit_params)))
-            for i, (_, f_param) in enumerate(atkhit_fields):
-                try:
-                    atkhit_params[i] = int(f_param.text())
-                except Exception:
-                    pass
-            s['atkhit_params'] = atkhit_params[:5]
-            func_param_bytes = list(s.get('func_param_bytes', [0, 0, 0]))
-            func_param_bytes.extend([0] * (3 - len(func_param_bytes)))
-            for i, (_, f_param) in enumerate(func_param_fields):
-                try:
-                    func_param_bytes[i] = max(0, min(255, int(f_param.text())))
-                except Exception:
-                    pass
-            s['func_param_bytes'] = func_param_bytes[:3]
-            func_txt = f_func.currentText().strip()
-            _func_rev = {v: k for k, v in FUNC_MAP_1B.items()}
-            resolved_func = s.get('func_name', '')
-            if func_txt in _func_rev:
-                resolved_func = func_txt
-                if s.get('sub_off') is None and s.get('raw_func_name') != resolved_func:
-                    self._apply_subentry_template(s, resolved_func)
-                s['dtype'] = (
-                    _func_rev[func_txt]
-                    | (s['func_param_bytes'][0] << 8)
-                    | (s['func_param_bytes'][1] << 16)
-                    | (s['func_param_bytes'][2] << 24)
-                )
-                s['func_name'] = func_txt
-            else:
-                resolved_func = FUNC_MAP_1B.get(s['dtype'], s.get('func_name', ''))
-                if s.get('sub_off') is None and s.get('raw_func_name') != resolved_func:
-                    self._apply_subentry_template(s, resolved_func)
-                s['func_name'] = resolved_func
-            if s.get('func_name') in ANM_SPEED_FUNC_NAMES and 'speed_multiplier' not in s:
-                s['speed_multiplier'] = 1.0
-                f_speed.setText("1")
-            if s.get('func_name') in FWD_VELOCITY_FUNC_NAMES:
-                if 'fwd_velocity' not in s:
-                    s['fwd_velocity'] = 0
-                    f_fwd_vel.setText("0")
-                if 'fwd_velocity_duration' not in s:
-                    s['fwd_velocity_duration'] = 0
-                    f_fwd_dur.setText("0")
-            if s.get('func_name') in GION_FUNC_NAMES:
-                if 'gion_scale' not in s:
-                    s['gion_scale'] = 1.0
-                    f_gion_scale.setText("1")
-                if 'gion_id' not in s:
-                    s['gion_id'] = ''
-                    f_gion_id.setText("")
-            if s.get('func_name') in ATKHIT_FUNC_NAMES and 'atkhit_params' not in s:
-                s['atkhit_params'] = [0, 0, 0, 0, 0]
-                for _, f_param in atkhit_fields:
-                    f_param.setText("0")
-            s['dname'] = DATA_TYPE_MAP.get(s['dtype'], str(s['dtype']))
-            f_type.setText(str(s['dtype']))
-            hdr_lbl.setText(ui_text("ui_skill_value_value_value", p0=r, p1=s['bone'], p2=s.get('func_name', '')))
-            update_func_param_visibility()
-            if self._mot_raw is not None and s.get('sub_off') is not None and not self._structural_dirty:
-                write_mot_subentry(self._mot_raw, s)
-                sub_off = s.get('sub_off')
-                if 0 <= sub_off and sub_off+MOT_SUB_SIZE <= len(self._mot_raw):
-                    s['raw_bytes'] = bytes(self._mot_raw[sub_off:sub_off+MOT_SUB_SIZE])
+    def _move_command(self, entry, index, delta):
+        if not self._flush_command_edits():
+            return
+        subs = entry['subentries']
+        target = index + delta
+        if 0 <= target < len(subs):
+            subs[index], subs[target] = subs[target], subs[index]
+            self._structural_dirty = True
+            self._show_entry(entry)
             self.changed.emit()
 
-        f_bone.editingFinished.connect(commit)
-        f_type.editingFinished.connect(commit)
-        f_frame.editingFinished.connect(commit)
-        f_attack.currentTextChanged.connect(lambda _: commit())
-        f_dmg.editingFinished.connect(commit)
-        f_grd.editingFinished.connect(commit)
-        f_x.editingFinished.connect(commit)
-        f_y.editingFinished.connect(commit)
-        f_push.editingFinished.connect(commit)
-        f_speed.editingFinished.connect(commit)
-        f_fwd_vel.editingFinished.connect(commit)
-        f_fwd_dur.editingFinished.connect(commit)
-        f_gion_id.editingFinished.connect(commit)
-        f_gion_scale.editingFinished.connect(commit)
-        for _, f_param in atkhit_fields:
-            f_param.editingFinished.connect(commit)
-        for _, f_param in func_param_fields:
-            f_param.editingFinished.connect(commit)
-        f_func.currentTextChanged.connect(lambda _: commit())
+    def _edit_raw_command(self, entry, sub):
+        """Expose opaque parameters without inventing meanings or losing bytes."""
+        size = motion_subentry_size(sub['dtype'])
+        raw = bytearray(sub.get('raw_bytes', b'')[:size].ljust(size, b'\0'))
+        write_mot_subentry(raw, {**sub, 'sub_off': 0})
+        dialog = QDialog(self)
+        dialog.setStyleSheet(ss_dialog())
+        dialog.setWindowTitle(ui_text('skill_raw_parameters') + ' — ' + sub['func_name'])
+        dialog.resize(720, 580)
+        layout = QVBoxLayout(dialog)
+        hint = QLabel(ui_text('skill_raw_hint'))
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        first_parameter = 0x38
+        table = QTableWidget(max(0, (size - first_parameter) // 4), 4)
+        configure_table(table)
+        table.setHorizontalHeaderLabels([ui_text('skill_parameter_name'), ui_text('skill_number_unsigned'),
+                                        ui_text('skill_number_signed'), ui_text('skill_number_decimal')])
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        for row in range(table.rowCount()):
+            off = first_parameter + row * 4
+            values = (ui_text('skill_parameter_number', number=row + 1), str(struct.unpack_from('<I', raw, off)[0]),
+                      str(struct.unpack_from('<i', raw, off)[0]),
+                      f'{struct.unpack_from("<f", raw, off)[0]:.9g}')
+            for col, value in enumerate(values):
+                table.setItem(row, col, QTableWidgetItem(value))
+        layout.addWidget(table, 1)
+        row = QHBoxLayout()
+        mode = QComboBox()
+        configure_input(mode)
+        mode.addItems([ui_text('skill_number_unsigned'), ui_text('skill_number_signed'), ui_text('skill_number_decimal')])
+        row.addWidget(mode)
+        value = QLineEdit()
+        configure_input(value)
+        row.addWidget(value, 1)
+        apply = QPushButton(ui_text('skill_apply_parameter'))
+        configure_button(apply)
+        row.addWidget(apply)
+        layout.addLayout(row)
+        error = QLabel()
+        error.setWordWrap(True)
+        layout.addWidget(error)
 
-        return card
+        def selected():
+            index = table.currentRow()
+            apply.setEnabled(index >= 0)
+            if index >= 0:
+                value.setText(table.item(index, mode.currentIndex() + 1).text())
+
+        def commit_parameter():
+            index = table.currentRow()
+            if index < 0:
+                return
+            try:
+                kind = mode.currentIndex()
+                text = value.text().strip()
+                encoded = struct.pack(('<I', '<i', '<f')[kind], float(text) if kind == 2 else int(text, 0))
+                updated = bytearray(raw)
+                offset = first_parameter + index * 4
+                updated[offset:offset + 4] = encoded
+                parsed = parse_motion_subentry(updated)
+                issues = [i for i in validate_skills({'mot': {'entries': [{**entry, 'subentries': [parsed]}]}}) if i['severity'] == 'error']
+                if issues:
+                    raise ValueError(issues[0]['message'])
+                parsed['sub_off'] = sub.get('sub_off')
+                sub.update(parsed)
+                self._structural_dirty = True
+                self.changed.emit()
+                dialog.accept()
+                self._show_entry(entry)
+            except (ValueError, OverflowError, struct.error) as exc:
+                error.setText(str(exc))
+
+        table.itemSelectionChanged.connect(selected)
+        mode.currentIndexChanged.connect(selected)
+        apply.clicked.connect(commit_parameter)
+        table.selectRow(0)
+        selected()
+        dialog.exec()
+
+    def _move_tools(self, entry):
+        menu = QMenu(self)
+        for key, action in (('skill_shift_frames', 'shift'), ('skill_export_move', 'export'),
+                            ('skill_import_move', 'import')):
+            menu.addAction(ui_text(key), lambda a=action: self._run_move_tool(entry, a))
+        menu.exec(self.cursor().pos())
+
+    def _run_move_tool(self, entry, action):
+        if not self._flush_command_edits():
+            return
+        try:
+            if action == 'shift':
+                delta, ok = QInputDialog.getInt(self, ui_text('skill_shift_frames'), ui_text('skill_shift_hint'), 1, -9997, 9997)
+                if not ok:
+                    return
+                shift_frames(entry, delta)
+            elif action == 'export':
+                path, _ = QFileDialog.getSaveFileName(self, ui_text('skill_export_move'), entry['event_id'] + '.move.json', 'Move JSON (*.json)')
+                if path:
+                    with open(path, 'w', encoding='utf-8') as stream:
+                        stream.write(export_move(entry))
+                return
+            else:
+                path, _ = QFileDialog.getOpenFileName(self, ui_text('skill_import_move'), '', 'Move JSON (*.json)')
+                if not path:
+                    return
+                if os.path.getsize(path) > 8_000_000:
+                    raise ValueError('Move JSON is too large')
+                with open(path, encoding='utf-8') as stream:
+                    imported = import_move(stream.read())
+                imported['event_id'] = self._unique_entry_id(imported['event_id'])
+                self._entries.append(imported)
+                entry = imported
+                self._cur_entry = entry
+            self._structural_dirty = True
+            self._refresh_list()
+            self._show_entry(entry)
+            self.changed.emit()
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            QMessageBox.warning(self, ui_text('dlg_title_error'), str(exc))
 
     def _on_ev_edited(self, text, entry):
         entry['event_id'] = text
@@ -1444,12 +1287,20 @@ class _MotTab(QWidget):
 
     def _on_flag_edited(self, key, field, entry):
         try:
-            entry[key] = int(field.text())
-            if self._mot_raw is not None and entry.get('offset') is not None and not self._structural_dirty:
-                write_mot_entry(self._mot_raw, entry)
-            self.changed.emit()
-        except Exception:
-            pass
+            value = int(field.text())
+            if not 0 <= value <= 0xFFFFFFFF:
+                raise ValueError()
+            field.setProperty('skill_invalid', False)
+            configure_input(field)
+            if value != entry.get(key, 0):
+                entry[key] = value
+                self._structural_dirty = True
+                self.changed.emit()
+            return True
+        except ValueError:
+            field.setProperty('skill_invalid', True)
+            field.setStyleSheet(ss_input_validation(True))
+            return False
 
 
 # Main Editor
@@ -1458,7 +1309,12 @@ class SkillEditor(QWidget):
     _load_error_signal = pyqtSignal(str)
 
     def __init__(self, parent=None, lang_func=None, embedded=False):  # noqa: ARG002
+        if embedded and parent is None:
+            raise ValueError('Embedded Char Skills requires its editor host')
         super().__init__(parent)
+        self.embedded = embedded
+        if embedded:
+            self.setWindowFlags(Qt.WindowType.Widget)
         self.t = lang_func or (lambda k, **_: k)
 
         self._filepath  = None
@@ -1470,52 +1326,52 @@ class SkillEditor(QWidget):
         self._load_done_signal.connect(self._on_load_done)
         self._load_error_signal.connect(self._on_load_error)
         self._build_ui()
+        install_file_actions(self, self._save_btn, existing_button=self._save_as_btn)
+        install_editor_chrome(self)
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        configure_layout(root, LayoutRole.ROOT)
         self.setStyleSheet(ss_bg_dark())
 
         # Top bar — matches CharacterStats style
-        top = QFrame()
-        top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(ss_bg_panel())
-        tl = QHBoxLayout(top)
-        tl.setContentsMargins(12, 8, 12, 8)
-        tl.setSpacing(4)
+        top = EditorToolbar()
+        tl = top.content_layout
 
         self._open_btn = QPushButton(ui_text("btn_open_file"))
-        self._open_btn.setFixedHeight(TOOLBAR_BTN_H)
-        self._open_btn.setFont(QFont("Segoe UI", 10))
-        self._open_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._open_btn, accent=True)
         self._open_btn.clicked.connect(self._load_file)
+        self._open_btn.setProperty("designAction", 'open')
         tl.addWidget(self._open_btn)
 
         self._save_btn = QPushButton(ui_text("btn_save_file"))
-        self._save_btn.setFixedHeight(TOOLBAR_BTN_H)
-        self._save_btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self._save_btn.setEnabled(False)
-        self._save_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._save_btn, accent=True)
         self._save_btn.clicked.connect(self._save_file)
         tl.addWidget(self._save_btn)
 
+        self._save_as_btn = QPushButton(ui_text("btn_save_as"))
+        configure_button(self._save_as_btn)
+        self._save_as_btn.setEnabled(False)
+        self._save_as_btn.clicked.connect(self._save_as)
+        tl.addWidget(self._save_as_btn)
+
         self._file_lbl = QLabel(ui_text("no_file_loaded"))
-        self._file_lbl.setFont(QFont("Consolas", 12))
-        self._file_lbl.setStyleSheet(ss_file_label())
+
+        configure_file_label(self._file_lbl)
         tl.addWidget(self._file_lbl)
         tl.addStretch()
 
         root.addWidget(top)
 
-        sep = QFrame()
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
+        sep = EditorSeparator(accent=True)
+
+
         root.addWidget(sep)
 
         # Content area
         self._tabs = QTabWidget(self)
-        self._tabs.setFont(QFont("Segoe UI", 11))
+        self._tabs.setFont(ui_font(TypeSize.CODE))
         self._tabs.setStyleSheet(ss_tab_widget())
         self._tabs.setDocumentMode(True)
         self._tabs.setUsesScrollButtons(True)
@@ -1571,7 +1427,7 @@ class SkillEditor(QWidget):
         self._file_type = self._detect_file_type(path)
         name = os.path.basename(path)
         self._file_lbl.setText(ui_text("ui_effect_loading_value", p0=name))
-        self._file_lbl.setStyleSheet(ss_file_label())
+        configure_file_label(self._file_lbl)
         self._show_empty_state(ui_text("ui_effect_loading"))
 
         file_type = self._file_type
@@ -1588,6 +1444,7 @@ class SkillEditor(QWidget):
             self._on_load_error(str(e))
 
     def _on_load_done(self, path, raw, result):
+        self._filepath = path
         self._raw    = raw
         self._result = result
         self._dirty  = False
@@ -1603,7 +1460,10 @@ class SkillEditor(QWidget):
                     n = len(result[mot_key]['entries'])
                     tab = self._mot_tab if mot_key == 'mot' else self._gha_tab
                     tab.load(result[mot_key]['entries'], result[mot_key]['raw'])
-                    self._tabs.addTab(tab, f"{mot_label}  ({n})")
+                    initial = next((e for e in tab.get_entries() if e.get('anim_id')), None)
+                    if initial is not None:
+                        tab._on_entry_click(initial)
+                    self._tabs.addTab(tab, mot_label)
                 except Exception as e:
                     errors.append(f"{mot_label}: {e}")
 
@@ -1625,7 +1485,7 @@ class SkillEditor(QWidget):
             try:
                 self._prmload_tab.load(result['prmload_standalone']['entries'])
                 n = len(result['prmload_standalone']['entries'])
-                self._tabs.addTab(self._prmload_tab, f"Load Assets  ({n})")
+                self._tabs.addTab(self._prmload_tab, ui_text("ui_skill_load_assets"))
             except Exception as e:
                 errors.append(f"Load Assets: {e}")
 
@@ -1634,6 +1494,8 @@ class SkillEditor(QWidget):
 
         self._tabs.setVisible(True)
         self._save_btn.setEnabled(True)
+        self._save_as_btn.setEnabled(True)
+        install_editor_chrome(self)
 
     def _on_load_error(self, msg):
         self._filepath = None
@@ -1641,6 +1503,7 @@ class SkillEditor(QWidget):
         self._result = None
         self._dirty = False
         self._save_btn.setEnabled(False)
+        self._save_as_btn.setEnabled(False)
         set_file_label_empty(self._file_lbl, ui_text("no_file_loaded"))
         self._show_empty_state(ui_text("ui_effect_error_loading_file"))
         QMessageBox.critical(self, ui_text("ui_charviewer_load_error"), msg)
@@ -1650,6 +1513,13 @@ class SkillEditor(QWidget):
             self._dirty = True
             set_file_label(self._file_lbl, self._filepath, dirty=True)
 
+    def _save_as(self):
+        if not self._result:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, ui_text('skill_save_as'), self._filepath, 'XFBIN (*.xfbin)')
+        if path:
+            self._do_save(path)
+
     def _save_file(self):
         if self._filepath is None:
             return
@@ -1657,6 +1527,12 @@ class SkillEditor(QWidget):
 
     def _do_save(self, path):
         try:
+            for tab in (self._mot_tab, self._gha_tab):
+                if not tab._flush_command_edits():
+                    raise ValueError(ui_text('skill_invalid_fields'))
+            invalid = [w for w in self.findChildren(QWidget) if w.property('skill_invalid')]
+            if invalid:
+                raise ValueError(ui_text('skill_invalid_fields'))
             if 'prmload_standalone' in self._result:
                 self._result['prmload_standalone']['entries'] = self._prmload_tab.get_entries()
                 save_prmload_xfbin(path, self._raw, self._result)
@@ -1673,6 +1549,11 @@ class SkillEditor(QWidget):
                     self._result['gha']['raw'] = self._gha_tab.get_raw()
                 save_prm_xfbin(path, self._raw, self._result)
 
+            self._filepath = path
+            for key, tab in (('mot', self._mot_tab), ('gha', self._gha_tab)):
+                if key in self._result:
+                    tab._mot_raw = self._result[key]['raw']
+                    tab._structural_dirty = False
             self._dirty = False
             set_file_label(self._file_lbl, path)
         except Exception as e:

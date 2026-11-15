@@ -90,6 +90,11 @@ def _themed_icon(name: str, *, color=None, size: int | None = None) -> QIcon:
     return qta.icon(name, color=color or _icon_color())
 
 
+def editor_icon(name: str, *, size=18) -> QIcon:
+    """Public themed icon entry point for editor card headings."""
+    return _themed_icon(name, size=size)
+
+
 # PIL → QPixmap helper (used by portrait loader in ASBR-Tools.py)
 def _pil_to_qpixmap(img: Image.Image) -> QPixmap:
     img = img.convert("RGBA")

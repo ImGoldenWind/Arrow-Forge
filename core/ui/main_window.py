@@ -20,6 +20,7 @@ from core.translations import ui_text
 from core.ui.app_state import AppStateMixin
 from core.ui.editor_panel import EditorPanelMixin
 from core.ui.layout import AppLayoutMixin
+from core.ui.opengl_surface import prepare_opengl_window
 from core.widgets.unlock_toast import UnlockToast
 from core.workers.update_controller import UpdateControllerMixin
 
@@ -44,6 +45,7 @@ class App(
 
     def __init__(self):
         super().__init__()
+        prepare_opengl_window(self)
         self.setWindowTitle(ui_text("ui_ASBR-Tools_asbr_toolbox"))
         self.resize(1280, 720)
         self.setMinimumSize(960, 540)

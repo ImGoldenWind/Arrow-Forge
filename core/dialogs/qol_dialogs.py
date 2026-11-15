@@ -1,5 +1,20 @@
 from __future__ import annotations
 
+from core.design_tokens import (
+    LayoutRole,
+    Size,
+    TypeSize,
+    ui_font,
+)
+from core.style_helpers import (
+    ss_dialog,
+    ss_settings_check,
+)
+from core.ui.editor_widgets import (
+    configure_button,
+    configure_layout,
+    configure_table,
+)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
@@ -19,7 +34,6 @@ from PyQt6.QtWidgets import (
 )
 
 from core.editor_diff import ChangeItem
-from core.style_helpers import ss_btn, ss_dialog, ss_settings_check, ss_table
 from core.themes import P
 
 
@@ -41,15 +55,15 @@ class ChangeSummaryDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout.setSpacing(Size.CARD_GAP)
 
         title = QLabel(t("qol_change_summary_heading"), self)
-        title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        title.setFont(ui_font(TypeSize.SUBHEADING, QFont.Weight.Bold))
         title.setStyleSheet(f"color: {P['accent']}; border: none;")
         layout.addWidget(title)
 
         self._list = QListWidget(self)
-        self._list.setStyleSheet(ss_table())
+        configure_table(self._list)
         for change in changes:
             self._list.addItem(_change_text(change))
         layout.addWidget(self._list, 1)
@@ -63,9 +77,9 @@ class ChangeSummaryDialog(QDialog):
         save_btn = buttons.addButton(t("qol_save"), QDialogButtonBox.ButtonRole.AcceptRole)
         copy_btn = buttons.addButton(t("qol_copy_diff"), QDialogButtonBox.ButtonRole.ActionRole)
         cancel_btn = buttons.addButton(t("qol_cancel"), QDialogButtonBox.ButtonRole.RejectRole)
-        save_btn.setStyleSheet(ss_btn(accent=True))
-        copy_btn.setStyleSheet(ss_btn())
-        cancel_btn.setStyleSheet(ss_btn())
+        configure_button(save_btn, accent=True)
+        configure_button(copy_btn)
+        configure_button(cancel_btn)
         copy_btn.clicked.connect(self._copy_summary)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -88,10 +102,10 @@ class CompareCopyDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout.setSpacing(Size.CARD_GAP)
 
         title = QLabel(t("qol_compare_heading"), self)
-        title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        title.setFont(ui_font(TypeSize.SUBHEADING, QFont.Weight.Bold))
         title.setStyleSheet(f"color: {P['accent']}; border: none;")
         layout.addWidget(title)
 
@@ -111,8 +125,7 @@ class CompareCopyDialog(QDialog):
         list_frame = QFrame(self)
         list_frame.setStyleSheet("background: transparent; border: none;")
         self._list_layout = QVBoxLayout(list_frame)
-        self._list_layout.setContentsMargins(0, 0, 0, 0)
-        self._list_layout.setSpacing(4)
+        configure_layout(self._list_layout, LayoutRole.FIELD)
         scroll.setWidget(list_frame)
         layout.addWidget(scroll, 1)
         self._render_checks()
@@ -120,13 +133,11 @@ class CompareCopyDialog(QDialog):
         row = QHBoxLayout()
         row.addStretch()
         copy_btn = QPushButton(t("qol_copy_selected"), self)
-        copy_btn.setFixedHeight(30)
-        copy_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(copy_btn, accent=True)
         copy_btn.clicked.connect(self._copy_selected)
         row.addWidget(copy_btn)
         close_btn = QPushButton(t("qol_close"), self)
-        close_btn.setFixedHeight(30)
-        close_btn.setStyleSheet(ss_btn())
+        configure_button(close_btn)
         close_btn.clicked.connect(self.reject)
         row.addWidget(close_btn)
         layout.addLayout(row)

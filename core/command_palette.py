@@ -1,4 +1,6 @@
 from __future__ import annotations
+from core.design_tokens import TypeSize
+from core.design_tokens import ui_font
 
 from dataclasses import dataclass
 from typing import Callable
@@ -48,7 +50,7 @@ class CommandPalette(QDialog):
         self._entry = QLineEdit(self)
         self._entry.setPlaceholderText(placeholder)
         self._entry.setFixedHeight(34)
-        self._entry.setFont(QFont("Segoe UI", 12))
+        self._entry.setFont(ui_font(TypeSize.LABEL))
         self._entry.setStyleSheet(ss_input())
         self._entry.textChanged.connect(self._refresh)
         self._entry.returnPressed.connect(self._accept_current)
@@ -61,7 +63,7 @@ class CommandPalette(QDialog):
         layout.addWidget(self._list, 1)
 
         hint = QLabel(parent.t("command_palette_hint") if hasattr(parent, "t") else "", self)
-        hint.setFont(QFont("Segoe UI", 10))
+        hint.setFont(ui_font(TypeSize.BODY))
         hint.setStyleSheet(f"color: {P['text_dim']}; border: none; background: transparent;")
         layout.addWidget(hint)
 
@@ -89,7 +91,7 @@ class CommandPalette(QDialog):
 
     def _make_row(self, command: Command):
         row = QLabel(command.label if not command.shortcut else f"{command.label}    {command.shortcut}", self._list)
-        row.setFont(QFont("Segoe UI", 11))
+        row.setFont(ui_font(TypeSize.CODE))
         color = P["text_main"] if command.enabled else P["text_dim"]
         row.setStyleSheet(f"color: {color}; padding: 7px 8px; background: transparent; border: none;")
         return row

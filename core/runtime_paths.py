@@ -26,7 +26,10 @@ def app_path(*parts: str) -> str:
     if getattr(sys, "frozen", False) and parts:
         external_names = {"locales", "asbr_settings.json"}
         if parts[0] in external_names:
-            return os.path.join(app_root(), *parts)
+            external = os.path.join(app_root(), *parts)
+            if parts[0] != "locales" or os.path.isdir(os.path.join(app_root(), "locales")):
+                return external
+            return os.path.join(bundled_root(), *parts)
         return os.path.join(bundled_root(), *parts)
     return os.path.join(app_root(), *parts)
 

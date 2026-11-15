@@ -385,6 +385,8 @@ def parse_hca_info(data):
 
     version = struct.unpack_from('>H', data, 4)[0]
     data_offset = struct.unpack_from('>H', data, 6)[0]
+    if not 10 <= data_offset <= len(data):
+        raise ValueError('Truncated HCA header')
 
     info = dict(
         version_major=version >> 8, version_minor=version & 0xFF,
@@ -396,7 +398,8 @@ def parse_hca_info(data):
         total_band_count=128, base_band_count=128,
         stereo_band_count=0, bands_per_hfr_group=0,
         ath_type=0,
-        loop_enabled=False, loop_start=0, loop_end=0, loop_count=0,
+        loop_enabled=False, loop_start=0, loop_end=0,
+        loop_start_delay=0, loop_end_padding=0,
         cipher_type=0,
         rva_volume=1.0, rva_offset=-1,
     )
@@ -404,6 +407,11 @@ def parse_hca_info(data):
     pos = 8
     while pos < data_offset - 2:
         sig = _unmask4(data, pos)
+        sizes = {b'fmt\x00': 16, b'comp': 16, b'dec\x00': 12,
+                 b'vbr\x00': 8, b'ath\x00': 6, b'loop': 16,
+                 b'ciph': 6, b'rva\x00': 8, b'pad\x00': 4, b'comm': 5}
+        if pos + sizes.get(sig, 4) > data_offset - 2:
+            raise ValueError('Truncated HCA header chunk')
         if sig == b'fmt\x00':
             info['channels'] = data[pos + 4]
             info['sample_rate'] = (data[pos + 5] << 16) | (data[pos + 6] << 8) | data[pos + 7]
@@ -442,7 +450,7 @@ def parse_hca_info(data):
             info['loop_enabled'] = True
             info['loop_start'] = struct.unpack_from('>I', data, pos + 4)[0]
             info['loop_end'] = struct.unpack_from('>I', data, pos + 8)[0]
-            info['loop_count'] = struct.unpack_from('>H', data, pos + 12)[0]
+            info['loop_start_delay'], info['loop_end_padding'] = struct.unpack_from('>HH', data, pos + 12)
             pos += 16
         elif sig == b'ciph':
             info['cipher_type'] = struct.unpack_from('>H', data, pos + 4)[0]
@@ -453,8 +461,12 @@ def parse_hca_info(data):
             pos += 8
         elif sig == b'pad\x00':
             break
+        elif sig == b'comm':
+            pos += 5 + data[pos + 4]
+            if pos > data_offset - 2:
+                raise ValueError('Truncated HCA comment')
         else:
-            pos += 4  # skip unknown
+            raise ValueError(f'Unknown HCA header chunk: {sig!r}')
 
     # Calculate HFR values
     bphg = info['bands_per_hfr_group']
@@ -470,9 +482,15 @@ def parse_hca_info(data):
     fc = info['frame_count']
     total = fc * _SAMPLES_PER_FRAME
     actual = max(0, total - info['mute_header'] - info['mute_footer'])
+    if not 1 <= info['channels'] <= 16 or not sr or not fc or total <= info['mute_header'] + info['mute_footer']:
+        raise ValueError('Invalid HCA stream dimensions')
     info['total_samples'] = total
     info['actual_samples'] = actual
     info['duration'] = actual / sr if sr > 0 else 0.0
+    info['loop_start_sample'] = info['loop_start'] * _SAMPLES_PER_FRAME - info['mute_header'] + info['loop_start_delay']
+    info['loop_end_sample'] = (info['loop_end'] + 1) * _SAMPLES_PER_FRAME - info['mute_header'] - info['loop_end_padding']
+    info['loop_valid'] = bool(info['loop_enabled'] and
+                             0 <= info['loop_start_sample'] < info['loop_end_sample'] <= actual)
     if info['frame_size'] > 0 and fc > 0 and total > 0:
         info['bit_rate'] = int(info['frame_size'] * fc * 8 * sr / total)
     else:
@@ -482,8 +500,73 @@ def parse_hca_info(data):
 
 # RVA volume editing
 
+def _header_chunks(data, info):
+    """Validated fixed header extents; pad owns the remainder before the CRC."""
+    pos, end = 8, info['data_offset'] - 2
+    sizes = {b'fmt\x00': 16, b'comp': 16, b'dec\x00': 12, b'vbr\x00': 8,
+             b'ath\x00': 6, b'loop': 16, b'ciph': 6, b'rva\x00': 8}
+    while pos < end:
+        tag = _unmask4(data, pos)
+        if tag == b'pad\x00':
+            yield tag, pos, end - pos
+            return
+        size = 5 + data[pos + 4] if tag == b'comm' else sizes.get(tag)
+        if size is None or pos + size > end:
+            raise ValueError('Unsupported HCA header layout')
+        yield tag, pos, size
+        pos += size
+
+
+def set_hca_loop(data, enabled, start_sample=0, end_sample=None):
+    """Edit exact audible-sample loop bounds without moving compressed frames.
+
+    The end is exclusive. Native HCA stores inclusive end-frame plus padding.
+    New chunks use header padding; insufficient space fails without mutation.
+    """
+    info = parse_hca_info(data)
+    if end_sample is None:
+        end_sample = info['actual_samples']
+    if enabled and not (isinstance(start_sample, int) and isinstance(end_sample, int)
+                        and 0 <= start_sample < end_sample <= info['actual_samples']):
+        raise ValueError('HCA loop must satisfy 0 <= start < end <= sample count')
+    if (bool(enabled) == info['loop_enabled'] and (not enabled or
+            (start_sample, end_sample) == (info['loop_start_sample'], info['loop_end_sample']))):
+        return bytes(data)
+    chunks = list(_header_chunks(data, info))
+    position = next((pos for tag, pos, _ in chunks if tag == b'loop'), None)
+    buf = bytearray(data)
+    crc_pos = info['data_offset'] - 2
+    if enabled:
+        raw_start = start_sample + info['mute_header']
+        raw_end = end_sample + info['mute_header']
+        start_frame, start_delay = divmod(raw_start, _SAMPLES_PER_FRAME)
+        end_frame = (raw_end - 1) // _SAMPLES_PER_FRAME
+        end_padding = (end_frame + 1) * _SAMPLES_PER_FRAME - raw_end
+        tag = b'\xec\xef\xef\xf0' if data[0] & 128 else b'loop'
+        chunk = tag + struct.pack('>IIHH', start_frame, end_frame, start_delay, end_padding)
+        if position is None:
+            pad = next(((pos, size) for tag, pos, size in chunks if tag == b'pad\x00'), None)
+            if pad is None or pad[1] < 20:
+                raise ValueError('No space for loop chunk in HCA header')
+            position = next(pos for tag, pos, _ in chunks if tag in (b'ciph', b'rva\x00', b'comm', b'pad\x00'))
+            tail_end = pad[0] + 4
+            buf[position + 16:tail_end + 16] = data[position:tail_end]
+        buf[position:position + 16] = chunk
+    elif position is not None:
+        buf[position:crc_pos] = data[position + 16:crc_pos] + bytes(16)
+        if not any(tag == b'pad\x00' for tag, _, _ in chunks):
+            buf[crc_pos - 16:crc_pos - 12] = b'pad\x00'
+    struct.pack_into('>H', buf, crc_pos, _crc16(buf, crc_pos))
+    return bytes(buf)
+
 def set_hca_volume(data, volume):
     """Set (or insert) RVA volume in HCA data. Returns modified bytes."""
+    if not math.isfinite(volume) or volume < 0:
+        raise ValueError('RVA must be a finite nonnegative multiplier')
+    try:
+        struct.pack('>f', volume)
+    except (OverflowError, struct.error) as exc:
+        raise ValueError('RVA exceeds float32 storage') from exc
     buf = bytearray(data)
     info = parse_hca_info(data)
 
@@ -492,25 +575,19 @@ def set_hca_volume(data, volume):
     else:
         # Insert rva chunk in padding area
         do = info['data_offset']
-        pos = 8
-        pad_pos = -1
-        while pos < do - 2:
-            sig = _unmask4(data, pos)
-            if sig == b'pad\x00':
-                pad_pos = pos
-                break
-            sizes = {b'fmt\x00': 16, b'comp': 16, b'dec\x00': 12,
-                     b'vbr\x00': 8, b'ath\x00': 6, b'loop': 16,
-                     b'ciph': 6, b'rva\x00': 8}
-            pos += sizes.get(sig, 4)
+        pad_pos = next((pos for tag, pos, _ in _header_chunks(data, info) if tag == b'pad\x00'), -1)
 
         if pad_pos < 0 or (do - 2 - pad_pos) < 12:
             raise ValueError("No space for RVA chunk in header")
 
-        # Write masked "rva\0" + float32 + masked "pad\0"
-        buf[pad_pos:pad_pos + 4] = bytes([0x72|0x80, 0x76|0x80, 0x61|0x80, 0x00])
-        struct.pack_into('>f', buf, pad_pos + 4, volume)
-        buf[pad_pos + 8:pad_pos + 12] = bytes([0x70|0x80, 0x61|0x80, 0x64|0x80, 0x00])
+        # Native CRI expects RVA before comm. Move the comment and pad tag
+        # into available padding instead of appending RVA after the comment.
+        insert_pos = next(pos for tag, pos, _ in _header_chunks(data, info)
+                          if tag in (b'comm', b'pad\x00'))
+        tail_end = pad_pos + 4
+        buf[insert_pos + 8:tail_end + 8] = data[insert_pos:tail_end]
+        buf[insert_pos:insert_pos + 4] = b'\xf2\xf6\xe1\x00' if data[0] & 128 else b'rva\x00'
+        struct.pack_into('>f', buf, insert_pos + 4, volume)
 
     # Recalculate header CRC
     crc_pos = info['data_offset'] - 2

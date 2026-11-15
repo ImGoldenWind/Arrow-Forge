@@ -21,8 +21,11 @@ def read_xfbin(path: str) -> Xfbin:
     ]
 
     xfbin = Xfbin()
+    xfbin.nucc_header = br_xfbin.header
+    xfbin.initial_null_header = getattr(br_xfbin, 'initial_null_header', None)
     for br_page in br_xfbin.pages:
         page = Page()
+        page.nucc_envelopes = []
 
         # Populate initial_page_chunks (used by writer for page metadata)
         page.initial_page_chunks = [chunks[i] for i in br_page.page_chunk_indices]
@@ -40,6 +43,11 @@ def read_xfbin(path: str) -> Xfbin:
         for local_idx, br_nucc in br_page.chunks_dict.items():
             global_idx = br_page.page_chunk_indices[local_idx]
             chunk = chunks[global_idx]
+            chunk.nucc_version = br_nucc.version
+            chunk.nucc_unk = br_nucc.anmvalue
+            # Null/Page objects can be shared across pages. Their envelope
+            # metadata belongs to the individual occurrence, not that object.
+            page.nucc_envelopes.append((chunk, br_nucc.version, br_nucc.anmvalue))
             chunk.init_data(br_nucc, chunks,
                             br_page.page_chunk_indices,
                             page.chunk_references)

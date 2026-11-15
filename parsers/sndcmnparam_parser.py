@@ -1,256 +1,180 @@
+﻿"""Lossless Sound CMN tables, including inactive storage and page-local maps.
+
+Counts are signed i16 in native loaders. CRI names are 64/64/32 bytes,
+not five independent 32-byte strings. Semantics live in soundparam_tools.
+"""
+import math
+import os
 import struct
+import tempfile
 
-# Entry sizes per section type
-SNDCMN_ENTRY_SIZE  = 32   # audio ID string, null-padded
-PLDATA_ENTRY_SIZE  = 212  # char_id(32)+pl(32)+null1(32)+spl(32)+spl_int(32)+ev(32)+5f(20)
-CRIDATA_ENTRY_SIZE = 178  # 4f(16)+5str×32(160)+u16(2)
+from parsers.xfbin_lib.binary_reader import BinaryReader, Endian
+from parsers.xfbin_lib.br_xfbin import BrChunkTable, BrNuccHeader
+
+SNDCMN_ENTRY_SIZE, PLDATA_ENTRY_SIZE, CRIDATA_ENTRY_SIZE = 32, 212, 178
+SCHEMAS = {
+    'sndcmnparam': (32, ((0, 'audio_id', 32),), ()),
+    'pldata': (212, tuple((i * 32, key, 32) for i, key in enumerate(
+        ('char_id', 'pl', 'null1', 'spl', 'spl_interaction', 'ev'))),
+        tuple((192 + i * 4, key, 'f') for i, key in enumerate(
+            ('stand_index', 'unk2', 'unk3', 'entity', 'char_index')))),
+    'cridata': (178, ((16, 'str0', 64), (80, 'str2', 64), (144, 'str4', 32)),
+        (*tuple((i * 4, f'float{i}', 'f') for i in range(4)), (176, 'flag', 'H'))),
+}
 
 
-# XFBIN helpers
+def _decode(data):
+    return bytes(data).split(b'\0', 1)[0].decode('latin1')
 
-def _extract_name_strings(raw):
-    """Return list of chunk name strings from the XFBIN chunk table."""
-    chunk_table_start = 28
-    ct = raw[chunk_table_start:]
-    # Chunk-table meta header layout (10 × BE uint32 = 40 bytes):
-    #  [0] unk4, [1] type_str_size, [2] unk, [3] path_str_size, [4] path_cnt,
-    #  [5] name_str_size, [6] name_cnt, [7] map_size, [8] unk, [9] unk
-    type_sz = struct.unpack('>I', ct[4:8])[0]
-    path_sz = struct.unpack('>I', ct[12:16])[0]
-    name_sz = struct.unpack('>I', ct[20:24])[0]
 
-    type_off = chunk_table_start + 40
-    path_off = type_off + type_sz
-    name_off = path_off + path_sz
-
-    name_data = raw[name_off:name_off + name_sz]
-    return [n.decode('ascii', errors='replace') for n in name_data.split(b'\x00') if n]
+def encode_string(value, width):
+    if not isinstance(value, str) or '\0' in value:
+        raise ValueError('Sound references must be strings without NUL bytes.')
+    data = value.encode('ascii')
+    if len(data) >= width:
+        raise ValueError(f'Sound reference must fit {width - 1} ASCII bytes plus NUL.')
+    return data.ljust(width, b'\0')
 
 
 def _scan_chunks(raw):
-    """Scan all XFBIN chunk headers. No 4-byte alignment between chunks."""
-    chunk_table_size = struct.unpack('>I', raw[16:20])[0]
-    offset = 28 + chunk_table_size
-    chunks = []
-    while offset + 12 <= len(raw):
-        chunk_size = struct.unpack('>I', raw[offset:offset + 4])[0]
-        map_idx    = struct.unpack('>I', raw[offset + 4:offset + 8])[0]
-        chunks.append({
-            'hdr_offset':  offset,
-            'data_offset': offset + 12,
-            'chunk_size':  chunk_size,
-            'map_idx':     map_idx,
-        })
-        offset += 12 if chunk_size == 0 else 12 + chunk_size
-        if offset >= len(raw):
-            break
+    if len(raw) < 68 or raw[:4] != b'NUCC':
+        raise ValueError('Not a NUCC/XFBIN container.')
+    counts = struct.unpack_from('>10I', raw, 28)
+    end = (68 + counts[1] + counts[3] + counts[5] + 3) & ~3
+    end += counts[6] * 12 + counts[9] * 8 + counts[8] * 4
+    if end > len(raw) or any(counts[i] > end for i in (0, 2, 4, 6, 8, 9)):
+        raise ValueError('Invalid XFBIN chunk table.')
+    try:
+        with BinaryReader(raw[:end], Endian.BIG, 'cp932') as reader:
+            reader.read_struct(BrNuccHeader)
+            table = reader.read_struct(BrChunkTable)
+    except Exception as exc:
+        raise ValueError('Invalid XFBIN chunk table.') from exc
+    offset, page_start, chunks = end, 0, []
+    while offset < len(raw):
+        if offset + 12 > len(raw):
+            raise ValueError('Truncated XFBIN chunk header.')
+        size, index = struct.unpack_from('>II', raw, offset)
+        if size > len(raw) - offset - 12:
+            raise ValueError('Truncated XFBIN chunk payload.')
+        try:
+            mapping = table.chunk_map_indices[page_start + index]
+            kind, path, name = table.get_props_from_chunk_map(table.chunk_maps[mapping])
+        except IndexError as exc:
+            raise ValueError('Invalid page-local XFBIN chunk mapping.') from exc
+        chunks.append(dict(hdr_offset=offset, data_offset=offset + 12, chunk_size=size,
+                           name=name, kind=kind, path=path))
+        if kind == 'nuccChunkPage':
+            if size < 8:
+                raise ValueError('Truncated XFBIN page.')
+            page_start += struct.unpack_from('>I', raw, offset + 12)[0]
+        offset += 12 + size
     return chunks
 
 
-# Per-type parsers
-
-def _parse_sndcmnparam(raw, data_off):
-    count = struct.unpack('<H', raw[data_off + 4:data_off + 6])[0]
+def _parse_section(raw, chunk):
+    kind = chunk['name'].lower()
+    kind = kind if kind in ('pldata', 'cridata') else 'sndcmnparam'
+    stride, strings, numbers = SCHEMAS[kind]
+    offset, size = chunk['data_offset'], chunk['chunk_size']
+    if size < 6:
+        raise ValueError(f'Truncated sound section {chunk["name"]}.')
+    inner = struct.unpack_from('>I', raw, offset)[0] + 4
+    count = struct.unpack_from('<h', raw, offset + 4)[0]
+    if not 6 <= inner <= size or count < 0 or count > (inner - 6) // stride:
+        raise ValueError(f'Invalid sound row count/length in {chunk["name"]}.')
     entries = []
     for i in range(count):
-        off = data_off + 6 + i * SNDCMN_ENTRY_SIZE
-        s = raw[off:off + 32].rstrip(b'\x00').decode('ascii', errors='replace')
-        entries.append({'idx': i, 'audio_id': s})
-    return entries
+        base = offset + 6 + i * stride
+        record = bytes(raw[base:base + stride])
+        entry = dict(idx=i, _record=record)
+        for start, key, width in strings:
+            entry[key] = _decode(record[start:start + width])
+        for start, key, fmt in numbers:
+            entry[key] = struct.unpack_from('<' + fmt, record, start)[0]
+        entries.append(entry)
+    return dict(chunk, type=kind, entries=entries,
+                _suffix=bytes(raw[offset + 6 + count * stride:offset + inner]),
+                _tail=bytes(raw[offset + inner:offset + size]))
 
-
-def _parse_pldata(raw, data_off):
-    count = struct.unpack('<H', raw[data_off + 4:data_off + 6])[0]
-    entries = []
-    for i in range(count):
-        off = data_off + 6 + i * PLDATA_ENTRY_SIZE
-        e = raw[off:off + PLDATA_ENTRY_SIZE]
-        fields = [e[j * 32:(j + 1) * 32].rstrip(b'\x00').decode('ascii', errors='replace')
-                  for j in range(6)]
-        f = struct.unpack('<5f', e[192:212])
-        entries.append({
-            'idx': i,
-            'char_id':          fields[0],
-            'pl':               fields[1],
-            'null1':            fields[2],
-            'spl':              fields[3],
-            'spl_interaction':  fields[4],
-            'ev':               fields[5],
-            'stand_index':      f[0],
-            'unk2':             f[1],
-            'unk3':             f[2],
-            'entity':           f[3],
-            'char_index':       f[4],
-        })
-    return entries
-
-
-def _parse_cridata(raw, data_off):
-    count = struct.unpack('<H', raw[data_off + 4:data_off + 6])[0]
-    entries = []
-    for i in range(count):
-        off = data_off + 6 + i * CRIDATA_ENTRY_SIZE
-        e = raw[off:off + CRIDATA_ENTRY_SIZE]
-        f0, f1, f2, f3 = struct.unpack('<4f', e[0:16])
-        strs = [e[16 + j * 32:16 + (j + 1) * 32].rstrip(b'\x00').decode('ascii', errors='replace')
-                for j in range(5)]
-        u16 = struct.unpack('<H', e[176:178])[0]
-        entries.append({
-            'idx':    i,
-            'float0': f0, 'float1': f1, 'float2': f2, 'float3': f3,
-            'str0':   strs[0], 'str1': strs[1], 'str2': strs[2],
-            'str3':   strs[3], 'str4': strs[4],
-            'flag':   u16,
-        })
-    return entries
-
-
-# Public parse entry point
 
 def parse_sndcmnparam_xfbin(filepath):
-    """Parse sndcmnparam.xfbin.
-
-    Returns (raw_bytearray, sections) where sections is a list of dicts:
-        name        – "battle", "pldata", etc.
-        type        – "sndcmnparam" | "pldata" | "cridata"
-        entries     – list of entry dicts
-        hdr_offset  – file offset of the 12-byte chunk header
-        chunk_size  – original chunk payload size
-    """
-    with open(filepath, 'rb') as f:
-        raw = bytearray(f.read())
-
-    names = _extract_name_strings(raw)
-    # Keep only data names (strip 'Page0', 'index', empty strings)
-    data_names = [n for n in names if n not in ('', 'Page0', 'index')]
-
-    all_chunks  = _scan_chunks(raw)
-    bin_chunks  = [c for c in all_chunks if c['map_idx'] == 1]
-
-    sections = []
-    for i, chunk in enumerate(bin_chunks):
-        name     = data_names[i] if i < len(data_names) else f'section_{i}'
-        data_off = chunk['data_offset']
-        sz       = chunk['chunk_size']
-
-        # Determine entry size to classify the section type
-        if sz >= 6:
-            count = struct.unpack('<H', raw[data_off + 4:data_off + 6])[0]
-            entry_sz = ((sz - 6) // count) if count else 32
-        else:
-            count, entry_sz = 0, 32
-
-        if entry_sz == PLDATA_ENTRY_SIZE:
-            sec_type = 'pldata'
-            entries  = _parse_pldata(raw, data_off)
-        elif entry_sz == CRIDATA_ENTRY_SIZE:
-            sec_type = 'cridata'
-            entries  = _parse_cridata(raw, data_off)
-        else:
-            sec_type = 'sndcmnparam'
-            entries  = _parse_sndcmnparam(raw, data_off)
-
-        sections.append({
-            'name':       name,
-            'type':       sec_type,
-            'entries':    entries,
-            'hdr_offset': chunk['hdr_offset'],
-            'chunk_size': sz,
-        })
-
+    with open(filepath, 'rb') as stream:
+        raw = bytearray(stream.read())
+    sections = [_parse_section(raw, chunk) for chunk in _scan_chunks(raw)
+                if chunk['kind'] == 'nuccChunkBinary']
+    if not sections:
+        raise ValueError('No sound parameter tables found.')
     return raw, sections
 
 
-# Per-type payload builders
-
-def _build_sndcmnparam_payload(entries):
-    count = len(entries)
-    data_sz = 2 + count * SNDCMN_ENTRY_SIZE
-    payload = bytearray(4 + data_sz)
-    struct.pack_into('>I', payload, 0, data_sz)          # BE payload_data_size
-    struct.pack_into('<H', payload, 4, count)             # LE count
-    for i, e in enumerate(entries):
-        off = 6 + i * SNDCMN_ENTRY_SIZE
-        b = e['audio_id'].encode('ascii', errors='replace')[:32]
-        payload[off:off + 32] = b + b'\x00' * (32 - len(b))
-    return payload
-
-
-def _build_pldata_payload(entries):
-    count = len(entries)
-    data_sz = 2 + count * PLDATA_ENTRY_SIZE
-    payload = bytearray(4 + data_sz)
-    struct.pack_into('>I', payload, 0, data_sz)
-    struct.pack_into('<H', payload, 4, count)
-    str_fields = ['char_id', 'pl', 'null1', 'spl', 'spl_interaction', 'ev']
-    for i, e in enumerate(entries):
-        off = 6 + i * PLDATA_ENTRY_SIZE
-        for j, field in enumerate(str_fields):
-            b = e[field].encode('ascii', errors='replace')[:32]
-            payload[off + j * 32:off + j * 32 + 32] = b + b'\x00' * (32 - len(b))
-        struct.pack_into('<5f', payload, off + 192,
-                         e['stand_index'], e['unk2'], e['unk3'],
-                         e['entity'], e['char_index'])
-    return payload
+def _build_payload(section):
+    stride, strings, numbers = SCHEMAS[section['type']]
+    entries = section['entries']
+    if len(entries) > 32767:
+        raise ValueError('Sound tables support at most 32767 active rows (signed i16).')
+    records = bytearray()
+    for entry in entries:
+        record = bytearray(entry.get('_record', bytes(stride)))
+        if len(record) != stride:
+            raise ValueError('Incompatible sound record size.')
+        for start, key, width in strings:
+            if entry[key] != _decode(record[start:start + width]):
+                record[start:start + width] = encode_string(entry[key], width)
+        for start, key, fmt in numbers:
+            before = struct.unpack_from('<' + fmt, record, start)[0]
+            value = entry[key]
+            # Keep untouched NaN payloads, signed zero and all string padding.
+            if value == before or fmt == 'f' and math.isnan(value) and math.isnan(before):
+                continue
+            if fmt == 'f' and not math.isfinite(value):
+                raise ValueError('Edited sound values must be finite float32 numbers.')
+            if fmt == 'H' and (not isinstance(value, int) or not 0 <= value <= 65535):
+                raise ValueError('Expected an unsigned 16-bit sound value.')
+            struct.pack_into('<' + fmt, record, start, value)
+        records.extend(record)
+    body = struct.pack('<h', len(entries)) + records + section.get('_suffix', b'')
+    return struct.pack('>I', len(body)) + body + section.get('_tail', b'')
 
 
-def _build_cridata_payload(entries):
-    count = len(entries)
-    data_sz = 2 + count * CRIDATA_ENTRY_SIZE
-    payload = bytearray(4 + data_sz)
-    struct.pack_into('>I', payload, 0, data_sz)
-    struct.pack_into('<H', payload, 4, count)
-    for i, e in enumerate(entries):
-        off = 6 + i * CRIDATA_ENTRY_SIZE
-        struct.pack_into('<4f', payload, off,
-                         e['float0'], e['float1'], e['float2'], e['float3'])
-        for j, field in enumerate(['str0', 'str1', 'str2', 'str3', 'str4']):
-            b = e[field].encode('ascii', errors='replace')[:32]
-            payload[off + 16 + j * 32:off + 16 + j * 32 + 32] = b + b'\x00' * (32 - len(b))
-        struct.pack_into('<H', payload, off + 176, e['flag'])
-    return payload
+def build_sndcmnparam_xfbin(raw, sections):
+    chunks = _scan_chunks(raw)
+    originals = {c['hdr_offset']: c for c in chunks if c['kind'] == 'nuccChunkBinary'}
+    if len(sections) != len(originals) or {s['hdr_offset'] for s in sections} != set(originals):
+        raise ValueError('Sound section identities do not match the source container.')
+    replacements = {}
+    for section in sections:
+        original = originals[section['hdr_offset']]
+        expected = original['name'].lower()
+        expected = expected if expected in ('pldata', 'cridata') else 'sndcmnparam'
+        if section['name'] != original['name'] or section['type'] != expected:
+            raise ValueError('Sound section identity changed.')
+        payload = _build_payload(section)
+        header = bytearray(raw[section['hdr_offset']:section['hdr_offset'] + 12])
+        struct.pack_into('>I', header, 0, len(payload))
+        replacements[section['hdr_offset']] = header + payload
+    output, cursor = bytearray(), 0
+    for chunk in chunks:
+        start = chunk['hdr_offset']
+        if start not in replacements:
+            continue
+        output.extend(raw[cursor:start])
+        output.extend(replacements[start])
+        cursor = start + 12 + chunk['chunk_size']
+    output.extend(raw[cursor:])
+    return bytes(output)
 
-
-# Public save entry point
 
 def save_sndcmnparam_xfbin(filepath, raw, sections):
-    """Rebuild the XFBIN with updated sections and write to filepath."""
-    chunk_table_size = struct.unpack('>I', raw[16:20])[0]
-    header_end = 28 + chunk_table_size
-
-    # Build a mapping hdr_offset → new_payload for binary chunks
-    all_chunks = _scan_chunks(raw)
-    bin_order  = [c for c in all_chunks if c['map_idx'] == 1]
-    binary_map = {}
-    for i, chunk in enumerate(bin_order):
-        if i >= len(sections):
-            break
-        sec = sections[i]
-        if sec['type'] == 'pldata':
-            payload = _build_pldata_payload(sec['entries'])
-        elif sec['type'] == 'cridata':
-            payload = _build_cridata_payload(sec['entries'])
-        else:
-            payload = _build_sndcmnparam_payload(sec['entries'])
-        binary_map[chunk['hdr_offset']] = payload
-
-    # Rebuild the file: keep XFBIN header+table, then walk chunks
-    buf = bytearray(raw[:header_end])
-    for chunk in all_chunks:
-        hdr_off   = chunk['hdr_offset']
-        chunk_sz  = chunk['chunk_size']
-        if chunk['map_idx'] == 1 and hdr_off in binary_map:
-            new_payload = binary_map[hdr_off]
-            new_sz = len(new_payload)
-            new_hdr = bytearray(12)
-            struct.pack_into('>I', new_hdr, 0, new_sz)
-            new_hdr[4:12] = raw[hdr_off + 4:hdr_off + 12]  # preserve map_idx + ver
-            buf += new_hdr + new_payload
-        else:
-            if chunk_sz == 0:
-                buf += raw[hdr_off:hdr_off + 12]
-            else:
-                buf += raw[hdr_off:hdr_off + 12 + chunk_sz]
-
-    with open(filepath, 'wb') as f:
-        f.write(buf)
+    output = build_sndcmnparam_xfbin(raw, sections)
+    destination = os.path.abspath(filepath)
+    fd, temporary = tempfile.mkstemp(prefix='.arrow-sound-', dir=os.path.dirname(destination))
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(output)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)

@@ -92,10 +92,14 @@ class BrNuccChunkTexture(BrNuccChunk):
     def __br_write__(self, br: BinaryReader, chunk_index_dict: IterativeDict):
         from .br_nut import BrNut
         nut = self.nuccChunk.nut
-        br.write_uint16(0)
+        chunk = self.nuccChunk
+        if chunk.data is not None and getattr(chunk, '_original_nut_key', None) == nut.storage_key():
+            br.write_bytes(bytes(chunk.data))
+            return
+        br.write_uint16(getattr(chunk, 'field00', 0))
         br.write_uint16(nut.textures[0].width  if nut and nut.textures else 0)
         br.write_uint16(nut.textures[0].height if nut and nut.textures else 0)
-        br.write_uint16(0)
+        br.write_uint16(getattr(chunk, 'field06', 0))
         with BinaryReader(endianness=Endian.BIG) as br_inner:
             br_inner.write_struct(BrNut(), nut)
             br.write_uint32(br_inner.size())
@@ -272,7 +276,10 @@ class BrNuccChunkModel(BrNuccChunk):
         br.write_uint32(0)
         br.write_uint32(chunk_index_dict.get_or_next(chunk.clump_chunk))
         br.write_uint32(chunk_index_dict.get_or_next(chunk.hit_chunk))
-        br.write_uint32(chunk.coord_index if chunk.coord_index != -1 else 0)
+        # Unbound models omit the coordinate word: the reader recognizes
+        # NUD size in this position. Writing zero silently attaches bone 0.
+        if chunk.coord_index != -1:
+            br.write_uint32(chunk.coord_index)
 
         with BinaryReader(endianness=Endian.BIG) as inner:
             inner.write_struct(BrNud(), chunk.nud)

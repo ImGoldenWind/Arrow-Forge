@@ -1,3 +1,5 @@
+from core.design_tokens import TypeSize
+from core.design_tokens import ui_font
 from PyQt6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QFrame, QGraphicsOpacityEffect, QLabel, QVBoxLayout
@@ -18,13 +20,13 @@ class UnlockToast(QFrame):
 
         title_lbl = QLabel(title)
         title_lbl.setObjectName("UnlockToastTitle")
-        title_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        title_lbl.setFont(ui_font(TypeSize.TITLE, QFont.Weight.Bold))
         title_lbl.setWordWrap(False)
         layout.addWidget(title_lbl)
 
         body_lbl = QLabel(message)
         body_lbl.setObjectName("UnlockToastBody")
-        body_lbl.setFont(QFont("Segoe UI", 11))
+        body_lbl.setFont(ui_font(TypeSize.CODE))
         body_lbl.setWordWrap(True)
         layout.addWidget(body_lbl)
 

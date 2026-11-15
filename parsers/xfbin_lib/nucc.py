@@ -107,6 +107,8 @@ class NuccChunkTexture(NuccChunk):
         from .nut import Nut
         self.nut = Nut()
         self.nut.init_data(br_chunk.brNut)
+        self._original_nut_key = self.nut.storage_key()
+        self.field00, self.field06 = br_chunk.field00, br_chunk.field06
 
 
 class NuccChunkDynamics(NuccChunk):

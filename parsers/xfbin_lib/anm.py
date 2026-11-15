@@ -16,6 +16,8 @@ class AnmCurve:
     data_path: str
     keyframes: list[AnmKeyframe]
     interpolate: bool = True
+    sample_keyframes: tuple[AnmKeyframe, ...] = field(default_factory=tuple, repr=False)
+    sample_frames: tuple[float, ...] = field(default_factory=tuple, repr=False)
 
 
 @dataclass
@@ -118,8 +120,11 @@ def _convert_keyframes(frame_size, curve_type, values):
     short_scale = {
         AnmCurveType.OPACITYI16TBL: 0x8000,
         AnmCurveType.SCALEI16TBL: 0x1000,
-        AnmCurveType.QUATERNIONI16TBL: 0x8000,
-        AnmCurveType.QUATERNIONI16TBL_NOINTERP: 0x8000,
+        # ASBR animation quaternion tables use signed Q14.  Original keys
+        # have a raw vector norm of ~0x4000; downstream consumers may still
+        # normalize, but exposing unit quaternions keeps the format semantic.
+        AnmCurveType.QUATERNIONI16TBL: 0x4000,
+        AnmCurveType.QUATERNIONI16TBL_NOINTERP: 0x4000,
         AnmCurveType.OPACITYI16TBL_NOINTERP: 0x8000,
     }.get(curve_type)
     result = []
@@ -139,4 +144,3 @@ def _convert_keyframes(frame_size, curve_type, values):
             value = tuple(component / 255.0 for component in value)
         result.append(AnmKeyframe(float(frame), value))
     return result
-

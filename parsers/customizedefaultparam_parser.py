@@ -1,252 +1,177 @@
-"""parsers/customizedefaultparam_parser.py  –  CustomizeDefaultParam.bin.xfbin parser / writer.
+"""CustomizeDefaultParam: bounded, lossless 32-byte records in contiguous NUCC.
 
-Binary layout (inside the XFBIN nuccChunkBinary payload):
-  [0-3]   uint32 BE  – inner_size  (bytes that follow)
-  [4-7]   uint32 LE  – version     (1000)
-  [8-11]  uint32 LE  – entry count (180 in retail = 60 chars × 3 slots)
-  [12-19] uint64 LE  – first_ptr   (= 8 → no notes section)
-  [20+]   entries × 32 bytes each
-
-Each entry (32 bytes):
-  +0   uint64 LE  – relative ptr → char_code string  (e.g. "1jnt01")
-  +8   uint32 LE  – slot index   (0 = Normal A, 1 = Normal B, 2 = Zoom)
-  +12  float32 LE – pos_x        (horizontal position on screen)
-  +16  float32 LE – pos_y        (vertical position on screen)
-  +20  float32 LE – unk          (always 0.0 in retail)
-  +24  float32 LE – scale        (model scale factor)
-  +28  float32 LE – unk2         (always 0.0 in retail)
-
-String pool: null-terminated ASCII, each string padded to 8-byte boundary.
-
-Pointer resolution:
-  string is at absolute offset:  ptr_field_offset + pointer_value
-  where ptr_field_offset = absolute file offset of the uint64 field itself.
-
-Typical retail values:
-  Slot 0 & 1: pos_x=480.0, pos_y=576.0, scale=1.0   (normal preview)
-  Slot 2:     pos_x=980.0, pos_y=320.0, scale=1.8    (zoom/detail view)
+Public (raw, version, entries) API and historical field keys are retained.
+See docs/customize-default-research.md for native consumers and scope.
 """
-
+import math
+import os
 import struct
+import tempfile
 
-ENTRY_SIZE   = 32   # bytes per entry
-HEADER_SIZE  = 16   # version(4) + count(4) + first_ptr(8)
-_INNER_SZ_FLD = 4   # leading BE uint32 inner_size in payload
+from parsers.skill_parser import _find_chunks
 
-
-# Known character codes (retail)
-KNOWN_CHAR_CODES = [
-    # Part 1
-    "1jnt01", "1zpl01", "1dio01", "1sdw01",
-    # Part 2
-    "2jsp01", "2csr01", "2lsa01", "2wmu01", "2esd01", "2krs01",
-    # Part 3
-    "3jtr01", "3jsp01", "3abd01", "3kki01", "3pln01", "3hhs01",
-    "3igy01", "3dio01", "3vni01", "3mra01", "3psp01",
-    # Part 4
-    "4jsk01", "4jtr01", "4koi01", "4oky01", "4rhn01", "4oti01",
-    "4sgc01", "4kir01", "4kwk01", "4ykk01",
-    # Part 5
-    "5grn01", "5bct01", "5mst01", "5nrc01", "5fgo01", "5dvl01",
-    "5trs01", "5prs01", "5gac01",
-    # Part 6
-    "6jln01", "6elm01", "6ans01", "6pci01", "6pci02", "6wet01", "6fit01",
-    # Part 7
-    "7jny01", "7jir01", "7vtn01", "7dio01",
-    # Part 8
-    "8jsk01",
-    # DLC / Special
-    "0bao01", "5ris01", "2shm01", "4kch01", "7dio02", "5abc01", "4fgm01", "8wou01",
-]
-
-SLOT_NAMES = {0: "Normal A", 1: "Normal B", 2: "Zoom"}
+ENTRY_SIZE = 32
+HEADER_SIZE = 16
+FLOAT_FIELDS = ((12, 'pos_x'), (16, 'pos_y'), (20, 'unk'),
+                (24, 'scale'), (28, 'unk2'))
+SLOT_NAMES = {0: 'Normal A', 1: 'Normal B', 2: 'Zoom'}
 
 
-# Low-level helpers
-
-def _read_cstr(data: bytes | bytearray, off: int) -> str:
-    if off >= len(data):
-        return ""
-    try:
-        end = data.index(b"\x00", off)
-        raw = data[off:end]
-    except ValueError:
-        raw = data[off:]
-    return raw.decode("ascii", errors="replace")
+def _encoded(text):
+    if not isinstance(text, str) or '\0' in text:
+        raise ValueError('Character code must be a string without NUL bytes.')
+    return text.encode('utf-8', errors='surrogateescape') + b'\0'
 
 
-def _find_binary_chunk(data: bytes | bytearray) -> tuple[int, int]:
-    """Return (chunk_header_offset, chunk_data_size) for the nuccChunkBinary."""
-    chunk_table_size = struct.unpack(">I", data[16:20])[0]
-    offset = 28 + chunk_table_size
-    if offset % 4:
-        offset += 4 - offset % 4
-
-    while offset + 12 <= len(data):
-        size     = struct.unpack(">I", data[offset:     offset + 4])[0]
-        type_idx = struct.unpack(">H", data[offset + 4: offset + 6])[0]
-        if size > 0 and (type_idx == 1 or size > 512):
-            return offset, size
-        next_off = offset + 12 + size
-        if next_off % 4:
-            next_off += 4 - next_off % 4
-        if next_off <= offset:
-            break
-        offset = next_off
-
-    raise ValueError("Could not locate nuccChunkBinary in XFBIN file.")
-
-
-# Public API
-
-def parse_customizedefaultparam_xfbin(filepath: str) -> tuple[bytearray, int, list[dict]]:
-    """Parse CustomizeDefaultParam.bin.xfbin.
-
-    Returns:
-        (raw_xfbin_data, version, entries)
-
-    Each entry dict has keys:
-        char_code  str    – character identifier, e.g. "1jnt01"
-        slot       int    – slot index: 0=Normal A, 1=Normal B, 2=Zoom
-        pos_x      float  – horizontal position in the customization screen
-        pos_y      float  – vertical position in the customization screen
-        unk        float  – unknown float (always 0.0 in retail)
-        scale      float  – character model scale factor
-        unk2       float  – unknown float (always 0.0 in retail)
-    """
-    with open(filepath, "rb") as fh:
-        data = bytearray(fh.read())
-
-    chunk_hdr_off, _chunk_size = _find_binary_chunk(data)
-    payload_off = chunk_hdr_off + 12
-
-    spm_off  = payload_off + _INNER_SZ_FLD
-    version  = struct.unpack_from("<I", data, spm_off)[0]
-    count    = struct.unpack_from("<I", data, spm_off + 4)[0]
-    first_ptr = struct.unpack_from("<Q", data, spm_off + 8)[0]
-    notes_len = first_ptr - 8
-
-    entries_base = spm_off + HEADER_SIZE + notes_len
-
-    entries: list[dict] = []
+def _parse_payload(payload):
+    if len(payload) < 20:
+        raise ValueError('Truncated CustomizeDefaultParam header.')
+    inner_size = struct.unpack_from('>I', payload)[0]
+    if not HEADER_SIZE <= inner_size <= len(payload) - 4:
+        raise ValueError('Invalid CustomizeDefaultParam inner size.')
+    body = payload[:4 + inner_size]
+    version, count, first = struct.unpack_from('<IIq', body, 4)
+    start = 12 + first
+    end_table = start + count * ENTRY_SIZE
+    if start < 20 or end_table > len(body):
+        raise ValueError('Invalid CustomizeDefaultParam entry table.')
+    entries = []
     for i in range(count):
-        base = entries_base + i * ENTRY_SIZE
+        base = start + i * ENTRY_SIZE
+        record = bytes(body[base:base + ENTRY_SIZE])
+        entry = {'_offset': base, '_record': record}
+        pointer = struct.unpack_from('<q', body, base)[0]
+        entry['_null_string'] = not pointer
+        if pointer:
+            target = base + pointer
+            if not 20 <= target < len(body):
+                raise ValueError('Character reference is outside its payload.')
+            end = body.find(b'\0', target)
+            if end < 0:
+                raise ValueError('Unterminated character reference.')
+            entry['char_code'] = bytes(body[target:end]).decode('utf-8', errors='surrogateescape')
+        else:
+            entry['char_code'] = ''
+        entry['slot'] = struct.unpack_from('<I', body, base + 8)[0]
+        for off, key in FLOAT_FIELDS:
+            entry[key] = struct.unpack_from('<f', body, base + off)[0]
+        entries.append(entry)
+    return version, entries, bytes(body[20:start]), bytes(body[end_table:]), bytes(payload[4 + inner_size:])
 
-        ptr       = struct.unpack_from("<Q",  data, base)[0]
-        char_code = _read_cstr(data, base + ptr)
-        slot      = struct.unpack_from("<I",  data, base + 8)[0]
-        pos_x     = struct.unpack_from("<f",  data, base + 12)[0]
-        pos_y     = struct.unpack_from("<f",  data, base + 16)[0]
-        unk       = struct.unpack_from("<f",  data, base + 20)[0]
-        scale     = struct.unpack_from("<f",  data, base + 24)[0]
-        unk2      = struct.unpack_from("<f",  data, base + 28)[0]
 
-        entries.append({
-            "char_code": char_code,
-            "slot":      slot,
-            "pos_x":     pos_x,
-            "pos_y":     pos_y,
-            "unk":       unk,
-            "scale":     scale,
-            "unk2":      unk2,
-        })
+def _find_binary_chunk(data):
+    chunks = _find_chunks(data)
+    named = [v for k, v in chunks.items() if k.lower() == 'customizedefaultparam']
+    if len(named) == 1:
+        return named[0][:2]
+    candidates = []
+    for header, size, payload in chunks.values():
+        try:
+            _parse_payload(data[payload:payload + size])
+        except (ValueError, struct.error):
+            continue
+        candidates.append((header, size))
+    if len(candidates) != 1:
+        raise ValueError('Could not identify a unique CustomizeDefaultParam chunk.')
+    return candidates[0]
 
+
+def parse_customizedefaultparam_xfbin(filepath):
+    with open(filepath, 'rb') as stream:
+        data = bytearray(stream.read())
+    header, size = _find_binary_chunk(data)
+    version, entries, _, _, _ = _parse_payload(data[header + 12:header + 12 + size])
     return data, version, entries
 
 
-def make_default_entry(char_code: str = "1jnt01", slot: int = 0) -> dict:
-    """Return a blank entry with retail-typical default values."""
-    if slot == 2:
-        return {"char_code": char_code, "slot": 2,
-                "pos_x": 980.0, "pos_y": 320.0, "unk": 0.0, "scale": 1.8, "unk2": 0.0}
-    return {"char_code": char_code, "slot": slot,
-            "pos_x": 480.0, "pos_y": 576.0, "unk": 0.0, "scale": 1.0, "unk2": 0.0}
+def make_default_entry(char_code='1jnt01', slot=0):
+    # Legacy API defaults. The editor uses a file-backed donor when available.
+    return dict(char_code=char_code, slot=slot, pos_x=980. if slot == 2 else 480.,
+                pos_y=320. if slot == 2 else 576., unk=0.,
+                scale=1.8 if slot == 2 else 1., unk2=0.)
 
 
-def _build_binary(version: int, entries: list[dict]) -> bytes:
-    """Build the inner binary (WITHOUT the 4-byte leading inner_size field).
+def _same_float(value, raw):
+    before = struct.unpack('<f', raw)[0]
+    return (math.isnan(value) and math.isnan(before)) or struct.pack('<f', value) == raw
 
-    Layout:
-      version(4) count(4) first_ptr(8)  ← HEADER_SIZE = 16
-      entries × ENTRY_SIZE              ← 32 bytes each
-      string pool (ASCII, padded to 8-byte boundary per string)
-    """
-    count = len(entries)
 
-    # 1. Build string pool
-    pool: bytearray = bytearray()
-    pool_offsets: list[int] = []
+def _write_numbers(buf, base, entry):
+    struct.pack_into('<I', buf, base + 8, entry['slot'])
+    record = entry.get('_record', b'')
+    for off, key in FLOAT_FIELDS:
+        raw = record[off:off + 4]
+        if len(raw) == 4 and _same_float(entry[key], raw):
+            buf[base + off:base + off + 4] = raw
+        else:
+            struct.pack_into('<f', buf, base + off, entry[key])
 
-    for e in entries:
-        s = e.get("char_code", "")
-        off = len(pool)
-        pool_offsets.append(off)
-        encoded = s.encode("ascii", errors="replace") + b"\x00"
-        pool.extend(encoded)
-        pad = (8 - len(pool) % 8) % 8
-        if pad:
-            pool.extend(b"\x00" * pad)
 
-    # Pool starts at this absolute offset inside the full payload
-    # (including the leading 4-byte inner_size field):
-    #   _INNER_SZ_FLD(4) + HEADER_SIZE(16) + count*ENTRY_SIZE
-    pool_abs = _INNER_SZ_FLD + HEADER_SIZE + count * ENTRY_SIZE
+def _validate(version, entries):
+    struct.pack('<I', version)
+    for entry in entries:
+        _encoded(entry['char_code'])
+        _write_numbers(bytearray(ENTRY_SIZE), 0, entry)
 
-    # 2. Assemble binary
-    buf = bytearray()
 
-    # Header
-    buf += struct.pack("<I", version)
-    buf += struct.pack("<I", count)
-    buf += struct.pack("<Q", 8)   # first_ptr = 8 (no notes section)
-
-    for i, e in enumerate(entries):
-        entry_abs = _INNER_SZ_FLD + HEADER_SIZE + i * ENTRY_SIZE
-        str_abs   = pool_abs + pool_offsets[i]
-        ptr_val   = str_abs - entry_abs   # relative: pool position − field position
-
-        buf += struct.pack("<Q", ptr_val)
-        buf += struct.pack("<I", int(e.get("slot", 0)))
-        buf += struct.pack("<f", float(e.get("pos_x", 480.0)))
-        buf += struct.pack("<f", float(e.get("pos_y", 576.0)))
-        buf += struct.pack("<f", float(e.get("unk",   0.0)))
-        buf += struct.pack("<f", float(e.get("scale", 1.0)))
-        buf += struct.pack("<f", float(e.get("unk2",  0.0)))
-
-    buf += pool
-
-    # Pad to 4-byte boundary
-    if len(buf) % 4:
-        buf += b"\x00" * (4 - len(buf) % 4)
-
+def _build_binary(version, entries, notes=b'', pool_prefix=b''):
+    _validate(version, entries)
+    buf = bytearray(struct.pack('<IIq', version, len(entries), 8 + len(notes)))
+    buf.extend(notes)
+    start = len(buf)
+    buf.extend(bytes(len(entries) * ENTRY_SIZE))
+    buf.extend(pool_prefix)
+    pool = {}
+    for i, entry in enumerate(entries):
+        base = start + i * ENTRY_SIZE
+        _write_numbers(buf, base, entry)
+        text = entry['char_code']
+        pointer = 0
+        if text or not entry.get('_null_string', True):
+            if text not in pool:
+                pool[text] = len(buf)
+                buf.extend(_encoded(text))
+                buf.extend(bytes(-len(buf) % 8))
+            pointer = pool[text] - base
+        struct.pack_into('<q', buf, base, pointer)
+    buf.extend(bytes(-len(buf) % 4))
     return bytes(buf)
 
 
-def save_customizedefaultparam_xfbin(
-    filepath: str,
-    original_data: bytearray,
-    version: int,
-    entries: list[dict],
-) -> None:
-    """Rebuild the XFBIN with updated data and write to filepath."""
-    new_inner   = _build_binary(version, entries)
-    inner_size  = len(new_inner)
-    new_payload = struct.pack(">I", inner_size) + new_inner
-
-    if len(new_payload) % 4:
-        new_payload += b"\x00" * (4 - len(new_payload) % 4)
-
-    chunk_hdr_off, orig_chunk_size = _find_binary_chunk(original_data)
-
-    prefix   = bytes(original_data[:chunk_hdr_off])
-    orig_hdr = bytearray(original_data[chunk_hdr_off: chunk_hdr_off + 12])
-    struct.pack_into(">I", orig_hdr, 0, len(new_payload))
-    new_hdr  = bytes(orig_hdr)
-
-    orig_payload_end = chunk_hdr_off + 12 + orig_chunk_size
-    if orig_payload_end % 4:
-        orig_payload_end += 4 - orig_payload_end % 4
-    trailing = bytes(original_data[orig_payload_end:])
-
-    with open(filepath, "wb") as fh:
-        fh.write(prefix + new_hdr + new_payload + trailing)
+def save_customizedefaultparam_xfbin(filepath, original_data, version, entries):
+    _validate(version, entries)
+    header, size = _find_binary_chunk(original_data)
+    payload_off = header + 12
+    old = original_data[payload_off:payload_off + size]
+    _, previous, notes, pool, tail = _parse_payload(old)
+    if (len(entries) == len(previous) and
+            all(e.get('_offset') == p['_offset'] for e, p in zip(entries, previous))):
+        inner_size = struct.unpack_from('>I', old)[0]
+        payload = bytearray(old[:4 + inner_size])
+        struct.pack_into('<I', payload, 4, version)
+        for entry, before in zip(entries, previous):
+            base = before['_offset']
+            _write_numbers(payload, base, entry)
+            if entry['char_code'] != before['char_code']:
+                pointer = len(payload) - base if entry['char_code'] else 0
+                struct.pack_into('<q', payload, base, pointer)
+                if entry['char_code']:
+                    payload.extend(_encoded(entry['char_code']))
+        if payload != old[:4 + inner_size]:
+            struct.pack_into('>I', payload, 0, len(payload) - 4)
+        payload.extend(tail)
+    else:
+        inner = _build_binary(version, entries, notes, pool)
+        payload = bytearray(struct.pack('>I', len(inner)) + inner + tail)
+    envelope = bytearray(original_data[header:payload_off])
+    struct.pack_into('>I', envelope, 0, len(payload))
+    output = original_data[:header] + envelope + payload + original_data[payload_off + size:]
+    destination = os.path.abspath(filepath)
+    fd, temporary = tempfile.mkstemp(prefix='.arrow-customize-', dir=os.path.dirname(destination))
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(output)
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)

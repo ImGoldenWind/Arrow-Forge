@@ -1,0 +1,10 @@
+PyQt6>=6.7
+Pillow>=10.0
+numpy>=1.26
+PyAudioWPatch>=0.2.12.9; sys_platform == "win32"
+PyAudio>=0.2.14; sys_platform != "win32"
+QtAwesome>=1.3
+PyOpenGL>=3.1.7
+unicorn>=2.1.4,<3
+soundfile>=0.13.1,<1
+cricodecs>=1.2.0,<2

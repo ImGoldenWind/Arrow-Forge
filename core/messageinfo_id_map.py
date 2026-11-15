@@ -12,6 +12,10 @@ HASHLIST_FILENAME = "messageInfo_hashlist.bin"
 
 
 def id_map_path() -> str:
+    return user_config_path("data", MAP_FILENAME)
+
+
+def legacy_id_map_path() -> str:
     return user_config_path(MAP_FILENAME)
 
 
@@ -22,14 +26,17 @@ class MessageInfoIdMap:
 
     def load(self) -> None:
         self.ids = {}
-        try:
-            with open(self.path, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
-            data = {}
-
         result: dict[str, list[str]] = {}
-        self._merge_json_ids(data, result)
+        paths = (self.path,)
+        if self.path == id_map_path():
+            paths = (app_path("resources", "data", MAP_FILENAME), legacy_id_map_path(), self.path)
+        for path in dict.fromkeys(paths):
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                continue
+            self._merge_json_ids(data, result)
         self.ids = result
         self.load_hashlist()
 

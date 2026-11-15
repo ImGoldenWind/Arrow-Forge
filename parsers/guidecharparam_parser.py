@@ -1,275 +1,177 @@
-"""parsers/guidecharparam_parser.py  –  GuideCharParam.bin.xfbin parser / writer.
+"""GuideCharParam reader/writer. Native layout: docs/guide-character-research.md.
 
-Binary layout (inside the XFBIN binary chunk payload):
-  [0-3]   uint32 BE  – inner size (bytes that follow)
-  [4-7]   uint32 LE  – version  (1000)
-  [8-11]  uint32 LE  – entry count  (110 in retail)
-  [12-19] uint64 LE  – first_ptr   (= 8 → no notes section)
-  [20+]   entries × 96 bytes each
-
-Each entry (96 bytes, 12 little-endian uint64 string pointers):
-  +0   uint64  – ptr → event      (game event identifier, e.g. "GUIDE_MODESEL_IN")
-  +8   uint64  – ptr → character  (guide character name,  e.g. "guide_chara_speedwagon")
-  +16  uint64  – ptr → msg[0].name    (character name ID, e.g. "c_name_1spw01")
-  +24  uint64  – ptr → msg[0].string  (message/animation ID, e.g. "modeselect_g000")
-  +32  uint64  – ptr → msg[1].name
-  +40  uint64  – ptr → msg[1].string
-  +48  uint64  – ptr → msg[2].name
-  +56  uint64  – ptr → msg[2].string
-  +64  uint64  – ptr → msg[3].name
-  +72  uint64  – ptr → msg[3].string
-  +80  uint64  – ptr → msg[4].name     (5th slot is usually empty)
-  +88  uint64  – ptr → msg[4].string
-= 96 bytes per entry
-
-String pool: null-terminated UTF-8, each string padded to 8-byte boundary.
-
-Pointer resolution:
-  string is at absolute file offset:  ptr_field_offset + pointer_value
-  where ptr_field_offset = file offset of the uint64 pointer field itself.
-
-Note from 010 Editor template: the 5th message slot (msg[4]) is always empty
-in vanilla data — adding real data there reportedly has no effect in-game.
+Each 0x60-byte row has ten relative string pointers (event, UI asset, four
+speaker/message pairs), three u32 parameters and one preserved u32 at +5C.
+The former fifth message pair was a format error, not a reserved text slot.
 """
-
+import os
 import struct
+import tempfile
 
-ENTRY_SIZE    = 96     # 12 × uint64 pointers
-HEADER_SIZE   = 16    # version(4) + count(4) + first_ptr(8)
-_INNER_SZ_FLD = 4     # leading BE uint32 in payload
+ENTRY_SIZE = 96
+HEADER_SIZE = 16
+_INNER_SZ_FLD = 4
+_STR_FIELDS = [(0, 'event'), (8, 'character')]
+for _i in range(4):
+    _STR_FIELDS.extend(((16 + _i * 16, f'msg{_i}_name'),
+                        (24 + _i * 16, f'msg{_i}_string')))
+_STR_KEYS = [key for _, key in _STR_FIELDS]
+_RAW_FIELDS = [(0x50 + i * 4, f'raw_{0x50 + i * 4:02x}') for i in range(4)]
 
-# All string field offsets within each 96-byte entry
-_STR_FIELDS: list[tuple[int, str]] = [
-    (0,  "event"),
-    (8,  "character"),
-    (16, "msg0_name"),
-    (24, "msg0_string"),
-    (32, "msg1_name"),
-    (40, "msg1_string"),
-    (48, "msg2_name"),
-    (56, "msg2_string"),
-    (64, "msg3_name"),
-    (72, "msg3_string"),
-    (80, "msg4_name"),
-    (88, "msg4_string"),
-]
-
-_STR_KEYS = [k for _, k in _STR_FIELDS]
-
-# Known guide characters (retail set)
 KNOWN_CHARACTERS = [
-    "guide_chara_speedwagon",
-    "guide_chara_polnareff",
-    "guide_chara_messina",
-    "guide_chara_melone",
-    "guide_chara_abbacchio",
-    "guide_chara_emporio",
-    "guide_chara_wangchen",
-    "guide_chara_boingo",
-    "guide_chara_derbyd",
-    "guide_chara_derbyt",
-    "guide_chara_giatcho",
-    "guide_chara_ringo",
+    'guide_chara_speedwagon', 'guide_chara_polnareff', 'guide_chara_messina',
+    'guide_chara_melone', 'guide_chara_abbacchio', 'guide_chara_emporio',
+    'guide_chara_wangchen', 'guide_chara_boingo', 'guide_chara_derbyd',
+    'guide_chara_derbyt', 'guide_chara_giatcho', 'guide_chara_ringo',
 ]
 
 
-# Helpers
-
-def _read_cstr(data: bytes | bytearray, off: int) -> str:
-    if off >= len(data):
-        return ""
-    try:
-        end = data.index(b"\x00", off)
-        raw = data[off:end]
-    except ValueError:
-        raw = data[off:]
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return raw.decode("latin-1", errors="replace")
+def _read_cstr(data, off):
+    if not 0 <= off < len(data):
+        raise ValueError('GuideCharParam string pointer is outside its chunk.')
+    end = data.find(b'\0', off)
+    if end < 0:
+        raise ValueError('Unterminated GuideCharParam string.')
+    return bytes(data[off:end]).decode('utf-8', errors='surrogateescape')
 
 
-def _find_binary_chunk(data: bytes | bytearray) -> tuple[int, int]:
-    """Return (chunk_header_offset, chunk_size) for the nuccChunkBinary."""
-    chunk_table_size = struct.unpack(">I", data[16:20])[0]
-    offset = 28 + chunk_table_size
-    if offset % 4:
-        offset += 4 - offset % 4
-
+def _find_binary_chunk(data):
+    if len(data) < 28 or data[:4] != b'NUCC':
+        raise ValueError('Not an XFBIN file.')
+    offset = (28 + struct.unpack_from('>I', data, 16)[0] + 3) & ~3
     while offset + 12 <= len(data):
-        size     = struct.unpack(">I", data[offset:     offset + 4])[0]
-        type_idx = struct.unpack(">H", data[offset + 4: offset + 6])[0]
+        size, type_idx = struct.unpack_from('>II', data, offset)
+        if offset + 12 + size > len(data):
+            raise ValueError('Truncated XFBIN chunk.')
         if size > 0 and (type_idx == 1 or size > 512):
             return offset, size
-        next_off = offset + 12 + size
-        if next_off % 4:
-            next_off += 4 - next_off % 4
-        if next_off <= offset:
-            break
-        offset = next_off
-
-    raise ValueError("Could not locate nuccChunkBinary in XFBIN file.")
+        offset = (offset + 12 + size + 3) & ~3
+    raise ValueError('Could not locate nuccChunkBinary in XFBIN file.')
 
 
-# Public API
-
-def parse_guidecharparam_xfbin(filepath: str) -> tuple[bytearray, int, list[dict]]:
-    """Parse GuideCharParam.bin.xfbin.
-
-    Returns:
-        (raw_xfbin_data, version, entries)
-
-    Each entry dict has keys:
-        event       str  – game event identifier (e.g. "GUIDE_MODESEL_IN")
-        character   str  – guide character (e.g. "guide_chara_speedwagon")
-        msg0_name   str  – character name ID for message slot 0
-        msg0_string str  – animation/message ID for slot 0
-        msg1_name   str  – character name ID for slot 1
-        msg1_string str  – animation/message ID for slot 1
-        msg2_name   str  – character name ID for slot 2
-        msg2_string str  – animation/message ID for slot 2
-        msg3_name   str  – character name ID for slot 3
-        msg3_string str  – animation/message ID for slot 3
-        msg4_name   str  – character name ID for slot 4 (usually empty)
-        msg4_string str  – animation/message ID for slot 4 (usually empty)
-    """
-    with open(filepath, "rb") as fh:
-        data = bytearray(fh.read())
-
-    chunk_hdr_off, _chunk_size = _find_binary_chunk(data)
-    payload_off = chunk_hdr_off + 12
-
-    spm_off = payload_off + _INNER_SZ_FLD
-
-    version   = struct.unpack_from("<I", data, spm_off)[0]
-    count     = struct.unpack_from("<I", data, spm_off + 4)[0]
-    first_ptr = struct.unpack_from("<Q", data, spm_off + 8)[0]
-    notes_len = first_ptr - 8
-
-    entries_base = spm_off + HEADER_SIZE + notes_len
-
-    entries: list[dict] = []
+def _parse_payload(payload):
+    if len(payload) < 20:
+        raise ValueError('Truncated GuideCharParam header.')
+    inner_size = struct.unpack_from('>I', payload)[0]
+    if inner_size < HEADER_SIZE or inner_size + 4 > len(payload):
+        raise ValueError('Truncated GuideCharParam payload.')
+    payload = payload[:inner_size + 4]
+    version, count, first_ptr = struct.unpack_from('<IIQ', payload, 4)
+    start = 12 + first_ptr
+    if start < 20 or start + count * ENTRY_SIZE > len(payload):
+        raise ValueError('Invalid GuideCharParam entry table.')
+    entries = []
     for i in range(count):
-        base = entries_base + i * ENTRY_SIZE
-
-        def _str(field_off: int, _base=base) -> str:
-            abs_field = _base + field_off
-            ptr = struct.unpack_from("<Q", data, abs_field)[0]
-            return _read_cstr(data, abs_field + ptr)
-
-        e: dict = {}
+        base = start + i * ENTRY_SIZE
+        entry = {'_offset': base}
+        nulls = []
         for off, key in _STR_FIELDS:
-            e[key] = _str(off)
-        entries.append(e)
+            field = base + off
+            ptr = struct.unpack_from('<q', payload, field)[0]
+            entry[key] = _read_cstr(payload, field + ptr) if ptr else ''
+            if not ptr:
+                nulls.append(key)
+        entry['_null_fields'] = tuple(sorted(nulls))
+        for off, key in _RAW_FIELDS:
+            entry[key] = struct.unpack_from('<I', payload, base + off)[0]
+        entries.append(entry)
+    return version, entries, bytes(payload[20:start])
 
+
+def parse_guidecharparam_xfbin(filepath):
+    with open(filepath, 'rb') as stream:
+        data = bytearray(stream.read())
+    header, size = _find_binary_chunk(data)
+    version, entries, _notes = _parse_payload(data[header + 12:header + 12 + size])
     return data, version, entries
 
 
-def make_default_entry(index: int = 0) -> dict:
-    """Return a blank GuideCharParam entry with safe defaults."""
-    return {
-        "event":      f"GUIDE_NEW_EVENT_{index:03d}",
-        "character":  "guide_chara_speedwagon",
-        "msg0_name":  "c_name_1spw01",
-        "msg0_string": "",
-        "msg1_name":  "c_name_1spw01",
-        "msg1_string": "",
-        "msg2_name":  "c_name_1spw01",
-        "msg2_string": "",
-        "msg3_name":  "c_name_1spw01",
-        "msg3_string": "",
-        "msg4_name":  "",
-        "msg4_string": "",
-    }
+def make_default_entry(index=0):
+    entry = dict.fromkeys(_STR_KEYS, '')
+    entry.update(event=f'GUIDE_NEW_EVENT_{index:03d}', character='guide_chara_speedwagon')
+    entry.update({key: 0 for _, key in _RAW_FIELDS})
+    return entry
 
 
-def _build_guidecharparam_binary(version: int, entries: list[dict]) -> bytes:
-    """Build the inner GuideCharParam binary (WITHOUT the leading 4-byte BE inner_size).
+def _encoded(value):
+    if not isinstance(value, str) or '\0' in value:
+        raise ValueError('Guide identifiers must be strings without NUL bytes.')
+    return value.encode('utf-8', errors='surrogateescape') + b'\0'
 
-    Layout:
-      version(4) count(4) first_ptr(8)   ← HEADER_SIZE = 16
-      entries × ENTRY_SIZE               ← 96 bytes each
-      string pool (null-terminated UTF-8, padded to 8-byte boundary each)
-    """
-    count = len(entries)
 
-    # 1. Build string pool
-    pool: bytearray = bytearray()
-    pool_map: dict[str, int] = {}
-
-    def _pool_add(s: str) -> int:
-        if s not in pool_map:
-            pool_map[s] = len(pool)
-            encoded = s.encode("utf-8") + b"\x00"
-            pool.extend(encoded)
-            pad = (8 - len(pool) % 8) % 8
-            if pad:
-                pool.extend(b"\x00" * pad)
-        return pool_map[s]
-
-    # Pre-compute all string pool offsets per entry
-    str_offsets: list[dict[str, int]] = []
-    for e in entries:
-        offsets = {k: _pool_add(e.get(k, "")) for k in _STR_KEYS}
-        str_offsets.append(offsets)
-
-    # Pool starts right after: _INNER_SZ_FLD + HEADER_SIZE + count*ENTRY_SIZE
-    pool_tmpl_off = _INNER_SZ_FLD + HEADER_SIZE + count * ENTRY_SIZE
-
-    # 2. Assemble binary
-    buf = bytearray()
-
-    # Header (version + count + first_ptr)
-    buf += struct.pack("<I", version)
-    buf += struct.pack("<I", count)
-    buf += struct.pack("<Q", 8)   # first_ptr = 8 (no notes section)
-
-    for i, (e, soff) in enumerate(zip(entries, str_offsets)):
-        entry_tmpl = _INNER_SZ_FLD + HEADER_SIZE + i * ENTRY_SIZE
-
-        def _ptr(field_off: int, key: str, _et=entry_tmpl, _soff=soff) -> int:
-            """Compute relative pointer from this field to the string in the pool."""
-            return pool_tmpl_off + _soff[key] - (_et + field_off)
-
+def _build_guidecharparam_binary(version, entries, notes=b''):
+    """Build the inner binary, retaining opaque notes and all four tail words."""
+    buf = bytearray(struct.pack('<IIQ', version, len(entries), 8 + len(notes)))
+    buf.extend(notes)
+    start = len(buf)
+    buf.extend(bytes(len(entries) * ENTRY_SIZE))
+    pool = {}
+    for i, entry in enumerate(entries):
+        base = start + i * ENTRY_SIZE
         for off, key in _STR_FIELDS:
-            buf += struct.pack("<Q", _ptr(off, key))
-
-    buf += pool
-
-    # Pad to 4-byte boundary
-    if len(buf) % 4:
-        buf += b"\x00" * (4 - len(buf) % 4)
-
+            value = entry.get(key, '')
+            encoded = _encoded(value)
+            if not value and key in entry.get('_null_fields', _STR_KEYS):
+                continue  # Native variant selection stops at a null message pointer.
+            if value not in pool:
+                pool[value] = len(buf)
+                buf.extend(encoded)
+                buf.extend(bytes((-len(buf)) % 8))
+            struct.pack_into('<q', buf, base + off, pool[value] - base - off)
+        for off, key in _RAW_FIELDS:
+            struct.pack_into('<I', buf, base + off, entry.get(key, 0))
+    buf.extend(bytes((-len(buf)) % 4))
     return bytes(buf)
 
 
-def save_guidecharparam_xfbin(
-    filepath: str,
-    original_data: bytearray,
-    version: int,
-    entries: list[dict],
-) -> None:
-    """Rebuild the XFBIN with updated GuideCharParam data and write to filepath."""
-    new_inner   = _build_guidecharparam_binary(version, entries)
-    inner_size  = len(new_inner)
-    new_payload = struct.pack(">I", inner_size) + new_inner
-
-    # Pad to 4-byte boundary
-    if len(new_payload) % 4:
-        new_payload += b"\x00" * (4 - len(new_payload) % 4)
-
-    chunk_hdr_off, orig_chunk_size = _find_binary_chunk(original_data)
-
-    prefix   = bytes(original_data[:chunk_hdr_off])
-
-    orig_hdr = bytearray(original_data[chunk_hdr_off: chunk_hdr_off + 12])
-    struct.pack_into(">I", orig_hdr, 0, len(new_payload))
-    new_hdr  = bytes(orig_hdr)
-
-    orig_payload_end = chunk_hdr_off + 12 + orig_chunk_size
-    if orig_payload_end % 4:
-        orig_payload_end += 4 - orig_payload_end % 4
-    trailing = bytes(original_data[orig_payload_end:])
-
-    with open(filepath, "wb") as fh:
-        fh.write(prefix + new_hdr + new_payload + trailing)
+def save_guidecharparam_xfbin(filepath, original_data, version, entries):
+    """Keep untouched bytes/pointers; append edited strings; atomically replace."""
+    header, size = _find_binary_chunk(original_data)
+    payload_off = header + 12
+    old = original_data[payload_off:payload_off + size]
+    _version, old_entries, notes = _parse_payload(old)
+    for entry in entries:
+        for key in _STR_KEYS:
+            _encoded(entry.get(key, ''))
+        for _, key in _RAW_FIELDS:
+            struct.pack('<I', entry.get(key, 0))
+    if (len(entries) == len(old_entries)
+            and all(e.get('_offset') == o['_offset'] for e, o in zip(entries, old_entries))):
+        payload = bytearray(old)
+        struct.pack_into('<I', payload, 4, version)
+        for entry, previous in zip(entries, old_entries):
+            base = previous['_offset']
+            for off, key in _STR_FIELDS:
+                value = entry.get(key, '')
+                if value != previous[key]:
+                    struct.pack_into('<q', payload, base + off, len(payload) - base - off if value else 0)
+                    if value:
+                        payload.extend(_encoded(value))
+            for off, key in _RAW_FIELDS:
+                struct.pack_into('<I', payload, base + off, entry.get(key, 0))
+        if payload != old:
+            struct.pack_into('>I', payload, 0, len(payload) - 4)
+    else:
+        inner = _build_guidecharparam_binary(version, entries, notes)
+        payload = bytearray(struct.pack('>I', len(inner)) + inner)
+    if len(payload) == size:
+        output = bytearray(original_data)
+        output[payload_off:payload_off + size] = payload
+    else:
+        old_end = min((payload_off + size + 3) & ~3, len(original_data))
+        suffix = original_data[old_end:]
+        chunk_header = bytearray(original_data[header:payload_off])
+        struct.pack_into('>I', chunk_header, 0, len(payload))
+        output = original_data[:header] + chunk_header + payload
+        if suffix:
+            output += bytes((-len(output)) % 4)
+        output += suffix
+    destination = os.path.abspath(filepath)
+    fd, temporary = tempfile.mkstemp(prefix='.arrow-guide-', dir=os.path.dirname(destination))
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(output)
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)

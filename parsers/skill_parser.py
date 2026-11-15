@@ -1,5 +1,8 @@
 import struct
 import math
+import copy
+import os
+import tempfile
 
 # Constants
 MOT_GLOBAL_HDR  = 0x2C   # bytes before first PL_ANM entry
@@ -193,6 +196,11 @@ FUNC_MAP_2B = {
     (0x14,0x01):"ME_LIP_ANM_SET",
     (0x15,0x01):"ME_ENEMY_LIP_ANM_SET",
     (0x16,0x01):"ME_ENEMY_DYNAMICS_CTRL_ON",
+    # Confirmed in the live ASBR build 13123765 command dispatch/name table.
+    (0x17,0x01):"ME_ENEMY_DYNAMICS_CTRL_OFF",
+    (0x18,0x01):"ME_ANOMALOUS_OFF",
+    (0x19,0x01):"ME_DMG_EXPRESSION_DISP_ON",
+    (0x1A,0x01):"ME_DMG_EXPRESSION_DISP_OFF",
 }
 
 _ATTACK_MAP = {
@@ -218,14 +226,70 @@ ATKHIT_PARAM_OFFSETS = (0x38, 0x3C, 0x40, 0x44, 0x48)
 FUNC_FIELD_OFFSET = 0x34
 
 
+# These opcodes carry a 0x1F0-byte descriptor after the 0xC8-byte command.
+# Verified by walking all 218 motion chunks in the local ASBR corpus.
+EXTENDED_PAYLOAD_OPCODES = frozenset((
+    0x20, 0x22, 0x24, 0x26, 0x28, 0x30, 0x31, 0x32, 0x33, 0x61, 0xC1,
+))
+
+
+def function_name(opcode):
+    opcode = int(opcode) & 0xFFFF
+    return (FUNC_MAP_1B.get(opcode) if opcode < 0x100 else
+            FUNC_MAP_2B.get((opcode & 0xFF, opcode >> 8))) or f"0x{opcode:04X}"
+
+
+def function_opcode(name):
+    reverse = {v: k for k, v in FUNC_MAP_1B.items()}
+    reverse.update({v: a | (b << 8) for (a, b), v in FUNC_MAP_2B.items()})
+    return reverse[name] if name in reverse else int(name, 0)
+
+
 def _decode_func(raw, off):
-    """Decode function name from bytes at subentry offset +0x34/+0x35."""
-    b1 = raw[off+0x34] if off+0x34 < len(raw) else 0
-    b2 = raw[off+0x35] if off+0x35 < len(raw) else 0
-    name = FUNC_MAP_2B.get((b1, b2)) or FUNC_MAP_1B.get(b1)
-    if name:
-        return name
-    return f"0x{b1:02X}"
+    return function_name(struct.unpack_from('<H', raw, off + FUNC_FIELD_OFFSET)[0])
+
+
+def motion_subentry_size(opcode):
+    return MOT_SUB_SIZE + (MOT_DMGID_SIZE if (int(opcode) & 0xFFFF) in EXTENDED_PAYLOAD_OPCODES else 0)
+
+
+def _motion_layout(raw):
+    """Bounded structural walk. Includes unnamed/sentinel entries, never scans labels."""
+    if len(raw) < MOT_GLOBAL_HDR:
+        raise ValueError("Truncated motion header")
+    if _u32be(raw, 0) != len(raw) - 4:
+        raise ValueError("Motion payload byte length does not match its header")
+    declared = _u32le(raw, 0x28)
+    legacy = bytes(raw[4:7]) == b'ver' and declared == 0
+    if legacy:
+        raise ValueError("Legacy ver0.000 motion layout is not supported; file left unchanged")
+    if not legacy and declared > (len(raw) - MOT_GLOBAL_HDR) // MOT_HDR_SIZE:
+        raise ValueError("Motion entry count exceeds payload size")
+    pos = MOT_GLOBAL_HDR
+    layout = []
+    while pos < len(raw) and (legacy or len(layout) < declared):
+        off = pos
+        if off + MOT_HDR_SIZE > len(raw):
+            raise ValueError(f"Truncated motion entry at 0x{off:X}")
+        if not all(_is_ascii_cstr_field(raw, off + rel, 32, allow_empty=True) for rel in (0, 32)):
+            raise ValueError(f"Invalid motion names at 0x{off:X}")
+        n = _u32le(raw, off + 0x6C)
+        pos += MOT_HDR_SIZE
+        if n > (len(raw) - pos) // MOT_SUB_SIZE:
+            raise ValueError(f"Motion command count exceeds payload at 0x{off:X}")
+        subs = []
+        for _ in range(n):
+            if pos + MOT_SUB_SIZE > len(raw):
+                raise ValueError(f"Truncated command at 0x{pos:X}")
+            size = motion_subentry_size(_u32le(raw, pos + FUNC_FIELD_OFFSET))
+            if pos + size > len(raw):
+                raise ValueError(f"Truncated command descriptor at 0x{pos:X}")
+            subs.append((pos, size))
+            pos += size
+        layout.append((off, pos - off, subs))
+    if pos != len(raw):
+        raise ValueError(f"Unconsumed motion data at 0x{pos:X} (declared {declared} entries)")
+    return layout
 
 
 def _is_ascii_cstr_field(raw, off, size, allow_empty=False):
@@ -236,134 +300,6 @@ def _is_ascii_cstr_field(raw, off, size, allow_empty=False):
     if not text:
         return allow_empty
     return all(32 <= ch <= 126 for ch in text)
-
-
-def _mot_sub_capacity(raw, off):
-    if off + MOT_HDR_SIZE > len(raw):
-        return -1
-    return (len(raw) - off - MOT_HDR_SIZE) // MOT_SUB_SIZE
-
-
-def _mot_entry_sub_count(raw, off):
-    if off + 0x70 > len(raw):
-        return None
-    n_subs = _u32le(raw, off+0x6C)
-    capacity = _mot_sub_capacity(raw, off)
-    if capacity < 0 or n_subs > capacity:
-        return None
-    return n_subs
-
-
-def _looks_like_mot_entry(raw, off):
-    if off < 0 or off + MOT_HDR_SIZE > len(raw):
-        return False
-    if _mot_entry_sub_count(raw, off) is None:
-        return False
-    # Most entries are named PL_ANM_*, but some valid per-move sections only
-    # have a plain ASCII event id. Do not key detection solely off "PL_ANM".
-    return (
-        _is_ascii_cstr_field(raw, off, 32, allow_empty=False)
-        and _is_ascii_cstr_field(raw, off+0x20, 32, allow_empty=False)
-    )
-
-
-def _declared_mot_entry_counts(raw):
-    if len(raw) < MOT_GLOBAL_HDR:
-        return []
-    declared = _u32le(raw, 0x28)
-    max_possible = max(0, (len(raw) - MOT_GLOBAL_HDR) // MOT_HDR_SIZE)
-    counts = []
-    # Files seen by this editor store entry_count + 1 here; accept the direct
-    # value too for older or slightly different chunks.
-    for candidate in (declared - 1, declared):
-        if 0 < candidate <= max_possible and candidate not in counts:
-            counts.append(candidate)
-    return counts
-
-
-def _sequential_mot_offsets(raw, target_count=None):
-    offsets = []
-    off = MOT_GLOBAL_HDR
-    while _looks_like_mot_entry(raw, off):
-        offsets.append(off)
-        n_subs = _mot_entry_sub_count(raw, off)
-        off += MOT_HDR_SIZE + n_subs * MOT_SUB_SIZE
-        if target_count is not None and len(offsets) >= target_count:
-            break
-    if target_count is not None and len(offsets) != target_count:
-        return []
-    return offsets
-
-
-def _find_next_marked_mot_entry(raw, start):
-    raw_bytes = bytes(raw)
-    i = max(0, start)
-    while True:
-        j = raw_bytes.find(b'PL_ANM', i)
-        if j < 0:
-            return None
-        if _looks_like_mot_entry(raw, j):
-            return j
-        i = j + 1
-
-
-def _relaxed_mot_offsets(raw, target_count):
-    offsets = []
-    off = MOT_GLOBAL_HDR
-    while len(offsets) < target_count and _looks_like_mot_entry(raw, off):
-        offsets.append(off)
-        n_subs = _mot_entry_sub_count(raw, off)
-        next_off = off + MOT_HDR_SIZE + n_subs * MOT_SUB_SIZE
-        if len(offsets) >= target_count:
-            break
-        if _looks_like_mot_entry(raw, next_off):
-            off = next_off
-            continue
-        dmg_tail_next = next_off + MOT_DMGID_SIZE
-        if _looks_like_mot_entry(raw, dmg_tail_next):
-            off = dmg_tail_next
-            continue
-        marked_next = _find_next_marked_mot_entry(raw, next_off)
-        if marked_next is None:
-            break
-        off = marked_next
-    if len(offsets) != target_count:
-        return []
-    return offsets
-
-
-def _find_mot_entry_offsets(raw):
-    # Prefer the structural table walk. It catches valid sections whose event id
-    # does not contain the literal "PL_ANM", which the old scanner skipped.
-    for count in _declared_mot_entry_counts(raw):
-        sequential = _sequential_mot_offsets(raw, count)
-        if sequential:
-            return sequential
-        relaxed = _relaxed_mot_offsets(raw, count)
-        if relaxed:
-            return relaxed
-
-    sequential = _sequential_mot_offsets(raw)
-    if sequential and (
-        sequential[-1]
-        + MOT_HDR_SIZE
-        + (_mot_entry_sub_count(raw, sequential[-1]) or 0) * MOT_SUB_SIZE
-        >= len(raw)
-    ):
-        return sequential
-
-    marker_offsets = []
-    i = 0
-    raw_bytes = bytes(raw)
-    while True:
-        j = raw_bytes.find(b'PL_ANM', i)
-        if j < 0:
-            break
-        if _looks_like_mot_entry(raw, j):
-            marker_offsets.append(j)
-        i = j + 1
-
-    return sorted(set(marker_offsets))
 
 
 # Low-level helpers
@@ -397,7 +333,13 @@ def _wi32le(buf, off, v):
     struct.pack_into('<i', buf, off, int(v))
 
 def _wf32le(buf, off, v):
-    struct.pack_into('<f', buf, off, float(v))
+    value = float(v)
+    current = _f32le(buf, off)
+    # Unchanged signalling NaNs and signed zero must retain their original bits.
+    if (math.isnan(current) and math.isnan(value) or current == value and
+            (value != 0 or math.copysign(1, current) == math.copysign(1, value))):
+        return
+    struct.pack_into('<f', buf, off, value)
 
 def _wu8(buf, off, v):
     buf[off] = int(v) & 0xFF
@@ -452,6 +394,8 @@ def _iter_chunks(data, chunk_data_start):
         map_idx   = _u32be(data, pos+4)
         # version / versionAttr at +8, +10 — not needed
         data_off  = pos + 12
+        if data_off + size > len(data):
+            raise ValueError(f"Truncated XFBIN chunk at 0x{pos:X}")
         yield pos, size, data_off
         pos += 12 + size
         if pos >= len(data):
@@ -461,6 +405,8 @@ def _iter_chunks(data, chunk_data_start):
 def _find_chunks(data):
     """Return dict: name -> (chunk_header_offset, chunk_size, data_offset)."""
     # First build name list from chunk table
+    if len(data) < 68 or bytes(data[:4]) != b'NUCC':
+        raise ValueError("Not a valid NUCC/XFBIN container")
     pos = 0
     pos += 4   # magic
     pos += 4   # FileID
@@ -530,11 +476,14 @@ def _find_chunks(data):
 def parse_sklslot(raw):
     """Parse sklslot binary data. raw = bytearray."""
     total = _u32be(raw, 0)
+    if total % SKL_ENTRY_SIZE or total > len(raw) - 4:
+        raise ValueError("Invalid skill-slot byte length")
     n = total // SKL_ENTRY_SIZE
     entries = []
     for i in range(n):
         off = SKL_HDR_SIZE + i * SKL_ENTRY_SIZE
         entries.append({
+            '_raw_bytes': bytes(raw[off:off + SKL_ENTRY_SIZE]),
             'slot_name': _cstr(raw, off,                  SKL_SLOT_SZ),
             'xfbin':     _cstr(raw, off + SKL_SLOT_SZ,    SKL_XFBIN_SZ),
             'skill_id':  _cstr(raw, off + SKL_SLOT_SZ + SKL_XFBIN_SZ, SKL_SKILL_SZ),
@@ -549,19 +498,23 @@ def write_sklslot(entries):
     struct.pack_into('>I', out, 0, total)
     for i, e in enumerate(entries):
         off = SKL_HDR_SIZE + i * SKL_ENTRY_SIZE
-        _wstr(out, off,                               e['slot_name'], SKL_SLOT_SZ)
-        _wstr(out, off + SKL_SLOT_SZ,                e['xfbin'],     SKL_XFBIN_SZ)
-        _wstr(out, off + SKL_SLOT_SZ + SKL_XFBIN_SZ, e['skill_id'],  SKL_SKILL_SZ)
+        out[off:off + SKL_ENTRY_SIZE] = e.get('_raw_bytes', bytes(SKL_ENTRY_SIZE))
+        _patch_string(out, off, e['slot_name'], SKL_SLOT_SZ)
+        _patch_string(out, off + SKL_SLOT_SZ, e['xfbin'], SKL_XFBIN_SZ)
+        _patch_string(out, off + SKL_SLOT_SZ + SKL_XFBIN_SZ, e['skill_id'], SKL_SKILL_SZ)
     return out
 
 
 # load parser
 def parse_load(raw):
     """Parse load binary data. raw = bytearray."""
+    if len(raw) < 72 or _u32be(raw, 0) > len(raw) - 4:
+        raise ValueError("Invalid load configuration length")
     entries = []
     # Entry 0: no flag field (68 bytes)
     off = 4
     entries.append({
+        '_raw_bytes': bytes(raw[off:off + LOAD_ENTRY0_SZ]),
         'type':     _u32le(raw, off),
         'flag':     None,
         'category': _cstr(raw, off+4,  32),
@@ -571,6 +524,7 @@ def parse_load(raw):
     # Remaining: 72 bytes each
     while off + LOAD_ENTRY_SZ <= len(raw):
         entries.append({
+            '_raw_bytes': bytes(raw[off:off + LOAD_ENTRY_SZ]),
             'type':     _u32le(raw, off),
             'flag':     _u32le(raw, off+4),
             'category': _cstr(raw, off+8,  32),
@@ -582,261 +536,147 @@ def parse_load(raw):
 
 def write_load(entries):
     """Serialise load entries to bytes."""
+    if not entries:
+        raise ValueError("Load configuration requires its initial entry")
     size = LOAD_HDR_SZ + LOAD_ENTRY0_SZ + (len(entries)-1) * LOAD_ENTRY_SZ
     out = bytearray(size)
     data_size = size - LOAD_HDR_SZ
     struct.pack_into('>I', out, 0, data_size)
     off = LOAD_HDR_SZ
     for i, e in enumerate(entries):
+        record_size = LOAD_ENTRY0_SZ if i == 0 else LOAD_ENTRY_SZ
+        source = e.get('_raw_bytes', bytes(record_size))
+        out[off:off + record_size] = source[:record_size].ljust(record_size, b'\0')
         if i == 0:
             _wu32le(out, off, e['type'])
-            _wstr(out, off+4,  e['category'], 32)
-            _wstr(out, off+36, e['code'],     32)
+            _patch_string(out, off+4,  e['category'], 32)
+            _patch_string(out, off+36, e['code'],     32)
             off += LOAD_ENTRY0_SZ
         else:
             _wu32le(out, off,   e['type'])
             _wu32le(out, off+4, e['flag'] if e['flag'] is not None else 0)
-            _wstr(out, off+8,  e['category'], 32)
-            _wstr(out, off+40, e['code'],     32)
+            _patch_string(out, off+8,  e['category'], 32)
+            _patch_string(out, off+40, e['code'],     32)
             off += LOAD_ENTRY_SZ
     return out
 
 
 # mot parser
-def parse_mot(raw):
-    """Parse mot binary data. raw = bytearray.
-    Returns list of entry dicts; each has 'subentries' list.
-    """
-    entries = []
-    offsets = _find_mot_entry_offsets(raw)
-
-    for idx, off in enumerate(offsets):
-        next_off = offsets[idx + 1] if idx + 1 < len(offsets) else len(raw)
-        ev = _cstr(raw, off,      32)
-        an = _cstr(raw, off+0x20, 32)
-
-        # Additional header fields from prm_mot.bt
-        enable_face   = _u32le(raw, off+0x44) if off+0x48 <= len(raw) else 0
-        no_frame_skip = _u32le(raw, off+0x48) if off+0x4C <= len(raw) else 0
-        fix_position  = _u32le(raw, off+0x4C) if off+0x50 <= len(raw) else 0
-        frame_skip    = _u32le(raw, off+0x64) if off+0x68 <= len(raw) else 0
-        file_id       = _u32le(raw, off+0x98) if off+0x9C <= len(raw) else 0
-
-        # sub_count stored in header at +0x6C
-        n_subs = _u32le(raw, off+0x6C) if off+0x70 <= len(raw) else 0
-        parsed_n_subs = min(
-            n_subs,
-            max(0, (next_off - off - MOT_HDR_SIZE) // MOT_SUB_SIZE),
-        )
-
-        subs = []
-        for s in range(parsed_n_subs):
-            sub_off = off + MOT_HDR_SIZE + s * MOT_SUB_SIZE
-            if sub_off + MOT_SUB_SIZE > len(raw):
-                break
-
-            bone      = _cstr(raw, sub_off+0x08, 32)
-            dtype     = _u32le(raw, sub_off+FUNC_FIELD_OFFSET) if sub_off+0x38 <= len(raw) else 0
-            dname     = DATA_TYPE_MAP.get(dtype, str(dtype))
-            func_name = _decode_func(raw, sub_off)
-            func_param_bytes = [0, 0, 0]
-            if sub_off+FUNC_FIELD_OFFSET+4 <= len(raw):
-                func_param_bytes = [
-                    raw[sub_off+FUNC_FIELD_OFFSET+1],
-                    raw[sub_off+FUNC_FIELD_OFFSET+2],
-                    raw[sub_off+FUNC_FIELD_OFFSET+3],
-                ]
-            dmg       = raw[sub_off+0x6C] if sub_off+0x6C < len(raw) else 0
-            grd       = raw[sub_off+0x7C] if sub_off+0x7C < len(raw) else 0
-            speed_multiplier = 1.0
-            if func_name in ANM_SPEED_FUNC_NAMES and sub_off+ANM_SPEED_MULTIPLIER_OFFSET+4 <= len(raw):
-                sr = _f32le(raw, sub_off+ANM_SPEED_MULTIPLIER_OFFSET)
-                speed_multiplier = 1.0 if not math.isfinite(sr) else sr
-            fwd_velocity = 0
-            fwd_velocity_duration = 0
-            if func_name in FWD_VELOCITY_FUNC_NAMES:
-                if sub_off+FWD_VELOCITY_VALUE_OFFSET+4 <= len(raw):
-                    fwd_velocity = struct.unpack_from('<i', raw, sub_off+FWD_VELOCITY_VALUE_OFFSET)[0]
-                if sub_off+FWD_VELOCITY_DURATION_OFFSET+4 <= len(raw):
-                    fwd_velocity_duration = struct.unpack_from('<i', raw, sub_off+FWD_VELOCITY_DURATION_OFFSET)[0]
-            gion_scale = 1.0
-            gion_id = ''
-            if func_name in GION_FUNC_NAMES:
-                if sub_off+GION_SCALE_OFFSET+4 <= len(raw):
-                    gr = _f32le(raw, sub_off+GION_SCALE_OFFSET)
-                    gion_scale = 1.0 if not math.isfinite(gr) else gr
-                if sub_off+GION_ID_OFFSET+GION_ID_SIZE <= len(raw):
-                    gion_id = _cstr(raw, sub_off+GION_ID_OFFSET, GION_ID_SIZE)
-            atkhit_params = [0, 0, 0, 0, 0]
-            if func_name in ATKHIT_FUNC_NAMES:
-                for pi, rel in enumerate(ATKHIT_PARAM_OFFSETS):
-                    if sub_off+rel+4 <= len(raw):
-                        atkhit_params[pi] = struct.unpack_from('<i', raw, sub_off+rel)[0]
-
-            # Frame label: Int16 LE at +0x30
-            frame_w = struct.unpack_from('<H', raw, sub_off+0x30)[0] if sub_off+0x32 <= len(raw) else 0
-            if frame_w == 0x270E:
-                frame_str = 'Start'
-            elif frame_w == 0x270F:
-                frame_str = 'End'
-            else:
-                frame_str = str(frame_w)
-
-            # DAMAGE_ID label at +0x18
-            dmg_label = ''
-            if sub_off+0x28 <= len(raw):
-                candidate = raw[sub_off+0x18:sub_off+0x38].split(b'\x00')[0]
-                if candidate.startswith(b'DAMAGE_ID'):
-                    dmg_label = candidate.decode('ascii', errors='replace')
-                elif candidate.startswith(b'DMG_') or candidate.startswith(b'STYLE_') \
-                        or candidate.startswith(b'CMN_') or candidate.startswith(b'FACE_') \
-                        or candidate.startswith(b'THROW'):
-                    dmg_label = candidate.decode('ascii', errors='replace')
-
-            is_dmg_id = dmg_label.startswith('DAMAGE_ID') or dtype == 48
-
-            # X/Y: only for DAMAGE_ID entries; anchor = sub_off+0x18
-            # X at anchor+0x48 = sub_off+0x60, Y at anchor+0x4C = sub_off+0x64
-            x_val = 0.0
-            y_val = 0.0
-            if is_dmg_id and sub_off+0x68 <= len(raw):
-                xr = _f32le(raw, sub_off+0x60)
-                yr = _f32le(raw, sub_off+0x64)
-                x_val = 0.0 if not math.isfinite(xr) else xr
-                y_val = 0.0 if not math.isfinite(yr) else yr
-
-            # Attack type (only for DAMAGE_ID entries)
-            if is_dmg_id:
-                b0 = raw[sub_off+0x00] if sub_off < len(raw) else 0
-                b8 = raw[sub_off+0x08] if sub_off+0x08 < len(raw) else 0
-                b9 = raw[sub_off+0x09] if sub_off+0x09 < len(raw) else 0
-                if b8 == 0x02 or b9 == 0x02:
-                    attack = 'unblockable'
-                else:
-                    attack = _ATTACK_MAP.get(b0, '')
-            else:
-                attack = ''
-
-            # Push: signed int32 at anchor+0x50 = sub_off+0x68, DAMAGE_ID only
-            push = 0
-            if dmg_label.startswith('DAMAGE_ID') and sub_off+0x6C <= len(raw):
-                push = struct.unpack_from('<i', raw, sub_off+0x68)[0]
-
-            subs.append({
-                'sub_off':   sub_off,
-                'raw_bytes': bytes(raw[sub_off:sub_off+MOT_SUB_SIZE]),
-                'bone':      bone,
-                'dtype':     dtype,
-                'dname':     dname,
-                'func_name': func_name,
-                'raw_func_name': func_name,
-                'func_param_bytes': func_param_bytes,
-                'frame_w':   frame_w,
-                'frame_str': frame_str,
-                'dmg':       dmg,
-                'grd':       grd,
-                'x':         x_val,
-                'y':         y_val,
-                'dmg_label': dmg_label,
-                'attack':    attack,
-                'push':      push,
-                'speed_multiplier': speed_multiplier,
-                'fwd_velocity': fwd_velocity,
-                'fwd_velocity_duration': fwd_velocity_duration,
-                'gion_scale': gion_scale,
-                'gion_id': gion_id,
-                'atkhit_params': atkhit_params,
-            })
-
-        entries.append({
-            'offset':     off,
-            'raw_size':   next_off - off,
-            'raw_n_subs': n_subs,
-            'event_id':   ev,
-            'anim_id':    an,
-            'enable_face_animation': enable_face,
-            'no_frame_skip':         no_frame_skip,
-            'fix_position':          fix_position,
-            'frame_skip':            frame_skip,
-            'file_id':               file_id,
-            'n_subs':     len(subs),
-            'subentries': subs,
+def parse_motion_subentry(raw, off=0, size=None):
+    dtype = _u32le(raw, off + FUNC_FIELD_OFFSET)
+    size = size or motion_subentry_size(dtype)
+    if off + size > len(raw):
+        raise ValueError("Truncated motion command")
+    name = function_name(dtype)
+    frame = struct.unpack_from('<H', raw, off + 0x30)[0]
+    sub = {
+        'sub_off': off, 'raw_size': size, 'raw_bytes': bytes(raw[off:off + size]),
+        'bone': _cstr(raw, off + 8, 32), 'dtype': dtype,
+        'dname': name, 'func_name': name, 'raw_func_name': name,
+        'func_param_bytes': list(raw[off + 0x35:off + 0x38]),
+        'frame_w': frame, 'frame_str': {9998: 'Start', 9999: 'End'}.get(frame, str(frame)),
+        'dmg': 0, 'grd': 0, 'x': 0.0, 'y': 0.0, 'push': 0,
+        'attack': '', 'dmg_label': '', 'speed_multiplier': _f32le(raw, off + 0x4C),
+        'fwd_velocity': struct.unpack_from('<i', raw, off + 0x38)[0],
+        'fwd_velocity_duration': struct.unpack_from('<i', raw, off + 0x3C)[0],
+        'gion_scale': _f32le(raw, off + 0x4C), 'gion_id': _cstr(raw, off + 0x54, 32),
+        'atkhit_params': [struct.unpack_from('<i', raw, off + r)[0] for r in ATKHIT_PARAM_OFFSETS],
+    }
+    if size > MOT_SUB_SIZE:
+        d = off + MOT_SUB_SIZE
+        sub.update({
+            'dmg_label': _cstr(raw, d + 0x18, 32),
+            'dmg': _u32le(raw, d + 0x6C), 'grd': _u32le(raw, d + 0x70),
+            'x': _f32le(raw, d + 0x60), 'y': _f32le(raw, d + 0x64),
+            'push': struct.unpack_from('<i', raw, d + 0x68)[0],
+            'attack': 'unblockable' if raw[d + 8] == 2 or raw[d + 9] == 2 else
+                      _ATTACK_MAP.get(_u32le(raw, d), ''),
         })
+    return sub
 
+
+def parse_mot(raw):
+    entries = []
+    for off, size, subs in _motion_layout(raw):
+        entry = {
+            'offset': off, 'raw_size': size, 'raw_n_subs': len(subs),
+            'header_bytes': bytes(raw[off:off + MOT_HDR_SIZE]),
+            'event_id': _cstr(raw, off, 32), 'anim_id': _cstr(raw, off + 0x20, 32),
+            'n_subs': len(subs),
+            'subentries': [parse_motion_subentry(raw, pos, n) for pos, n in subs],
+        }
+        for key, rel in MOT_HEADER_FIELDS.items():
+            entry[key] = _u32le(raw, off + rel)
+        entries.append(entry)
     return entries
 
 
+MOT_HEADER_FIELDS = {
+    'enable_face_animation': 0x44, 'no_frame_skip': 0x48,
+    'fix_position': 0x4C, 'frame_skip': 0x64, 'file_id': 0x98,
+}
+
+
+def _patch_string(buf, off, value, size):
+    # Never normalise padding in unchanged fields.
+    if _cstr(buf, off, size) != value:
+        _wstr(buf, off, value, size)
+
+
 def write_mot_entry(raw_buf, entry):
-    """Write back event_id, anim_id and header flags for one mot entry (in-place)."""
     off = entry.get('offset')
     if off is None:
         return
-    _wstr(raw_buf, off,      entry['event_id'], 32)
-    _wstr(raw_buf, off+0x20, entry['anim_id'],  32)
-    if off+0x48 <= len(raw_buf):
-        _wu32le(raw_buf, off+0x44, int(entry.get('enable_face_animation', 0)))
-    if off+0x4C <= len(raw_buf):
-        _wu32le(raw_buf, off+0x48, int(entry.get('no_frame_skip', 0)))
-    if off+0x50 <= len(raw_buf):
-        _wu32le(raw_buf, off+0x4C, int(entry.get('fix_position', 0)))
-    if off+0x68 <= len(raw_buf):
-        _wu32le(raw_buf, off+0x64, int(entry.get('frame_skip', 0)))
-    if off+0x70 <= len(raw_buf):
-        _wu32le(raw_buf, off+0x6C, len(entry.get('subentries', [])))
-    if off+0x9C <= len(raw_buf):
-        _wu32le(raw_buf, off+0x98, int(entry.get('file_id', 0)))
+    _patch_string(raw_buf, off, entry['event_id'], 32)
+    _patch_string(raw_buf, off + 0x20, entry['anim_id'], 32)
+    for key, rel in MOT_HEADER_FIELDS.items():
+        _wu32le(raw_buf, off + rel, entry.get(key, 0))
+    _wu32le(raw_buf, off + 0x6C, len(entry.get('subentries', [])))
 
 
 def write_mot_subentry(raw_buf, sub):
-    """Write back subentry fields (in-place)."""
     off = sub.get('sub_off')
     if off is None:
         return
-    dmg_label = sub.get('dmg_label', '')
-    if dmg_label:
-        # DAMAGE_ID-style records store flags and the DAMAGE_ID string inside
-        # the range that other records use as a 32-byte bone name.
-        _wstr_preserve_tail(raw_buf, off+0x18, dmg_label, 32)
-    else:
-        _wstr(raw_buf, off+0x08, sub['bone'], 32)
     dtype = int(sub.get('dtype', 0))
-    if 'func_param_bytes' in sub:
-        params = list(sub.get('func_param_bytes', [0, 0, 0]))
-        params.extend([0] * (3 - len(params)))
-        dtype = (dtype & 0xFF) | ((int(params[0]) & 0xFF) << 8) | ((int(params[1]) & 0xFF) << 16) | ((int(params[2]) & 0xFF) << 24)
-        sub['dtype'] = dtype
-    _wu32le(raw_buf, off+FUNC_FIELD_OFFSET, dtype)
-    if sub.get('func_name') in ANM_SPEED_FUNC_NAMES and off+ANM_SPEED_MULTIPLIER_OFFSET+4 <= len(raw_buf):
-        _wf32le(raw_buf, off+ANM_SPEED_MULTIPLIER_OFFSET, sub.get('speed_multiplier', 1.0))
-    if sub.get('func_name') in FWD_VELOCITY_FUNC_NAMES:
-        if off+FWD_VELOCITY_VALUE_OFFSET+4 <= len(raw_buf):
-            _wi32le(raw_buf, off+FWD_VELOCITY_VALUE_OFFSET, sub.get('fwd_velocity', 0))
-        if off+FWD_VELOCITY_DURATION_OFFSET+4 <= len(raw_buf):
-            _wi32le(raw_buf, off+FWD_VELOCITY_DURATION_OFFSET, sub.get('fwd_velocity_duration', 0))
-    if sub.get('func_name') in GION_FUNC_NAMES:
-        if off+GION_SCALE_OFFSET+4 <= len(raw_buf):
-            _wf32le(raw_buf, off+GION_SCALE_OFFSET, sub.get('gion_scale', 1.0))
-        if off+GION_ID_OFFSET+GION_ID_SIZE <= len(raw_buf):
-            _wstr(raw_buf, off+GION_ID_OFFSET, sub.get('gion_id', ''), GION_ID_SIZE)
-    if sub.get('func_name') in ATKHIT_FUNC_NAMES:
-        params = list(sub.get('atkhit_params', [0, 0, 0, 0, 0]))
-        params.extend([0] * (len(ATKHIT_PARAM_OFFSETS) - len(params)))
-        for value, rel in zip(params, ATKHIT_PARAM_OFFSETS):
-            if off+rel+4 <= len(raw_buf):
-                _wi32le(raw_buf, off+rel, value)
-    _wu8(raw_buf, off+0x6C, sub['dmg'])
-    _wu8(raw_buf, off+0x7C, sub['grd'])
-    # frame: Int16 LE at +0x30
-    fw = sub.get('frame_w', 0)
-    struct.pack_into('<H', raw_buf, off+0x30, int(fw) & 0xFFFF)
-    # X/Y/push: DAMAGE_ID only; anchor = off+0x18
-    # X at anchor+0x48 = off+0x60, Y at anchor+0x4C = off+0x64, push at anchor+0x50 = off+0x68
-    if dmg_label.startswith('DAMAGE_ID'):
-        if off+0x68 <= len(raw_buf):
-            _wf32le(raw_buf, off+0x60, sub.get('x', 0.0))
-            _wf32le(raw_buf, off+0x64, sub.get('y', 0.0))
-        if off+0x6C <= len(raw_buf):
-            struct.pack_into('<i', raw_buf, off+0x68, int(sub.get('push', 0)))
+    size = motion_subentry_size(dtype)
+    if off + size > len(raw_buf):
+        raise ValueError("Command size changed; rebuild the motion before writing")
+    _patch_string(raw_buf, off + 8, sub.get('bone', ''), 32)
+    _wu32le(raw_buf, off + FUNC_FIELD_OFFSET, dtype)
+    struct.pack_into('<H', raw_buf, off + 0x30, int(sub.get('frame_w', 0)))
+    name = function_name(dtype)
+    if name in ANM_SPEED_FUNC_NAMES:
+        _wf32le(raw_buf, off + 0x4C, sub.get('speed_multiplier', 1.0))
+    if name in FWD_VELOCITY_FUNC_NAMES:
+        _wi32le(raw_buf, off + 0x38, sub.get('fwd_velocity', 0))
+        _wi32le(raw_buf, off + 0x3C, sub.get('fwd_velocity_duration', 0))
+    if name in GION_FUNC_NAMES:
+        _wf32le(raw_buf, off + 0x4C, sub.get('gion_scale', 1.0))
+        _patch_string(raw_buf, off + 0x54, sub.get('gion_id', ''), 32)
+    if name in ATKHIT_FUNC_NAMES:
+        for rel, value in zip(ATKHIT_PARAM_OFFSETS, sub.get('atkhit_params', [])):
+            _wi32le(raw_buf, off + rel, value)
+    if size > MOT_SUB_SIZE:
+        d = off + MOT_SUB_SIZE
+        _patch_string(raw_buf, d + 0x18, sub.get('dmg_label', ''), 32)
+        if sub.get('dmg_label', '').startswith('DAMAGE_ID'):
+            for rel, key in ((0x60, 'x'), (0x64, 'y')):
+                _wf32le(raw_buf, d + rel, sub.get(key, 0.0))
+            _wi32le(raw_buf, d + 0x68, sub.get('push', 0))
+            _wu32le(raw_buf, d + 0x6C, sub.get('dmg', 0))
+            _wu32le(raw_buf, d + 0x70, sub.get('grd', 0))
+            current = 'unblockable' if raw_buf[d + 8] == 2 or raw_buf[d + 9] == 2 else _ATTACK_MAP.get(_u32le(raw_buf, d), '')
+            attack = sub.get('attack', '')
+            if attack != current and attack:
+                if attack == 'unblockable':
+                    raw_buf[d + 8] = 2
+                else:
+                    if raw_buf[d + 8] == 2: raw_buf[d + 8] = 0
+                    if raw_buf[d + 9] == 2: raw_buf[d + 9] = 0
+                    previous = _u32le(raw_buf, d)
+                    family = 0x0E + ((previous - 0x0E) // 3) * 3 if 0x0E <= previous <= 0x16 else 0x0E
+                    _wu32le(raw_buf, d, family + {'high': 0, 'middle': 1, 'low': 2}[attack])
 
 
 def make_default_mot_entry(index=0):
@@ -885,78 +725,39 @@ def make_default_mot_subentry(index=0):
 
 
 def write_mot(entries, original_raw):
-    """Serialise a full prm_mot/prm_gha chunk from entry dicts.
-
-    Existing entry bytes are used as templates so unknown fields survive.
-    New entries/subentries are zero-filled and then populated with editable
-    fields.
-    """
-    old_entry_count = 0
-    count_bias = 1
-    if original_raw and len(original_raw) >= MOT_GLOBAL_HDR:
-        out = bytearray(original_raw[:MOT_GLOBAL_HDR])
-        old_entry_count = len(_find_mot_entry_offsets(original_raw))
-        if old_entry_count:
-            count_bias = _u32le(original_raw, 0x28) - old_entry_count
-    else:
-        out = bytearray(MOT_GLOBAL_HDR)
-
+    """Rebuild variable-sized commands without changing opaque bytes."""
+    out = bytearray(original_raw[:MOT_GLOBAL_HDR]) if original_raw else bytearray(MOT_GLOBAL_HDR)
+    if len(out) < MOT_GLOBAL_HDR:
+        raise ValueError("Truncated motion header")
     for entry in entries:
-        subs = entry.get('subentries', [])
-        old_off = entry.get('offset')
-        if old_off is None:
-            old_off = entry.get('template_offset')
-        old_count = int(entry.get('raw_n_subs', entry.get('n_subs', len(subs))) or 0)
-        old_sub_len = MOT_HDR_SIZE + old_count * MOT_SUB_SIZE
-        old_len = max(int(entry.get('raw_size', old_sub_len) or old_sub_len), old_sub_len)
-
-        if (
-            old_off is not None
-            and original_raw
-            and 0 <= old_off
-            and old_off + old_len <= len(original_raw)
-        ):
-            old_block = bytearray(original_raw[old_off:old_off + old_len])
-            tail = old_block[old_sub_len:]
-            block = old_block[:min(len(old_block), MOT_HDR_SIZE)]
-        else:
-            block = bytearray(MOT_HDR_SIZE)
-            tail = bytearray()
-
-        if len(block) < MOT_HDR_SIZE:
-            block.extend(bytes(MOT_HDR_SIZE - len(block)))
-        elif len(block) > MOT_HDR_SIZE:
-            block = block[:MOT_HDR_SIZE]
-
-        for sub in subs:
-            raw_sub = bytearray(sub.get('raw_bytes', b''))
-            if len(raw_sub) < MOT_SUB_SIZE:
-                raw_sub.extend(bytes(MOT_SUB_SIZE - len(raw_sub)))
-            elif len(raw_sub) > MOT_SUB_SIZE:
-                raw_sub = raw_sub[:MOT_SUB_SIZE]
-            block.extend(raw_sub)
-
-        block.extend(tail)
-
-        new_off = len(out)
-        entry['offset'] = new_off
-        entry['raw_size'] = len(block)
-        entry['raw_n_subs'] = len(subs)
-        entry['n_subs'] = len(subs)
-        entry.pop('template_offset', None)
+        header = entry.get('header_bytes')
+        if header is None:
+            old_off = entry.get('offset')
+            if old_off is None: old_off = entry.get('template_offset')
+            header = original_raw[old_off:old_off + MOT_HDR_SIZE] if original_raw and old_off is not None else bytes(MOT_HDR_SIZE)
+        block = bytearray(header)
+        if len(block) != MOT_HDR_SIZE:
+            raise ValueError("Invalid motion entry header")
+        offsets = []
+        for sub in entry.get('subentries', []):
+            size = motion_subentry_size(sub['dtype'])
+            source = bytes(sub.get('raw_bytes', b''))
+            source = source[:size].ljust(size, b'\0')
+            rel = len(block)
+            block.extend(source)
+            write_mot_subentry(block, {**sub, 'sub_off': rel})
+            offsets.append((sub, rel, size))
         write_mot_entry(block, {**entry, 'offset': 0})
-
-        for i, sub in enumerate(subs):
-            sub_off = MOT_HDR_SIZE + i * MOT_SUB_SIZE
-            sub['sub_off'] = new_off + sub_off
-            write_mot_subentry(block, {**sub, 'sub_off': sub_off})
-            sub['raw_bytes'] = bytes(block[sub_off:sub_off+MOT_SUB_SIZE])
-
+        start = len(out)
+        entry.update(offset=start, raw_size=len(block), raw_n_subs=len(offsets), n_subs=len(offsets), header_bytes=bytes(block[:MOT_HDR_SIZE]))
+        entry.pop('template_offset', None)
+        for sub, rel, size in offsets:
+            sub.update(sub_off=start + rel, raw_size=size, raw_bytes=bytes(block[rel:rel + size]))
         out.extend(block)
-
     struct.pack_into('>I', out, 0, len(out) - 4)
-    if len(out) >= 0x2C:
-        _wu32le(out, 0x28, len(entries) + count_bias)
+    # Legacy ver0.000 stores no count; retain that variant.
+    legacy = original_raw and bytes(original_raw[4:7]) == b'ver' and _u32le(original_raw, 0x28) == 0
+    _wu32le(out, 0x28, 0 if legacy else len(entries))
     return out
 
 
@@ -1024,6 +825,8 @@ def parse_prm_xfbin(filepath):
             'raw':       bytearray(chunk_raw),
         }
 
+    if not result:
+        raise ValueError("No supported Char Skills chunks found")
     return raw, result
 
 
@@ -1045,23 +848,7 @@ def _replace_chunk(raw, hdr_off, old_size, new_bytes):
     return len(chunk) - old_len
 
 
-def _mot_requires_rebuild(entries, chunk_raw):
-    if not chunk_raw:
-        return True
-    if len(entries) != len(_find_mot_entry_offsets(chunk_raw)):
-        return True
-    for entry in entries:
-        if entry.get('offset') is None or entry.get('template_offset') is not None:
-            return True
-        subs = entry.get('subentries', [])
-        if len(subs) != int(entry.get('raw_n_subs', entry.get('n_subs', len(subs))) or 0):
-            return True
-        if any(sub.get('sub_off') is None for sub in subs):
-            return True
-    return False
-
-
-def save_prm_xfbin(filepath, raw, result):
+def _save_prm_xfbin_staged(filepath, raw, result):
     """Write back modified chunks into raw bytearray and save to disk.
 
     Rebuild changed binary chunks and update their XFBIN chunk-size fields.
@@ -1075,11 +862,8 @@ def save_prm_xfbin(filepath, raw, result):
         hdr_off = info.get('hdr_off', info['data_off'] - 12)
 
         if key in ('mot', 'gha'):
-            chunk_raw = info.get('raw')
-            if _mot_requires_rebuild(info['entries'], chunk_raw):
-                new_bytes = bytes(write_mot(info['entries'], chunk_raw))
-            else:
-                new_bytes = bytes(chunk_raw)
+            new_bytes = bytes(write_mot(info['entries'], info.get('raw')))
+            _motion_layout(new_bytes)
 
         elif key == 'load':
             new_bytes = write_load(info['entries'])
@@ -1126,8 +910,38 @@ def save_prm_xfbin(filepath, raw, result):
                     other_info['hdr_off'] = other_hdr + delta
                     other_info['data_off'] = other_info.get('data_off', other_hdr + 12) + delta
 
-    with open(filepath, 'wb') as f:
-        f.write(raw)
+    _atomic_write(filepath, raw)
+
+
+def _atomic_write(filepath, data):
+    directory = os.path.dirname(os.path.abspath(filepath))
+    fd, temporary = tempfile.mkstemp(prefix='.arrow-skills-', dir=directory)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, filepath)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def save_prm_xfbin(filepath, raw, result):
+    from parsers.skill_tools import validate_skills
+    errors = [issue for issue in validate_skills(result) if issue['severity'] == 'error']
+    if errors:
+        raise ValueError('\n'.join(issue['message'] for issue in errors[:20]))
+    staged_raw, staged_result = bytearray(raw), copy.deepcopy(result)
+    _save_prm_xfbin_staged(filepath, staged_raw, staged_result)
+    raw[:] = staged_raw
+    # Retain entry identities used by the editor's signals. Rebuilt offsets and
+    # raw templates are synchronised from the same deterministic serialization.
+    for key in ('mot', 'gha'):
+        if key in result:
+            write_mot(result[key]['entries'], result[key]['raw'])
+    for key, value in staged_result.items():
+        result[key].update({k: v for k, v in value.items() if k != 'entries'})
 
 
 # Standalone prm_load.bin.xfbin API
@@ -1141,6 +955,8 @@ PRMLOAD_ENTRY_SIZE = 72
 def parse_prmload_chunk(raw):
     """Parse chunk data of a standalone prm_load.bin.xfbin."""
     count = _u32le(raw, 0)
+    if count > (len(raw) - 4) // PRMLOAD_ENTRY_SIZE:
+        raise ValueError("Standalone prm_load entry count exceeds payload")
     entries = []
     off = 4
     for _ in range(count):
@@ -1190,6 +1006,9 @@ def parse_prmload_xfbin(filepath):
 
     hdr_off, size, data_off = chunks[name]
     chunk_raw = raw[data_off:data_off+size]
+    if len(chunk_raw) >= 72 and _u32be(chunk_raw, 0) == len(chunk_raw) - 4:
+        return raw, {'load': {'name': name, 'entries': parse_load(chunk_raw),
+            'hdr_off': hdr_off, 'data_off': data_off, 'data_size': size, 'raw': bytearray(chunk_raw)}}
     entries = parse_prmload_chunk(chunk_raw)
 
     return raw, {
@@ -1206,15 +1025,23 @@ def parse_prmload_xfbin(filepath):
 
 def save_prmload_xfbin(filepath, raw, result):
     """Write back modified prm_load entries and save standalone file."""
+    if 'load' in result:
+        return save_prm_xfbin(filepath, raw, result)
     info = result['prmload_standalone']
     hdr_off = info.get('hdr_off', info['data_off'] - 12)
     data_size = info['data_size']
 
+    for entry in info['entries']:
+        for key in ('folder', 'xfbin'):
+            encoded = entry[key].encode('ascii')
+            if len(encoded) > 32 or b'\0' in encoded:
+                raise ValueError(f'{key}: requires ASCII, no NUL, at most 32 bytes')
     new_bytes = bytearray(write_prmload_chunk(info['entries']))
-    _replace_chunk(raw, hdr_off, data_size, new_bytes)
+    staged = bytearray(raw)
+    _replace_chunk(staged, hdr_off, data_size, new_bytes)
+    _atomic_write(filepath, staged)
+    raw[:] = staged
     info['hdr_off'] = hdr_off
     info['data_off'] = hdr_off + 12
     info['data_size'] = len(new_bytes)
     info['raw'] = bytearray(new_bytes)
-    with open(filepath, 'wb') as f:
-        f.write(raw)

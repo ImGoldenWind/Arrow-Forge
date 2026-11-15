@@ -4,14 +4,11 @@ Confirmed from the provided sample:
 
     0x00 u32  file magic / format id, observed 1000
     0x04 u32  entry count
-    0x08 u32  unknown header value, observed 8
-    0x0C u32  reserved, observed 0
+    0x08 u64  self-relative pointer to the record array (normally 8)
 
     entry_count * 0x68-byte records:
-        0x00 u32  relative pointer to stage id string, base = this field address
-        0x04 u32  pointer high/reserved, observed 0
-        0x08 u32  relative pointer to damage id string, base = this field address
-        0x0C u32  pointer high/reserved, observed 0
+        0x00 u64  self-relative pointer to stage id string
+        0x08 u64  self-relative pointer to damage id string
         0x10..0x64  remaining editable raw fields
 
     string table:
@@ -27,8 +24,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import copy
 import struct
+import os
+import tempfile
 
-from parsers.xfbin_lib import NuccChunkBinary, read_xfbin, write_xfbin_to_path
+from parsers.xfbin_lib import NuccChunkBinary, read_xfbin, write_xfbin
 
 
 HEADER_SIZE = 0x10
@@ -52,8 +51,8 @@ FIELD_SPECS = [
     ("value_24", 0x24, "f32"),
     ("value_28", 0x28, "f32"),
     ("value_2c", 0x2C, "f32"),
-    ("value_30", 0x30, "u32"),
-    ("value_34", 0x34, "u32"),
+    ("value_30", 0x30, "f32"),
+    ("value_34", 0x34, "f32"),
     ("value_38", 0x38, "u32"),
     ("value_3c", 0x3C, "u32"),
     ("value_40", 0x40, "u32"),
@@ -90,6 +89,8 @@ class GimmickDmgParam:
     bin_outer_size_offset: int | None = None
     bin_data_offset: int | None = None
     bin_chunk_size: int | None = None
+    source_payload: bytes | None = None
+    source_entries: list[GimmickDmgEntry] = field(default_factory=list)
 
 
 def _read_cstr(data: bytes | bytearray, off: int) -> str:
@@ -103,6 +104,8 @@ def _read_cstr(data: bytes | bytearray, off: int) -> str:
 
 
 def _validate_ascii(text: str, field_name: str) -> None:
+    if '\0' in str(text):
+        raise ValueError(f"{field_name} cannot contain NUL.")
     try:
         str(text).encode("ascii")
     except UnicodeEncodeError as exc:
@@ -135,17 +138,23 @@ def _looks_like_gimmick_dmg(data: bytes | bytearray) -> bool:
     magic, count, _unknown, _reserved = struct.unpack_from("<4I", data, 0)
     if magic != 1000 or count > 0x10000:
         return False
-    records_end = HEADER_SIZE + count * RECORD_SIZE
+    records_start = 8 + struct.unpack_from('<Q', data, 8)[0]
+    if records_start < HEADER_SIZE or records_start > len(data):
+        return False
+    records_end = records_start + count * RECORD_SIZE
     if records_end > len(data):
         return False
+    blob = bytes(data)
     for idx in range(count):
-        rec_off = HEADER_SIZE + idx * RECORD_SIZE
+        rec_off = records_start + idx * RECORD_SIZE
         for ptr_off in (STAGE_PTR_OFF, DAMAGE_PTR_OFF):
-            rel = struct.unpack_from("<I", data, rec_off + ptr_off)[0]
+            rel = struct.unpack_from("<Q", data, rec_off + ptr_off)[0]
             if rel == 0:
                 continue
             target = rec_off + ptr_off + rel
             if target < records_end or target >= len(data):
+                return False
+            if blob.find(b'\0', target) < 0:
                 return False
     return True
 
@@ -175,11 +184,12 @@ def _parse_chunk(chunk: NuccChunkBinary) -> GimmickDmgParam:
 
     magic, count, unknown_08, reserved_0c = struct.unpack_from("<4I", data, 0)
     entries: list[GimmickDmgEntry] = []
+    records_start = 8 + struct.unpack_from('<Q', data, 8)[0]
     for idx in range(count):
-        rec_off = HEADER_SIZE + idx * RECORD_SIZE
+        rec_off = records_start + idx * RECORD_SIZE
         words = list(struct.unpack_from("<" + "I" * WORD_COUNT, data, rec_off))
-        stage_rel = words[STAGE_PTR_WORD]
-        damage_rel = words[DAMAGE_PTR_WORD]
+        stage_rel = struct.unpack_from('<Q', data, rec_off)[0]
+        damage_rel = struct.unpack_from('<Q', data, rec_off + 8)[0]
         stage_id = _read_cstr(data, rec_off + STAGE_PTR_OFF + stage_rel) if stage_rel else ""
         damage_id = _read_cstr(data, rec_off + DAMAGE_PTR_OFF + damage_rel) if damage_rel else ""
         entries.append(GimmickDmgEntry(stage_id=stage_id, damage_id=damage_id, words=words))
@@ -192,6 +202,8 @@ def _parse_chunk(chunk: NuccChunkBinary) -> GimmickDmgParam:
         unknown_08=unknown_08,
         reserved_0c=reserved_0c,
         entries=entries,
+        source_payload=bytes(data),
+        source_entries=copy.deepcopy(entries),
     )
 
 
@@ -208,43 +220,103 @@ def _pack_payload(item: GimmickDmgParam) -> bytes:
     if len(item.entries) > 0xFFFFFFFF:
         raise ValueError("gimmickDmgParam has too many entries.")
 
+    # Keep the original string topology, null/empty distinction, padding and
+    # opaque tail when the table shape is unchanged. Changed strings append;
+    # unchanged pointers and neighboring bytes remain exactly as authored.
+    if item.source_payload is not None and len(item.entries) == len(item.source_entries):
+        buf = bytearray(item.source_payload)
+        start = 8 + struct.unpack_from('<Q', buf, 8)[0]
+        struct.pack_into('<I', buf, 0, _u32(item.magic, 'Header magic'))
+        for idx, (entry, original) in enumerate(zip(item.entries, item.source_entries)):
+            if len(entry.words) != WORD_COUNT:
+                raise ValueError('A gimmick damage record has an invalid word count.')
+            base = start + idx * RECORD_SIZE
+            for n, word in enumerate(entry.words):
+                if n in (0, 1, 2, 3):
+                    continue
+                struct.pack_into('<I', buf, base + n * 4, _u32(word, 'Record word'))
+            for off, name in ((0, 'stage_id'), (8, 'damage_id')):
+                value = getattr(entry, name)
+                if value == getattr(original, name):
+                    continue
+                _validate_ascii(value, name)
+                if value:
+                    _align8(buf)
+                    relative = len(buf) - base - off
+                    buf.extend(value.encode('ascii') + b'\0')
+                    _align8(buf)
+                else:
+                    relative = 0
+                struct.pack_into('<Q', buf, base + off, relative)
+        return bytes(buf)
+
     records = bytearray(len(item.entries) * RECORD_SIZE)
-    string_base = HEADER_SIZE + len(records)
+    records_start = (8 + struct.unpack_from('<Q', item.source_payload, 8)[0]
+                     if item.source_payload is not None else HEADER_SIZE)
+    string_base = records_start + len(records)
     strings = bytearray()
 
     for idx, entry in enumerate(item.entries):
         if len(entry.words) != WORD_COUNT:
             raise ValueError("A gimmick damage record has an invalid word count.")
 
-        rec_off = HEADER_SIZE + idx * RECORD_SIZE
+        rec_off = records_start + idx * RECORD_SIZE
         words = [_u32(word, f"record {idx} word {word_idx}") for word_idx, word in enumerate(entry.words)]
 
         words[STAGE_PTR_WORD] = 0
         words[DAMAGE_PTR_WORD] = 0
+        words[1] = words[3] = 0
 
-        if entry.stage_id:
+        if entry.stage_id or entry.words[0] or entry.words[1]:
             stage_abs = _append_string(strings, entry.stage_id, string_base)
             words[STAGE_PTR_WORD] = _u32(stage_abs - (rec_off + STAGE_PTR_OFF), "Stage ID pointer")
-        if entry.damage_id:
+        if entry.damage_id or entry.words[2] or entry.words[3]:
             damage_abs = _append_string(strings, entry.damage_id, string_base)
             words[DAMAGE_PTR_WORD] = _u32(damage_abs - (rec_off + DAMAGE_PTR_OFF), "Damage ID pointer")
 
         struct.pack_into("<" + "I" * WORD_COUNT, records, idx * RECORD_SIZE, *words)
-        entry.words = words
 
-    buf = bytearray(HEADER_SIZE)
+    buf = (bytearray(item.source_payload[:records_start]) if item.source_payload is not None
+           else bytearray(HEADER_SIZE))
     struct.pack_into(
         "<4I",
         buf,
         0,
         _u32(item.magic, "Header magic"),
         len(item.entries),
-        _u32(item.unknown_08, "Header value 0x08"),
-        _u32(item.reserved_0c, "Header reserved 0x0C"),
+        records_start - 8,
+        0,
     )
     buf.extend(records)
     buf.extend(strings)
+    if item.source_payload is not None:
+        # Preserve the original string storage/opaque suffix on structural edits.
+        old_start = 8 + struct.unpack_from('<Q', item.source_payload, 8)[0]
+        old_end = old_start + len(item.source_entries) * RECORD_SIZE
+        buf.extend(item.source_payload[old_end:])
     return bytes(buf)
+
+
+def _atomic_write(path, data):
+    target = os.path.abspath(path)
+    fd, temporary = tempfile.mkstemp(prefix='.arrow-gimmick-', dir=os.path.dirname(target))
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _accept_payload(item, payload):
+    start = 8 + struct.unpack_from('<Q', payload, 8)[0]
+    for index, entry in enumerate(item.entries):
+        entry.words[:4] = struct.unpack_from('<4I', payload, start + index * RECORD_SIZE)
+    item.source_payload = payload
+    item.source_entries = copy.deepcopy(item.entries)
 
 
 def load_gimmickdmgparam_xfbin(path: str):
@@ -284,35 +356,40 @@ def save_gimmickdmgparam_xfbin(xfbin, path: str, item: GimmickDmgParam) -> None:
     )
     if can_raw_save:
         old_end = item.bin_data_offset + item.bin_chunk_size
-        if old_end % 4:
-            old_end += 4 - (old_end % 4)
 
         prefix = bytearray(item.raw_bytes[:item.bin_data_offset])
         struct.pack_into(">I", prefix, item.bin_size_offset, len(payload))
         if item.bin_outer_size_offset is not None:
             struct.pack_into(">I", prefix, item.bin_outer_size_offset, len(payload) + 4)
-        padded_payload = bytearray(payload)
-        if len(padded_payload) % 4:
-            padded_payload.extend(b"\x00" * (4 - (len(padded_payload) % 4)))
-
         buf = (
             bytes(prefix)
-            + bytes(padded_payload)
+            + payload
             + item.raw_bytes[old_end:]
         )
-        with open(path, "wb") as fh:
-            fh.write(buf)
+        _atomic_write(path, buf)
         item.raw_bytes = bytes(buf)
         item.bin_chunk_size = len(payload)
         item.chunk.binary_data = payload
+        _accept_payload(item, payload)
         return
 
+    staged_xfbin, staged_chunk = copy.deepcopy((xfbin, item.chunk))
+    staged_chunk.name = item.chunk_name
+    staged_chunk.filePath = item.file_path
+    staged_chunk.binary_data = payload
+    staged_chunk.has_props = True
+    staged_chunk.extension = ".binary"
+    buf = bytes(write_xfbin(staged_xfbin))
+    offsets = _find_payload_offsets(buf, payload)
+    _atomic_write(path, buf)
     item.chunk.name = item.chunk_name
     item.chunk.filePath = item.file_path
     item.chunk.binary_data = payload
     item.chunk.has_props = True
-    item.chunk.extension = ".binary"
-    write_xfbin_to_path(xfbin, path)
+    item.chunk.extension = '.binary'
+    item.raw_bytes = buf
+    item.bin_size_offset, item.bin_outer_size_offset, item.bin_data_offset, item.bin_chunk_size = offsets
+    _accept_payload(item, payload)
 
 
 def make_default_entry(source: GimmickDmgEntry | None = None) -> GimmickDmgEntry:
@@ -321,4 +398,5 @@ def make_default_entry(source: GimmickDmgEntry | None = None) -> GimmickDmgEntry
     words = [0] * WORD_COUNT
     words[1] = 0
     words[3] = 0
+    words[0x3C // 4:0x64 // 4] = [0xFFFFFFFF] * 10
     return GimmickDmgEntry(stage_id="STAGE_NEW", damage_id="DAMAGE_ID_NONE", words=words)

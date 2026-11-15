@@ -1,11 +1,13 @@
 <p align="center">
-  <img src="ArrowForgeIcon.ico" width="96" alt="Arrow Forge icon">
+  <img src="ArrowForgeIcon.ico" width="96" alt="Arrow Forge">
 </p>
 
 <h1 align="center">Arrow Forge</h1>
 
 <p align="center">
-  A PyQt6 toolbox for editing <em>JoJo's Bizarre Adventure: All-Star Battle R</em> files.
+  A modding toolbox for <em>JoJo's Bizarre Adventure: All-Star Battle R</em>.
+  <br>
+  Edit characters, moves, stages, text, textures, audio and video in one app.
 </p>
 
 <p align="center">
@@ -13,208 +15,74 @@
     <img alt="Latest release" src="https://img.shields.io/github/v/release/ImGoldenWind/Arrow-Forge?style=for-the-badge&label=latest%20release&color=2f6fed">
   </a>
   <a href="https://github.com/ImGoldenWind/Arrow-Forge/releases">
-    <img alt="Total release downloads" src="https://img.shields.io/github/downloads/ImGoldenWind/Arrow-Forge/total?style=for-the-badge&label=release%20downloads&color=2f6fed">
+    <img alt="Downloads" src="https://img.shields.io/github/downloads/ImGoldenWind/Arrow-Forge/total?style=for-the-badge&label=downloads&color=2f6fed">
   </a>
-  <a href="https://github.com/ImGoldenWind/Arrow-Forge">
-    <img alt="Repository stars" src="https://img.shields.io/github/stars/ImGoldenWind/Arrow-Forge?style=for-the-badge&label=stars&color=1f9d55">
-  </a>
-  <a href="https://github.com/ImGoldenWind/Arrow-Forge/issues">
-    <img alt="Open issues" src="https://img.shields.io/github/issues/ImGoldenWind/Arrow-Forge?style=for-the-badge&label=issues&color=d98c1f">
+  <a href="https://github.com/ImGoldenWind/Arrow-Forge/stargazers">
+    <img alt="Stars" src="https://img.shields.io/github/stars/ImGoldenWind/Arrow-Forge?style=for-the-badge&label=stars&color=1f9d55">
   </a>
 </p>
 
 <p align="center">
-  <a href="#download">Download</a>
-  |
-  <a href="#source">Source</a>
-  |
-  <a href="#features">Features</a>
-  |
-  <a href="#running-from-source">Run from source</a>
-  |
-  <a href="#building">Build</a>
-  |
+  <a href="#download">Download</a> &bull;
+  <a href="#features">Features</a> &bull;
+  <a href="#support">Support</a> &bull;
   <a href="#credits">Credits</a>
 </p>
 
-## About
-
-Arrow Forge is a desktop toolkit for ASBR modding. It wraps file parsers,
-editors, texture and audio helpers, and CPK unpacking tools in one interface so
-you can inspect and adjust game data without jumping between one-off scripts.
-
-The project is focused on practical editing: open a supported file, change the
-data, save it back, and keep the surrounding helper files close to the app.
-
 ## Download
 
-Get the latest packaged build from the
-[Releases page](https://github.com/ImGoldenWind/Arrow-Forge/releases/latest).
-Unpack the archive and run:
+Get Arrow Forge from the [latest release](https://github.com/ImGoldenWind/Arrow-Forge/releases/latest).
 
-```powershell
-ASBR-Tools.exe
-```
+1. Download the archive for your system.
+2. Extract it into a folder.
+3. Open Arrow Forge. On Windows, run **ASBR-Tools.exe**.
 
-Keep the extracted folder intact. Some editors use bundled resources and helper
-tools that live next to the executable.
-
-## Source
-
-Clone the repository:
-
-```powershell
-git clone https://github.com/ImGoldenWind/Arrow-Forge.git
-```
-
-Download the current source archive:
-
-- [Source code ZIP](https://github.com/ImGoldenWind/Arrow-Forge/archive/refs/heads/main.zip)
-- [Source code TAR.GZ](https://github.com/ImGoldenWind/Arrow-Forge/archive/refs/heads/main.tar.gz)
+Keep the extracted folder together. Open Settings and select your extracted
+game files to enable game-text lookups and previews in the editors.
 
 ## Features
 
-- Character data editors for character codes, stats, costumes, skills, assist
-  settings, speaking data, guide character data, and related parameter files.
-- Battle and move data tools for battle adjustments, damage parameters,
-  projectiles, effects, stage information, stage motion, and main mode data.
-- Text and profile editors for messages, dictionaries, gallery art, sound test
-  data, player titles, custom cards, DLC information, and info tables.
-- Texture, model, and audio helpers for XFBIN textures, ASBR-style cel-shaded
-  character previews with skeletal animation playback, NUS3BANK/AWB-related
-  workflows, and bundled HCA decoding support.
-- CPK unpacking support and shared UI systems for themes, translations, icons,
-  settings, and update checks.
+| Workspace | What you can edit |
+| --- | --- |
+| Characters | Character slots, stats, costumes, skills, assists and CPU behavior |
+| Combat | Moves, projectiles, hit reactions, effects and battle rules |
+| Stages | Stage settings, lighting and Situation Finish events |
+| Text & menus | Game messages, dialogue, guides, glossary entries and UI collisions |
+| Unlockables | Gallery items, player titles, custom cards, rewards and missions |
+| Media | Textures, animated models, audio banks, lip sync and movies |
+| Archives | Browse, extract and replace files in CPK archives |
 
-## Running From Source
+Arrow Forge includes search and filters, visual previews, keyboard shortcuts,
+customizable themes, and English and Russian interfaces.
 
-Python 3.11 or newer is recommended.
+## Getting started
 
-Windows:
+Choose an editor, open the matching game file, make your changes and save.
+Use **Save as** to keep a separate edited copy. Optional automatic backups can
+be enabled in Settings.
 
-```powershell
-python -m pip install -U pip
-pip install PyQt6 Pillow numpy qtawesome PyOpenGL
-python ASBR-Tools.py
-```
+Work with copies of your game files and test your changes in-game.
 
-Linux:
+## Support
 
-```bash
-python3 -m pip install -U pip
-python3 -m pip install PyQt6 Pillow numpy qtawesome PyOpenGL
-python3 ASBR-Tools.py
-```
+Found a bug or have an idea? [Open an issue](https://github.com/ImGoldenWind/Arrow-Forge/issues).
+Include the editor name, your Arrow Forge version and what happened.
 
-Some audio tools also use bundled files from `tools/`, so keep that folder next
-to the application when running from source. Put vgmstream builds in
-`tools/vgmstream/` and VGAudioCLI builds in `tools/VGAudioCLI/`. On Linux,
-vgmstream should be named `vgmstream-cli`. VGAudioCLI official releases only
-ship `VGAudioCli.exe`; Linux import/encode features need a custom native
-`VGAudioCli` build or a dotnet-runnable `VGAudioCli.dll` bundle. The app also
-checks `PATH` and the directory set by `ASBR_TOOLS_TOOLS_DIR`.
-
-The bundled Linux `vgmstream-cli` and `rhubarb` executables are x86-64 builds.
-Arrow Forge restores their user execute bit automatically if an archive tool
-removed it. Native tools are always preferred. When only a Windows helper is
-available, Arrow Forge can launch managed `.exe` files with Mono and other
-Windows `.exe` files with Wine. The runtime paths can be overridden with
-`ASBR_TOOLS_DOTNET`, `ASBR_TOOLS_MONO`, and `ASBR_TOOLS_WINE`.
-
-On Debian/Ubuntu, install the common Linux runtimes with:
-
-```bash
-sudo apt install ffmpeg
-# Optional: needed only to use bundled Windows-only helpers.
-sudo apt install mono-runtime wine
-```
-
-Linux helper availability:
-
-| Feature | Preferred helper | Fallback |
-| --- | --- | --- |
-| Game-audio decoding | Bundled `vgmstream-cli` | Native tool from `PATH` |
-| Lip-sync generation | Bundled `rhubarb` | Native tool from `PATH` |
-| Media probing/export | Native `ffmpeg` and `ffprobe` | Bundled `.exe` through Wine |
-| VGAudio conversion | Native `VGAudioCli` or `VGAudioCli.dll` + dotnet | Bundled managed `.exe` through Mono/Wine |
-| Sofdec2 USM encoding | Native-compatible encoder | Bundled encoder through Wine |
-| Fast CPK unpacking | Native `cpkforge` | Bundled managed `.exe` through Mono/Wine, then the Python extractor |
-
-Wine/Mono fallbacks are intended for x86-64 Linux. Native tools from the
-distribution remain the recommended option wherever they are available.
-
-On Linux and macOS, user settings are written outside the application folder:
-`$XDG_CONFIG_HOME/arrow-forge/asbr_settings.json` on Linux, or
-`~/.config/arrow-forge/asbr_settings.json` when `XDG_CONFIG_HOME` is not set.
-Use `ASBR_TOOLS_CONFIG_DIR` to override that location.
-
-## Project Layout
-
-```text
-ASBR-Tools.py        Main application entry point
-ASBR-Tools.spec      PyInstaller build recipe
-core/                Shared UI, themes, icons, settings, translations
-editors/             Editor windows for supported ASBR file types
-parsers/             Format readers and writers
-locales/             Translation files
-resources/           Bundled application assets
-resources/audio/     App sound effects
-resources/animations/Animated app easter-egg assets
-resources/backgrounds/Theme background decorations
-resources/guides/    Category guide portraits
-resources/themes/    Theme-specific texture assets
-tools/               Helper binaries and support files
-tools/vgmstream/     vgmstream CLI and its runtime libraries
-tools/VGAudioCLI/    VGAudioCLI builds and its runtime files
-```
-
-## Building
-
-The repository includes a PyInstaller spec for release builds. Install a current
-PyInstaller into the same Python environment you build from, then create a clean
-one-folder package:
-
-```powershell
-python -m pip install -U pyinstaller
-python -m PyInstaller --clean ASBR-Tools.spec
-```
-
-The packaged app will be created under:
-
-```text
-dist/ASBR-Tools/
-```
-
-Zip that folder for GitHub Releases. The app can check for new releases,
-download the release asset, and apply the update from the app folder on
-Windows. Linux builds still check releases and open the release page, but
-updates are installed manually.
-
-## Safety Notes
-
-Back up your game files before saving edited data. Many supported formats are
-specific to ASBR, and invalid values can still break game behavior or make the
-game reject a file.
+You can also visit the [JoJo Modding Community](https://discord.gg/bfWPHBwbr9).
 
 ## Credits
 
-- [KojoBailey](https://github.com/KojoBailey) - 010 Editor templates used while
-  making the editors in this toolbox.
-- [Xemasklyr](https://www.nexusmods.com/profile/Xemasklyr/mods) - groundwork
-  for the Char. Skills editor (`0xxx00prm.bin`).
-- [Al-Hydra](https://github.com/Al-Hydra) - texture editor used as a base.
-- [LazyBone152](https://github.com/LazyBone152) - ACE, used as a base for the
-  built-in editor.
-- [TheLeonX](https://github.com/TheLeonX) - XFBIN_Lib, toolbox idea, the
-  talking character at the bottom, and inspiration.
-- [JoJo Modding Community](https://discord.gg/bfWPHBwbr9) - for the inspiration
+- [KojoBailey](https://github.com/KojoBailey) - 010 Editor templates.
+- [Xemasklyr](https://www.nexusmods.com/profile/Xemasklyr/mods) - groundwork for the Character Skills editor.
+- [Al-Hydra](https://github.com/Al-Hydra) - the original texture editor.
+- [LazyBone152](https://github.com/LazyBone152) - ACE, used as an editor base.
+- [TheLeonX](https://github.com/TheLeonX) - XFBIN_Lib, the toolbox idea, the talking character and inspiration.
+- [JoJo Modding Community](https://discord.gg/bfWPHBwbr9) - inspiration and support.
 
-## Donations
+## Support development
 
 Arrow Forge is free and will remain free.
 
-If you still want to support development:
+If you would like to support development:
 
-```text
-BTC: bc1qglgl3zqjqhdkqn0y97thqlhfpg7hxvjg09tlv4
-```
+**BTC:** `bc1qglgl3zqjqhdkqn0y97thqlhfpg7hxvjg09tlv4`

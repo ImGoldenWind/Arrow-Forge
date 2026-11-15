@@ -1,3 +1,5 @@
+from core.design_tokens import TypeSize
+from core.design_tokens import ui_font
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
@@ -36,12 +38,12 @@ class CpkPanelMixin:
 
         back_btn = _make_styled_btn(
             "\u2190 " + self.t("back"), P["mid"], P["bg_card_hov"], P["secondary"],
-            QFont("Segoe UI", 13), width=100, height=30)
+            ui_font(TypeSize.TITLE), width=100, height=30)
         back_btn.clicked.connect(self._close_cpk_editor_inline)
         bar_layout.addWidget(back_btn)
 
         title_lbl = QLabel(self.t("cpk_title"))
-        title_lbl.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        title_lbl.setFont(ui_font(TypeSize.SUBHEADING, QFont.Weight.Bold))
         title_lbl.setStyleSheet(f"color: {P['accent']};")
         bar_layout.addWidget(title_lbl)
         bar_layout.addStretch()

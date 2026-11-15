@@ -1,5 +1,7 @@
 import copy
+import os
 import struct
+import tempfile
 
 # MainModeParam.bin.xfbin parser
 # Binary layout inside the nuccChunkBinary payload:
@@ -11,9 +13,9 @@ import struct
 #   [after panels:] string pool (null-terminated ASCII strings)
 # Every string field in a panel is stored as a LE u64 relative pointer:
 #   string_absolute_chunk_offset = ptr_field_chunk_offset + pointer_value
-# On rebuild the string pool is placed immediately after the panel array and
-# every pointer value is recomputed from scratch, so adding / removing panels
-# never corrupts existing pointer values.
+# Native loader 4E0F2C reads 32-bit scalars and the pointer at +28. Unmapped
+# alignment bytes remain in each panel's _record. See story-mode-research.md.
+# Ordinary saves retain the original pool. Structural edits rebuild pointers.
 
 PANEL_SIZE  = 328
 ENTRIES_OFF = 20      # fixed: 4(BE_size)+4(version)+4(count)+8(first_ptr)
@@ -22,12 +24,12 @@ ENTRIES_OFF = 20      # fixed: 4(BE_size)+4(version)+4(count)+8(first_ptr)
 # key → (byte offset within panel, type)
 # types: 'ptr' = relative-pointer string, 'u64', 'u32', 'i32'
 _F = {
-    'part':           (0,   'u64'),
+    'part':           (0,   'u32'),
     'ptr_panel_id':   (8,   'ptr'),
-    'page':           (16,  'u64'),
+    'page':           (16,  'u32'),
     'ptr_boss_id':    (24,  'ptr'),
-    'unk1':           (32,  'u64'),
-    'unk2':           (40,  'u64'),
+    'unk1':           (32,  'u32'),
+    'ptr_str05':      (40,  'ptr'),
     'gold_reward':    (48,  'u32'),
     'type':           (52,  'u32'),
     'ptr_up':         (56,  'ptr'),
@@ -37,8 +39,8 @@ _F = {
     'disp_diff':      (88,  'u32'),
     'cpu_level':      (92,  'u32'),
     'ptr_stage_id':   (96,  'ptr'),
-    'unk3':           (104, 'u64'),
-    'first_speak':    (112, 'u64'),
+    'unk3':           (104, 'u32'),
+    'first_speak':    (112, 'u32'),
     'ptr_player_id':  (120, 'ptr'),
     'ptr_plyr_asst':  (128, 'ptr'),
     'ptr_plyr_btlst': (136, 'ptr'),
@@ -52,23 +54,23 @@ _F = {
     'spec_rule_1':    (200, 'i32'),
     'spec_rule_2':    (204, 'i32'),
     'spec_rule_3':    (208, 'i32'),
-    'spec_rule_4':    (212, 'i32'),
+    'spec_rule_4':    (212, 'i32'),  # legacy key: padding, NOT a fourth rule
     'm1_cond':        (216, 'i32'),
     'm1_unk':         (220, 'u32'),
     'ptr_m1_reward':  (224, 'ptr'),
-    'm1_gold':        (232, 'u64'),
+    'm1_gold':        (232, 'u32'),
     'm2_cond':        (240, 'i32'),
     'm2_unk':         (244, 'u32'),
     'ptr_m2_reward':  (248, 'ptr'),
-    'm2_gold':        (256, 'u64'),
+    'm2_gold':        (256, 'u32'),
     'm3_cond':        (264, 'i32'),
     'm3_unk':         (268, 'u32'),
     'ptr_m3_reward':  (272, 'ptr'),
-    'm3_gold':        (280, 'u64'),
+    'm3_gold':        (280, 'u32'),
     'm4_cond':        (288, 'i32'),
     'm4_unk':         (292, 'u32'),
     'ptr_m4_reward':  (296, 'ptr'),
-    'm4_gold':        (304, 'u64'),
+    'm4_gold':        (304, 'u32'),
     'extra_unk1':     (312, 'u32'),
     'extra_unk2':     (316, 'u32'),
     'extra_unk3':     (320, 'u32'),
@@ -116,6 +118,8 @@ def _read_cstr(chunk, off):
 def _follow_ptr(chunk, ptr_field_off):
     """Return (string, string_chunk_off, string_len)."""
     ptr_val = struct.unpack('<Q', chunk[ptr_field_off:ptr_field_off + 8])[0]
+    if not ptr_val:
+        return '', ptr_field_off, 0
     str_off = ptr_field_off + ptr_val
     if str_off >= len(chunk):
         return '', str_off, 0
@@ -124,7 +128,8 @@ def _follow_ptr(chunk, ptr_field_off):
 
 
 def _parse_panel(chunk, panel_chunk_off):
-    p = {'_chunk_off': panel_chunk_off}
+    p = {'_chunk_off': panel_chunk_off,
+         '_record': bytes(chunk[panel_chunk_off:panel_chunk_off + PANEL_SIZE])}
     d = chunk[panel_chunk_off:panel_chunk_off + PANEL_SIZE]
     for name, (rel, kind) in _F.items():
         abs_off = panel_chunk_off + rel
@@ -159,6 +164,9 @@ def parse_mainmodeparam(filepath):
     with open(filepath, 'rb') as f:
         raw = bytearray(f.read())
 
+    if len(raw) < 28 or raw[:4] != b'NUCC':
+        raise ValueError('Not a NUCC/XFBIN file.')
+
     bin_hdr, bin_data, bin_sz = _find_binary_chunk(raw)
     chunk = raw[bin_data:bin_data + bin_sz]
 
@@ -167,6 +175,8 @@ def parse_mainmodeparam(filepath):
     first_ptr = struct.unpack('<Q', chunk[12:20])[0]
     notes_len = first_ptr - 8
     ent_off   = ENTRIES_OFF + notes_len
+    if notes_len < 0 or ent_off + count * PANEL_SIZE > len(chunk):
+        raise ValueError('MainModeParam panel table exceeds chunk size.')
 
     panels = [_parse_panel(chunk, ent_off + i * PANEL_SIZE) for i in range(count)]
 
@@ -174,6 +184,7 @@ def parse_mainmodeparam(filepath):
         'panels':          panels,
         'version':         version,
         'count':           count,
+        'notes':           bytes(chunk[ENTRIES_OFF:ent_off]),
         'bin_hdr_offset':  bin_hdr,
         'bin_data_offset': bin_data,
         'bin_chunk_size':  bin_sz,
@@ -182,7 +193,7 @@ def parse_mainmodeparam(filepath):
 
 # Chunk builder (full rebuild, recalculates all pointers)
 
-def _build_chunk(version, panels):
+def _build_chunk(version, panels, notes=b''):
     """Serialise *panels* into a fresh chunk bytearray.
 
     String pool is laid out immediately after the panel array.
@@ -199,7 +210,9 @@ def _build_chunk(version, panels):
         s = str(s) if s is not None else ''
         if s not in pool_map:
             pool_map[s] = len(pool)
-            pool.extend(s.encode('ascii', errors='replace') + b'\x00')
+            if '\x00' in s:
+                raise ValueError('Identifiers cannot contain NUL bytes.')
+            pool.extend(s.encode('ascii') + b'\x00')
         return pool_map[s]
 
     for panel in panels:
@@ -207,14 +220,15 @@ def _build_chunk(version, panels):
             intern(panel.get(key, ''))
 
     # String pool starts immediately after all panel structs
-    pool_start = ENTRIES_OFF + count * PANEL_SIZE   # absolute chunk offset
+    pool_start = ENTRIES_OFF + len(notes) + count * PANEL_SIZE
 
     # 2. Serialise panel structs
     panels_buf = bytearray(count * PANEL_SIZE)
 
     for pi, panel in enumerate(panels):
         buf_off   = pi * PANEL_SIZE                  # offset within panels_buf
-        chunk_off = ENTRIES_OFF + pi * PANEL_SIZE    # absolute chunk offset
+        chunk_off = ENTRIES_OFF + len(notes) + pi * PANEL_SIZE
+        panels_buf[buf_off:buf_off + PANEL_SIZE] = panel.get('_record', bytes(PANEL_SIZE))
 
         for name, (rel, kind) in _F.items():
             field_chunk_off = chunk_off + rel
@@ -230,11 +244,11 @@ def _build_chunk(version, panels):
                 struct.pack_into('<Q', panels_buf, dst, v)
 
             elif kind == 'i32':
-                v = max(-2_147_483_648, min(2_147_483_647, int(panel.get(name, 0))))
+                v = int(panel.get(name, 0))
                 struct.pack_into('<i', panels_buf, dst, v)
 
             elif kind == 'u32':
-                v = int(panel.get(name, 0)) & 0xFFFFFFFF
+                v = int(panel.get(name, 0))
                 struct.pack_into('<I', panels_buf, dst, v)
 
     # 3. Assemble
@@ -242,7 +256,8 @@ def _build_chunk(version, panels):
     chunk += b'\x00\x00\x00\x00'           # BE payload size – filled below
     chunk += struct.pack('<I', version)     # version
     chunk += struct.pack('<I', count)       # count
-    chunk += struct.pack('<Q', 8)           # first_ptr = 8  (no notes)
+    chunk += struct.pack('<Q', 8 + len(notes))
+    chunk += notes
     chunk += panels_buf
     chunk += pool
 
@@ -250,13 +265,14 @@ def _build_chunk(version, panels):
     return chunk
 
 
-# Public: save (always full rebuild)
+# Public: save (patch scalars / append changed strings; rebuild on CRUD)
 
 def save_mainmodeparam(filepath, raw, result):
-    """Rebuild the chunk from *result['panels']* and write to *filepath*.
+    """Serialise *result['panels']* and atomically write to *filepath*.
 
     Supports any number of panels (add / remove freely).
-    All pointer values are recomputed; the XFBIN chunk-size field is patched.
+    Structural edits recompute pointers; unchanged records retain the pool,
+    zero pointers, alignment bytes and unrelated XFBIN chunks.
     """
     panels   = result['panels']
     version  = result['version']
@@ -264,27 +280,58 @@ def save_mainmodeparam(filepath, raw, result):
     bin_data = result['bin_data_offset']
     old_sz   = result['bin_chunk_size']
 
-    new_chunk = _build_chunk(version, panels)
+    notes = result.get('notes', b'')
+    old_chunk = raw[bin_data:bin_data + old_sz]
+    old_count = struct.unpack_from('<I', old_chunk, 8)[0]
+    old_start = 12 + struct.unpack_from('<Q', old_chunk, 12)[0]
+    # Retain the original pool (including zero pointers, aliases and padding).
+    # Only changed strings are appended. Reordering/CRUD rebuilds all pointers.
+    if (len(panels) == old_count and notes == old_chunk[20:old_start]
+            and all(p.get('_chunk_off') == old_start + i * PANEL_SIZE for i, p in enumerate(panels))):
+        new_chunk = bytearray(old_chunk)
+        struct.pack_into('<I', new_chunk, 4, version)
+        for panel in panels:
+            base = panel['_chunk_off']
+            for key, (rel, kind) in _F.items():
+                value = panel.get(key, '' if kind == 'ptr' else 0)
+                if kind == 'ptr':
+                    value = str(value)
+                    if value != _follow_ptr(old_chunk, base + rel)[0]:
+                        if '\x00' in value:
+                            raise ValueError('Identifiers cannot contain NUL bytes.')
+                        encoded = value.encode('ascii') + b'\x00'
+                        struct.pack_into('<Q', new_chunk, base + rel, len(new_chunk) - base - rel)
+                        new_chunk.extend(encoded)
+                else:
+                    struct.pack_into('<' + {'u32': 'I', 'i32': 'i', 'u64': 'Q'}[kind], new_chunk, base + rel, int(value))
+        struct.pack_into('>I', new_chunk, 0, len(new_chunk) - 4)
+    else:
+        new_chunk = _build_chunk(version, panels, notes)
     new_sz    = len(new_chunk)
 
-    # Old chunk boundary (4-byte aligned)
-    old_end = bin_data + old_sz
-    if old_end % 4:
-        old_end += 4 - old_end % 4
+    if new_sz == old_sz:
+        # Preserve original alignment bytes, including unpadded final chunks.
+        buf = bytearray(raw)
+        buf[bin_data:bin_data + old_sz] = new_chunk
+    else:
+        old_end = min((bin_data + old_sz + 3) & ~3, len(raw))
+        suffix = raw[old_end:]
+        padded = bytearray(new_chunk)
+        if suffix:
+            padded += bytes((-len(padded)) % 4)
+        new_hdr = bytearray(raw[bin_hdr:bin_hdr + 12])
+        struct.pack_into('>I', new_hdr, 0, new_sz)
+        buf = raw[:bin_hdr] + new_hdr + padded + suffix
 
-    # Pad new chunk to 4-byte boundary
-    padded = bytearray(new_chunk)
-    if len(padded) % 4:
-        padded += b'\x00' * (4 - len(padded) % 4)
-
-    # Patch XFBIN chunk-size field (first 4 bytes of the 12-byte chunk header)
-    new_hdr = bytearray(raw[bin_hdr:bin_hdr + 12])
-    struct.pack_into('>I', new_hdr, 0, new_sz)
-
-    buf = raw[:bin_hdr] + new_hdr + padded + raw[old_end:]
-
-    with open(filepath, 'wb') as f:
-        f.write(buf)
+    destination = os.path.abspath(filepath)
+    fd, temporary = tempfile.mkstemp(prefix='.arrow-story-', dir=os.path.dirname(destination))
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(buf)
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 # Public: make_default_panel
@@ -320,6 +367,8 @@ def make_default_panel(reference=None):
 
     # sensible game defaults
     p.update({
+        'part':         1,
+        'page':         1,
         'gold_reward':  1000,
         'type':         0,
         'disp_diff':    2,

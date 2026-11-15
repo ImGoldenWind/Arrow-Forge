@@ -1,12 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
+import sys
 
-datas = [('resources', 'resources'), ('tools', 'tools'), ('ArrowForgeIcon.ico', '.')]
+datas = [('resources', 'resources'), ('tools', 'tools'), ('locales', 'locales'), ('ArrowForgeIcon.ico', '.')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('qtawesome')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('OpenGL')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
+tmp_ret = collect_all('unicorn')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
+tmp_ret = collect_all('cricodecs')
+
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
+tmp_ret = collect_all('pyaudiowpatch' if sys.platform == 'win32' else 'pyaudio')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 

@@ -16,11 +16,21 @@ Usage
     )
 """
 from core.themes import P
+from html import escape
+from core.design_tokens import (
+    ColorRole, FontRole, Insets, LayoutRole, Padding, Radius, Size, SkeletonMetrics, TypeSize,
+    color, error_color, font, mono_font, radius as token_radius, ui_font,
+)
 
 # Layout constants
-TOOLBAR_H     = 46   # editor toolbar frame height (px)
-TOOLBAR_BTN_H = 30   # standard toolbar button height (px)
-TOOLBAR_SEP_H = 26   # vertical separator height inside toolbar (px)
+TOOLBAR_H     = Size.TOOLBAR   # editor toolbar frame height (px)
+TOOLBAR_BTN_H = Size.CONTROL   # standard toolbar button height (px)
+TOOLBAR_SEP_H = Size.TOOLBAR_SEPARATOR   # vertical separator height inside toolbar (px)
+
+
+def editor_rich_link(text, target):
+    """Escaped internal link in a QLabel, using the current editor accent."""
+    return f'<a href="{escape(str(target), quote=True)}" style="color:{color(ColorRole.ACCENT)}">{escape(str(text))}</a>'
 
 
 def _palette_int(key: str, default: int) -> int:
@@ -32,83 +42,41 @@ def _palette_int(key: str, default: int) -> int:
 
 # Buttons
 
-def ss_btn(accent: bool = False, danger: bool = False) -> str:
-    """Toolbar / action button.
-
-    accent=True  →  primary / global-action button (load, save).
-                    Always accent-coloured; disabled state shows P['mid'].
-    danger=True  →  destructive action (delete).  Normal background, red hover.
-    (default)    →  editor-specific / secondary button.  Neutral background.
-
-    Hierarchy rule
-    * Accent  → global actions: Open File, Save File, primary panel actions.
-    * Neutral → editor-specific actions: Add, Duplicate, Move, editor actions.
-    * Danger  → destructive actions: Delete, Remove.
-    """
-    radius = P.get("button_radius", "6px")
-    border = P.get("button_border", "none")
-    button_fg = P.get("button_text", P["text_main"])
-    disabled_bg = P.get("button_disabled_bg", P.get("bg_card", P["mid"]))
-    disabled_fg = P.get("button_disabled_text", P.get("text_sec", P["text_dim"]))
-    if danger:
-        hover_bg = P.get("button_danger_hover", P["accent_dim"])
-        hover_fg = P.get("button_danger_hover_text", P.get("button_hover_text", P["bg_dark"]))
-        return (
-            f"QPushButton {{ background-color: {P['mid']}; color: {button_fg}; border: {border}; "
-            f"border-radius: {radius}; padding: 3px 10px; }}"
-            f"QPushButton:focus {{ border: 1px solid {P.get('input_focus_border', P['accent'])}; }}"
-            f"QPushButton:hover {{ background-color: {hover_bg}; color: {hover_fg}; }}"
-            f"QPushButton:pressed {{ background-color: {P.get('bg_card_hov', P['mid'])}; padding-top: 4px; padding-bottom: 2px; }}"
-            f"QPushButton:disabled {{ background-color: {disabled_bg}; color: {disabled_fg}; }}"
-        )
-    if accent:
-        hover_bg = P.get("button_accent_hover", P["accent_dim"])
-        accent_fg = P.get("button_accent_text", P["bg_dark"])
-        hover_fg = P.get("button_accent_hover_text", accent_fg)
-        return (
-            f"QPushButton {{ background-color: {P['accent']}; color: {accent_fg}; border: {border}; "
-            f"border-radius: {radius}; font-weight: bold; padding: 3px 10px; }}"
-            f"QPushButton:focus {{ border: 1px solid {P.get('input_focus_border', P['accent'])}; }}"
-            f"QPushButton:hover {{ background-color: {hover_bg}; color: {hover_fg}; }}"
-            f"QPushButton:pressed {{ background-color: {P.get('button_accent_pressed', hover_bg)}; padding-top: 4px; padding-bottom: 2px; }}"
-            f"QPushButton:disabled {{ background-color: {disabled_bg}; color: {disabled_fg}; }}"
-        )
-    hover_bg = P.get("button_hover", P["accent_dim"])
-    hover_fg = P.get("button_hover_text", P["bg_dark"])
+def ss_btn(accent: bool = False, danger: bool = False, *, compact: bool = False) -> str:
+    """Primary Open/Save, neutral editor actions, or destructive actions."""
+    primary = accent and not danger
+    bg = color(ColorRole.ACCENT if primary else ColorRole.BUTTON)
+    fg = color(ColorRole.PRIMARY_TEXT if primary else ColorRole.BUTTON_TEXT)
+    hover = color(ColorRole.DANGER_HOVER if danger else ColorRole.PRIMARY_HOVER if primary else ColorRole.BUTTON_HOVER)
+    hover_fg = color(ColorRole.DANGER_HOVER_TEXT if danger else ColorRole.PRIMARY_HOVER_TEXT if primary else ColorRole.BUTTON_HOVER_TEXT)
+    pressed = color(ColorRole.PRIMARY_PRESSED if primary else ColorRole.BUTTON_PRESSED)
+    pad = Padding.COMPACT_BUTTON_X if compact else Padding.BUTTON_X
+    weight = 'font-weight: bold;' if primary else ''
     return (
-        f"QPushButton {{ background-color: {P['mid']}; color: {button_fg}; border: {border}; "
-        f"border-radius: {radius}; padding: 3px 10px; }}"
-        f"QPushButton:focus {{ border: 1px solid {P.get('input_focus_border', P['accent'])}; }}"
-        f"QPushButton:hover {{ background-color: {hover_bg}; color: {hover_fg}; }}"
-        f"QPushButton:pressed {{ background-color: {P.get('bg_card_hov', P['mid'])}; padding-top: 4px; padding-bottom: 2px; }}"
-        f"QPushButton:disabled {{ background-color: {disabled_bg}; color: {disabled_fg}; }}"
+        f"QPushButton {{ background-color: {bg}; color: {fg}; border: {P.get('button_border', 'none')}; "
+        f"border-radius: {token_radius(Radius.BUTTON)}; {weight} padding: {Padding.BUTTON_Y}px {pad}px; }}"
+        f"QPushButton:focus {{ border: {Size.HAIRLINE}px solid {color(ColorRole.FOCUS_BORDER)}; }}"
+        f"QPushButton:hover {{ background-color: {hover}; color: {hover_fg}; }}"
+        f"QPushButton:pressed {{ background-color: {pressed}; padding-top: {Padding.PRESSED_TOP}px; padding-bottom: {Padding.PRESSED_BOTTOM}px; }}"
+        f"QPushButton:checked {{ background-color: {color(ColorRole.ACCENT)}; color: {color(ColorRole.PRIMARY_TEXT)}; font-weight: bold; }}"
+        f"QPushButton:disabled, QPushButton:checked:disabled {{ background-color: {color(ColorRole.BUTTON_DISABLED)}; "
+        f"color: {color(ColorRole.BUTTON_DISABLED_TEXT)}; }}"
     )
 
 
 def ss_toggle_btn() -> str:
-    """Checkable tool/action button."""
-    radius = P.get("button_radius", "6px")
-    border = P.get("button_border", "none")
-    button_fg = P.get("button_text", P["text_main"])
-    hover_bg = P.get("button_hover", P["accent_dim"])
-    hover_fg = P.get("button_hover_text", P["bg_dark"])
-    return (
-        f"QPushButton {{ background-color: {P['mid']}; color: {button_fg}; border: {border}; "
-        f"border-radius: {radius}; padding: 3px 8px; }}"
-        f"QPushButton:checked {{ background-color: {P['accent']}; color: {P.get('button_accent_text', P['bg_dark'])}; font-weight: bold; }}"
-        f"QPushButton:focus {{ border: 1px solid {P.get('input_focus_border', P['accent'])}; }}"
-        f"QPushButton:hover {{ background-color: {hover_bg}; color: {hover_fg}; }}"
-    )
+    """Compatibility alias: every common button supports checked/disabled states."""
+    return ss_btn()
 
 
 def ss_icon_tool_btn() -> str:
     """Compact icon-only tool button with neutral checked state."""
-    radius = P.get("button_radius", "6px")
+    radius = token_radius(Radius.BUTTON)
     border = P.get("button_border", f"1px solid {P['border']}")
     button_fg = P.get("button_text", P["text_main"])
     hover_bg = P.get("button_hover", P["accent_dim"])
     checked_bg = P.get("bg_card_hov", P["mid"])
-    focus = P.get("input_focus_border", P["accent"])
+    focus = color(ColorRole.FOCUS_BORDER)
     checked_border = P.get("selection_bg", focus)
     return (
         f"QPushButton {{ background-color: {P['mid']}; color: {button_fg}; border: {border}; "
@@ -123,10 +91,10 @@ def ss_icon_tool_btn() -> str:
 
 def ss_menu() -> str:
     """Compact popup menu used by tool panels."""
-    bg = P.get("panel_card_bg", P["bg_panel"])
+    bg = color(ColorRole.CARD)
     border = P.get("panel_card_border", P["border"])
-    selection_bg = P.get("selection_bg", P["accent"])
-    selection_text = P.get("selection_text", P["bg_dark"])
+    selection_bg = color(ColorRole.SELECTION)
+    selection_text = color(ColorRole.SELECTION_TEXT)
     return (
         f"QMenu {{ background-color: {bg}; color: {P['text_main']}; "
         f"border: 1px solid {border}; padding: 4px; }}"
@@ -139,7 +107,7 @@ def ss_menu() -> str:
 def ss_panel_menu_button() -> str:
     """Flat panel menu button that disappears into the panel until hover."""
     hover = P.get("bg_card_hov", P["mid"])
-    radius = P.get("button_radius", "6px")
+    radius = token_radius(Radius.BUTTON)
     return (
         f"QPushButton {{ background: transparent; color: {P.get('button_text', P['text_main'])}; "
         f"border: none; border-radius: {radius}; padding: 0px; }}"
@@ -151,66 +119,59 @@ def ss_panel_menu_button() -> str:
 
 # Inputs
 
-def ss_input() -> str:
-    """QLineEdit, QSpinBox, QDoubleSpinBox, and QComboBox — unified."""
-    bg = P.get("input_bg", P["bg_card"])
-    border = P.get("input_border", P["border"])
-    focus = P.get("input_focus_border", P["accent"])
-    radius = P.get("input_radius", "4px")
-    padding = P.get("input_padding", "3px 6px")
-    selection_bg = P.get("selection_bg", P["accent"])
-    selection_text = P.get("selection_text", P["bg_dark"])
-    disabled_bg = P.get("input_disabled_bg", P.get("bg_card", bg))
-    disabled_fg = P.get("input_disabled_text", P.get("text_sec", P["text_dim"]))
+def _ss_input_states(selectors, *, flat=False, search=False) -> str:
+    bg = color(ColorRole.INPUT)
+    border = "transparent" if flat else color(ColorRole.INPUT_BORDER)
+    focus = color(ColorRole.FOCUS_BORDER)
+    padding = P.get("input_padding", Padding.SEARCH if search else Padding.INPUT)
+    def state(name):
+        return ", ".join(selector + ":" + name for selector in selectors)
     return (
-        f"QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QKeySequenceEdit {{"
-        f"  background-color: {bg}; color: {P['text_main']}; "
-        f"  border: 1px solid {border}; border-radius: {radius}; padding: {padding}; "
-        f"  selection-background-color: {selection_bg}; selection-color: {selection_text}; }}"
-        f"QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover, QKeySequenceEdit:hover {{"
-        f"  background-color: {P.get('input_hover_bg', P.get('bg_card_hov', bg))}; }}"
-        f"QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QKeySequenceEdit:focus {{"
-        f"  border: 1px solid {focus}; background-color: {P.get('input_focus_bg', P.get('bg_card_hov', bg))}; }}"
-        f"QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled, QKeySequenceEdit:disabled {{"
-        f"  background-color: {disabled_bg}; color: {disabled_fg}; border: 1px solid {border}; }}"
-        f"QSpinBox::up-button, QSpinBox::down-button, "
-        f"QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{"
-        f"  width: 0; height: 0; border: none; }}"
-        f"QComboBox::drop-down {{ background: {P['mid']}; border: none; width: 20px; }}"
-        f"QComboBox QAbstractItemView {{ background: {bg}; color: {P['text_main']}; "
-        f"  selection-background-color: {selection_bg}; selection-color: {selection_text}; }}"
+        f"{', '.join(selectors)} {{ background-color: {bg}; color: {color(ColorRole.TEXT)}; "
+        f"border: {Size.HAIRLINE}px solid {border}; border-radius: {token_radius(Radius.INPUT)}; padding: {padding}; "
+        f"selection-background-color: {color(ColorRole.SELECTION)}; selection-color: {color(ColorRole.SELECTION_TEXT)}; }}"
+        f"{state('hover')} {{ background-color: {color(ColorRole.INPUT_HOVER)}; }}"
+        f"{state('focus')} {{ border: {Size.HAIRLINE}px solid {focus}; background-color: {color(ColorRole.INPUT_FOCUS)}; }}"
+        f"{state('disabled')} {{ background-color: {color(ColorRole.INPUT_DISABLED)}; "
+        f"color: {color(ColorRole.INPUT_DISABLED_TEXT)}; border: {Size.HAIRLINE}px solid {border}; }}"
+    )
+
+
+def ss_input(*, flat=False) -> str:
+    """QLineEdit, spin boxes, combos and key sequences share one state contract."""
+    selectors = ("QLineEdit", "QSpinBox", "QDoubleSpinBox", "QComboBox", "QKeySequenceEdit")
+    return _ss_input_states(selectors, flat=flat) + (
+        "QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 0; height: 0; border: none; }"
+        f"QComboBox::drop-down {{ background: {color(ColorRole.BUTTON)}; border: none; width: {Padding.COMBO_ARROW}px; }}"
+        f"QComboBox QAbstractItemView {{ background: {color(ColorRole.INPUT)}; color: {color(ColorRole.TEXT)}; "
+        f"selection-background-color: {color(ColorRole.SELECTION)}; selection-color: {color(ColorRole.SELECTION_TEXT)}; }}"
+    )
+
+
+def ss_input_accent() -> str:
+    return ss_input() + f"QLineEdit {{ color: {P['accent']}; font-weight: bold; }}"
+
+
+def ss_input_validation(invalid=False) -> str:
+    """One error treatment for ordinary inputs, including editable combos."""
+    return ss_input() + (
+        f"QLineEdit, QComboBox {{ border: 1px solid {error_color()}; }}" if invalid else ""
     )
 
 
 def ss_search() -> str:
-    """QLineEdit used as a search / filter box in sidebars."""
-    bg = P.get("input_bg", P["bg_card"])
-    border = P.get("input_border", P["border"])
-    focus = P.get("input_focus_border", P["accent"])
-    radius = P.get("input_radius", "4px")
-    padding = P.get("input_padding", "2px 6px")
-    selection_bg = P.get("selection_bg", P["accent"])
-    selection_text = P.get("selection_text", P["bg_dark"])
-    disabled_bg = P.get("input_disabled_bg", P.get("bg_card", bg))
-    disabled_fg = P.get("input_disabled_text", P.get("text_sec", P["text_dim"]))
-    return (
-        f"QLineEdit {{ background-color: {bg}; border: 1px solid {border}; "
-        f"color: {P['text_main']}; padding: {padding}; border-radius: {radius}; "
-        f"selection-background-color: {selection_bg}; selection-color: {selection_text}; }}"
-        f"QLineEdit:hover {{ background-color: {P.get('input_hover_bg', P.get('bg_card_hov', bg))}; }}"
-        f"QLineEdit:focus {{ border: 1px solid {focus}; background-color: {P.get('input_focus_bg', P.get('bg_card_hov', bg))}; }}"
-        f"QLineEdit:disabled {{ background-color: {disabled_bg}; color: {disabled_fg}; border: 1px solid {border}; }}"
-    )
+    """Search uses exactly the ordinary input states, with search padding."""
+    return _ss_input_states(("QLineEdit",), search=True)
 
 
 def ss_textedit() -> str:
     """QTextEdit / QPlainTextEdit."""
-    bg = P.get("input_bg", P["bg_card"])
-    border = P.get("input_border", P["border"])
-    focus = P.get("input_focus_border", P["accent"])
-    radius = P.get("input_radius", "4px")
-    selection_bg = P.get("selection_bg", P["accent"])
-    selection_text = P.get("selection_text", P["bg_dark"])
+    bg = color(ColorRole.INPUT)
+    border = color(ColorRole.INPUT_BORDER)
+    focus = color(ColorRole.FOCUS_BORDER)
+    radius = token_radius(Radius.INPUT)
+    selection_bg = color(ColorRole.SELECTION)
+    selection_text = color(ColorRole.SELECTION_TEXT)
     return (
         f"QTextEdit, QPlainTextEdit {{ background-color: {bg}; color: {P['text_main']}; "
         f"border: 1px solid {border}; border-radius: {radius}; padding: 4px; "
@@ -225,24 +186,24 @@ def ss_textedit() -> str:
 
 def ss_table() -> str:
     """QTableWidget/QTableView including internal scrollbars (10 px width)."""
-    bg = P.get("input_bg", P["bg_card"])
-    border = P.get("input_border", P["border"])
-    radius = P.get("input_radius", "4px")
-    selection_bg = P.get("selection_bg", P["accent"])
-    selection_text = P.get("selection_text", P["bg_dark"])
-    header_bg = P.get("table_header_bg", P["bg_panel"])
-    header_text = P.get("table_header_text", P["text_sec"])
-    hover_bg = P.get("list_hover_bg", P["mid"])
+    bg = color(ColorRole.INPUT)
+    border = color(ColorRole.INPUT_BORDER)
+    radius = token_radius(Radius.INPUT)
+    selection_bg = color(ColorRole.SELECTION)
+    selection_text = color(ColorRole.SELECTION_TEXT)
+    header_bg = color(ColorRole.HEADER)
+    header_text = color(ColorRole.HEADER_TEXT)
+    hover_bg = color(ColorRole.ITEM_HOVER)
     return (
         f"QTableWidget, QTableView {{ background-color: {bg}; color: {P['text_main']}; "
         f"gridline-color: {border}; border: 1px solid {border}; border-radius: {radius}; outline: none; "
         f"selection-background-color: {selection_bg}; selection-color: {selection_text}; }}"
-        f"QTableWidget::item, QTableView::item {{ min-height: 24px; padding: 4px 7px; border: none; }}"
+        f"QTableWidget::item, QTableView::item {{ min-height: 24px; padding: {Padding.TABLE_CELL}; border: none; }}"
         f"QTableWidget::item:selected, QTableView::item:selected {{ background-color: {selection_bg}; color: {selection_text}; }}"
-        f"QTableWidget::item:hover, QTableView::item:hover {{ background-color: {hover_bg}; }}"
+        f"QTableWidget::item:hover:!selected, QTableView::item:hover:!selected {{ background-color: {hover_bg}; }}"
         f"QHeaderView::section {{ background-color: {header_bg}; color: {header_text}; "
         f"border: none; border-right: 1px solid {border}; border-bottom: 1px solid {border}; "
-        f"padding: 5px 7px; min-height: 24px; font-weight: bold; }}"
+        f"padding: {Padding.TABLE_HEADER}; min-height: 24px; font-weight: bold; }}"
         f"QTableCornerButton::section {{ background-color: {header_bg}; border: none; border-bottom: 1px solid {border}; }}"
         f"{ss_scrollbars(header_bg)}"
     )
@@ -250,30 +211,30 @@ def ss_table() -> str:
 
 def ss_listwidget() -> str:
     """QListWidget."""
-    bg = P.get("input_bg", P["bg_card"])
-    border = P.get("input_border", P["border"])
-    radius = P.get("input_radius", "4px")
-    selection_bg = P.get("selection_bg", P["accent"])
-    selection_text = P.get("selection_text", P["bg_dark"])
-    hover_bg = P.get("list_hover_bg", P["mid"])
+    bg = color(ColorRole.INPUT)
+    border = color(ColorRole.INPUT_BORDER)
+    radius = token_radius(Radius.INPUT)
+    selection_bg = color(ColorRole.SELECTION)
+    selection_text = color(ColorRole.SELECTION_TEXT)
+    hover_bg = color(ColorRole.ITEM_HOVER)
     return (
         f"QListWidget {{ background-color: {bg}; color: {P['text_main']}; "
         f"border: 1px solid {border}; border-radius: {radius}; outline: none; }}"
         f"QListWidget::item {{ padding: 4px 8px; }}"
         f"QListWidget::item:selected {{ background-color: {selection_bg}; color: {selection_text}; }}"
-        f"QListWidget::item:hover {{ background-color: {hover_bg}; }}"
+        f"QListWidget::item:hover:!selected {{ background-color: {hover_bg}; }}"
         f"{ss_scrollbars(bg)}"
     )
 
 
 def ss_treewidget() -> str:
     """QTreeWidget used by compact editor sidebars."""
-    bg = P.get("input_bg", P["bg_card"])
-    border = P.get("input_border", P["border"])
-    radius = P.get("input_radius", "4px")
-    selection_bg = P.get("selection_bg", P["accent"])
-    selection_text = P.get("selection_text", P["bg_dark"])
-    hover_bg = P.get("list_hover_bg", P["mid"])
+    bg = color(ColorRole.INPUT)
+    border = color(ColorRole.INPUT_BORDER)
+    radius = token_radius(Radius.INPUT)
+    selection_bg = color(ColorRole.SELECTION)
+    selection_text = color(ColorRole.SELECTION_TEXT)
+    hover_bg = color(ColorRole.ITEM_HOVER)
     group_text = P.get("tree_group_text", P["text_main"])
     return (
         f"QTreeWidget {{ background-color: {bg}; color: {P['text_main']}; "
@@ -281,12 +242,12 @@ def ss_treewidget() -> str:
         f"QTreeWidget::item {{ min-height: 24px; padding: 2px 6px; }}"
         f"QTreeWidget::item:selected {{ background-color: {selection_bg}; color: {selection_text}; border: none; }}"
         f"QTreeWidget::item:focus {{ border: none; outline: none; }}"
-        f"QTreeWidget::item:hover {{ background-color: {hover_bg}; }}"
+        f"QTreeWidget::item:hover:!selected {{ background-color: {hover_bg}; }}"
         f"QTreeWidget::branch {{ background: transparent; border-image: none; image: none; }}"
         f"QTreeWidget::item:has-children {{ color: {group_text}; font-weight: 600; }}"
         f"QHeaderView::section {{ background-color: {P.get('table_header_bg', P['bg_panel'])}; "
         f"color: {P.get('table_header_text', P['text_sec'])}; border: none; "
-        f"border-bottom: 1px solid {border}; padding: 5px 7px; font: 10pt 'Segoe UI'; }}"
+        f"border-bottom: 1px solid {border}; padding: {Padding.TABLE_HEADER}; font: 10pt 'Segoe UI'; }}"
         f"{ss_vertical_scrollbar(bg, width=10)}"
     )
 
@@ -294,9 +255,9 @@ def ss_treewidget() -> str:
 def ss_sidebar_treewidget() -> str:
     """Flat QTreeWidget embedded directly into a standard sidebar."""
     bg = P.get("panel_bg", P["bg_panel"])
-    selection_bg = P.get("selection_bg", P["accent"])
-    selection_text = P.get("selection_text", P["bg_dark"])
-    hover_bg = P.get("list_hover_bg", P["mid"])
+    selection_bg = color(ColorRole.SELECTION)
+    selection_text = color(ColorRole.SELECTION_TEXT)
+    hover_bg = color(ColorRole.ITEM_HOVER)
     group_text = P.get("tree_group_text", P["text_main"])
     return (
         f"QTreeWidget {{ background: transparent; color: {P['text_main']}; "
@@ -305,7 +266,7 @@ def ss_sidebar_treewidget() -> str:
         f"QTreeWidget::item {{ min-height: 24px; padding: 2px 6px; border: none; }}"
         f"QTreeWidget::item:selected {{ background-color: {selection_bg}; color: {selection_text}; border: none; }}"
         f"QTreeWidget::item:focus {{ border: none; outline: none; }}"
-        f"QTreeWidget::item:hover {{ background-color: {hover_bg}; }}"
+        f"QTreeWidget::item:hover:!selected {{ background-color: {hover_bg}; }}"
         f"QTreeWidget::branch {{ background: transparent; border-image: none; image: none; }}"
         f"QTreeWidget::item:has-children {{ color: {group_text}; font-weight: 600; }}"
         f"{ss_vertical_scrollbar(bg, width=10)}"
@@ -341,9 +302,76 @@ def ss_splitter() -> str:
     )
 
 
+def ss_badge(*, accent=False, round=False) -> str:
+    color = f"color: {P['accent']}; " if accent else ""
+    return (f"{color}background-color: {P['mid']}; border: 1px solid {P['border']}; "
+            f"border-radius: {12 if round else 6}px;")
+
+
+def ss_text_color(color) -> str:
+    """Semantic text color already resolved from the live theme."""
+    return f"color: {color}; background: transparent;"
+
+
+def ss_panel_item(selected=False) -> str:
+    bg = P.get("sidebar_item_selected_bg", P['bg_card']) if selected else "transparent"
+    border = P['accent'] if selected else "transparent"
+    hover = bg if selected else P.get("sidebar_item_hover_bg", P['bg_card_hov'])
+    return (
+        f"QFrame#MainModePanelItem {{ background: {bg}; border-radius: 6px; border: 1px solid {border}; }}"
+        + ("" if selected else f"QFrame#MainModePanelItem:hover {{ background: {hover}; }}")
+    )
+
+
+def ss_value_box() -> str:
+    return (f"color: {P['text_main']}; background: {P.get('input_bg', P['bg_card'])}; "
+            f"border: 1px solid {P['border']}; border-radius: 4px; padding: 2px 4px;")
+
+
+def ss_preview_tile() -> str:
+    return (f"background: {P.get('input_bg', P['bg_card'])}; "
+            f"border: 1px solid {P['border']}; border-radius: 4px;")
+
+
+def ss_thumbnail(selected=False) -> str:
+    border = P['accent'] if selected else P['border']
+    return (f"_Thumb {{ background: {P['bg_card']}; border: 2px solid {border}; border-radius: 6px; }}"
+            f"_Thumb:hover {{ background: {P['bg_card_hov']}; border: 2px solid {P['secondary']}; }}")
+
+
+def ss_radio() -> str:
+    return (
+        f"QRadioButton {{ color: {P['text_main']}; spacing: 6px; background: transparent; }}"
+        f"QRadioButton::indicator {{ width: 15px; height: 15px; border: 1px solid {P['border']}; "
+        f"border-radius: 8px; background: {P.get('input_bg', P['bg_card'])}; }}"
+        f"QRadioButton::indicator:checked {{ background: {P['accent']}; border-color: {P['accent']}; }}"
+    )
+
+
+def ss_top_border() -> str:
+    return f"border-top: 1px solid {P['border']};"
+
+
+def ss_zoom_label() -> str:
+    return ss_badge() + f"color: {P['text_main']}; padding: 4px 8px;"
+
+
+def ss_image_placeholder() -> str:
+    return ss_dim_label() + "font-size: 24px; border: none;"
+
+
 def ss_transparent() -> str:
     """Transparent widget background."""
     return "background: transparent;"
+
+
+def ss_skeleton_bar(fill=None, *, corner_radius=SkeletonMetrics.BAR_RADIUS) -> str:
+    return f"background-color: {fill or P['bg_card']}; border-radius: {corner_radius}px;"
+
+
+def ss_skeleton_card() -> str:
+    return (f"SkeletonCard {{ background-color: {P['bg_card']}; "
+            f"border-radius: {SkeletonMetrics.CARD_RADIUS}px; border: 1px solid {P['border']}; }}")
 
 
 def ss_video_matte() -> str:
@@ -354,7 +382,7 @@ def ss_video_matte() -> str:
 def ss_viewport_panel() -> str:
     """3D viewport surface frame."""
     bg = P.get("viewport_bg", P.get("bg_dark", "#000000"))
-    border = P.get("input_border", P["border"])
+    border = color(ColorRole.INPUT_BORDER)
     return (
         f"QFrame, QOpenGLWidget {{ background-color: {bg}; "
         f"border: 1px solid {border}; border-radius: {P.get('input_radius', '6px')}; }}"
@@ -363,7 +391,7 @@ def ss_viewport_panel() -> str:
 
 def ss_inspector_group() -> str:
     """Compact model-viewer inspector group."""
-    bg = P.get("panel_card_bg", P["bg_panel"])
+    bg = color(ColorRole.CARD)
     border = P.get("panel_card_border", P["border"])
     radius = P.get("input_radius", "6px")
     return (
@@ -376,29 +404,8 @@ def ss_inspector_group() -> str:
 
 
 def ss_inspector_input() -> str:
-    """Flat controls inside model-viewer inspector cards."""
-    bg = P.get("input_bg", P["bg_card"])
-    focus = P.get("input_focus_border", P["accent"])
-    radius = P.get("input_radius", "4px")
-    padding = P.get("input_padding", "3px 6px")
-    selection_bg = P.get("selection_bg", P["accent"])
-    selection_text = P.get("selection_text", P["bg_dark"])
-    return (
-        f"QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{"
-        f"  background-color: {bg}; color: {P['text_main']}; "
-        f"  border: 1px solid transparent; border-radius: {radius}; padding: {padding}; "
-        f"  selection-background-color: {selection_bg}; selection-color: {selection_text}; }}"
-        f"QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover {{"
-        f"  background-color: {P.get('input_hover_bg', P.get('bg_card_hov', bg))}; }}"
-        f"QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{"
-        f"  border: 1px solid {focus}; background-color: {P.get('input_focus_bg', P.get('bg_card_hov', bg))}; }}"
-        f"QSpinBox::up-button, QSpinBox::down-button, "
-        f"QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{"
-        f"  width: 0; height: 0; border: none; }}"
-        f"QComboBox::drop-down {{ background: transparent; border: none; width: 20px; }}"
-        f"QComboBox QAbstractItemView {{ background: {bg}; color: {P['text_main']}; "
-        f"  selection-background-color: {selection_bg}; selection-color: {selection_text}; }}"
-    )
+    """Compatibility alias for the documented compact inspector variant."""
+    return ss_input(flat=True)
 
 
 def ss_badge_missing() -> str:
@@ -410,20 +417,22 @@ def ss_badge_missing() -> str:
     )
 
 
+def _ss_card(selector, *, selected=False) -> str:
+    bg = color(ColorRole.CARD)
+    radius = token_radius(Radius.CARD)
+    border = P['accent'] if selected else P.get("panel_card_border", "transparent")
+    return (f"{selector} {{ background-color: {bg}; border-radius: {radius}; "
+            f"border: 1px solid {border}; }}")
+
+
 def ss_panel() -> str:
-    """Standard editor section panel (rounded card on bg_panel)."""
-    bg = P.get("panel_card_bg", P["bg_panel"])
-    border = P.get("panel_card_border", "transparent")
-    radius = P.get("panel_card_radius", "10px")
-    return (
-        f"QFrame {{ background-color: {bg}; "
-        f"border-radius: {radius}; border: 1px solid {border}; }}"
-    )
+    """Standard rounded section, sharing card tokens with EditorCard."""
+    return _ss_card("QFrame")
 
 
 def ss_glass_panel() -> str:
     """Translucent editor panel for overlays that must reveal content behind them."""
-    bg = _rgba(P.get("panel_card_bg", P["bg_panel"]), 184)
+    bg = _rgba(color(ColorRole.CARD), 184)
     border = _rgba(P.get("panel_card_border", P["border"]), 150)
     radius = P.get("panel_card_radius", "10px")
     return (
@@ -438,31 +447,42 @@ def ss_panel_title() -> str:
 
 
 def ss_editor_card(selected: bool = False) -> str:
-    """DuelPlayerParam-like editor card with optional selected-row emphasis."""
-    bg = P["bg_panel"]
-    radius = "10px"
-    border = f"1px solid {P.get('accent', P['border'])}" if selected else "none"
-    return (
-        f"QFrame#EditorCard {{ background-color: {bg}; "
-        f"border-radius: {radius}; border: {border}; }}"
-    )
+    """Standard editor card with optional selected-row emphasis."""
+    return _ss_card("QFrame#EditorCard", selected=selected)
 
 
-def make_editor_card(parent=None, *, margins=(16, 14, 16, 14), spacing=10):
-    """Create the standard CharacterStats/MoveList editor card."""
-    from PyQt6.QtWidgets import QFrame, QVBoxLayout
+def make_editor_card_frame(parent=None):
+    """Card surface for both standard forms and custom preview layouts."""
+    from PyQt6.QtWidgets import QFrame
 
     card = QFrame(parent)
     card.setObjectName("EditorCard")
     card.setStyleSheet(ss_editor_card())
+    return card
+
+
+def make_editor_card_layout(card, *, margins=Insets.CARD, spacing=Size.CARD_GAP):
+    from PyQt6.QtWidgets import QVBoxLayout
+    from core.ui.editor_widgets import configure_layout
+
     layout = QVBoxLayout(card)
-    layout.setContentsMargins(*margins)
-    layout.setSpacing(spacing)
-    return card, layout
+    configure_layout(layout, LayoutRole.EMPTY_STATE if margins == Insets.EMPTY_STATE else LayoutRole.CARD)
+    if margins not in (Insets.CARD, Insets.EMPTY_STATE):
+        layout.setContentsMargins(*margins)
+    if spacing != Size.CARD_GAP:
+        layout.setSpacing(spacing)
+    return layout
 
 
-def add_editor_card_title(layout, title, icon_name=None, subtitle=None, *, icon_size=18):
+def make_editor_card(parent=None, *, margins=Insets.CARD, spacing=Size.CARD_GAP):
+    """Create the standard CharacterStats/MoveList editor card."""
+    card = make_editor_card_frame(parent)
+    return card, make_editor_card_layout(card, margins=margins, spacing=spacing)
+
+
+def add_editor_card_title(layout, title, icon_name=None, subtitle=None, *, icon_size=Size.ICON):
     """Add the standard icon + panel title row used by visual editors."""
+    from core.ui.editor_widgets import configure_layout
     from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QFont
     from PyQt6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
@@ -470,17 +490,16 @@ def add_editor_card_title(layout, title, icon_name=None, subtitle=None, *, icon_
     row = QWidget()
     row.setStyleSheet(ss_transparent())
     row_layout = QHBoxLayout(row)
-    row_layout.setContentsMargins(0, 0, 0, 0)
-    row_layout.setSpacing(8)
+    configure_layout(row_layout, LayoutRole.TITLE)
 
     if icon_name:
         try:
-            import qtawesome as qta
+            from core.icons import editor_icon
 
             icon = QLabel()
             icon.setFixedSize(icon_size, icon_size)
             icon.setStyleSheet(ss_transparent())
-            icon.setPixmap(qta.icon(icon_name, color=P["accent"]).pixmap(icon_size, icon_size))
+            icon.setPixmap(editor_icon(icon_name, size=icon_size).pixmap(icon_size, icon_size))
             row_layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
         except Exception:
             pass
@@ -488,13 +507,12 @@ def add_editor_card_title(layout, title, icon_name=None, subtitle=None, *, icon_
     text_box = QWidget()
     text_box.setStyleSheet(ss_transparent())
     text_layout = QVBoxLayout(text_box)
-    text_layout.setContentsMargins(0, 0, 0, 0)
-    text_layout.setSpacing(2)
+    configure_layout(text_layout, LayoutRole.TITLE_TEXT)
 
     title_lbl = QLabel(str(title))
     title_lbl.setMinimumWidth(0)
     title_lbl.setWordWrap(True)
-    title_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+    title_lbl.setFont(font(FontRole.CARD_TITLE))
     title_lbl.setStyleSheet(ss_panel_title())
     text_layout.addWidget(title_lbl)
 
@@ -503,7 +521,7 @@ def add_editor_card_title(layout, title, icon_name=None, subtitle=None, *, icon_
         subtitle_lbl = QLabel(str(subtitle))
         subtitle_lbl.setMinimumWidth(0)
         subtitle_lbl.setWordWrap(True)
-        subtitle_lbl.setFont(QFont("Segoe UI", 10))
+        subtitle_lbl.setFont(ui_font(TypeSize.BODY))
         subtitle_lbl.setStyleSheet(ss_dim_label())
         text_layout.addWidget(subtitle_lbl)
 
@@ -533,12 +551,12 @@ def make_empty_state(parent=None, *, title, text="", icon_name="fa6s.folder-open
         text = ""
         icon_name = None
 
-    card, layout = make_editor_card(parent, margins=(22, 18, 22, 18), spacing=10)
+    card, layout = make_editor_card(parent, margins=Insets.EMPTY_STATE, spacing=Size.CARD_GAP)
     card.setMinimumWidth(0)
     card.setMinimumHeight(132)
     card.setMaximumWidth(620)
     card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-    _row, title_lbl, subtitle_lbl = add_editor_card_title(layout, title, icon_name, text, icon_size=22)
+    _row, title_lbl, subtitle_lbl = add_editor_card_title(layout, title, icon_name, text, icon_size=Size.EMPTY_ICON)
     title_lbl.setStyleSheet(ss_main_label())
     title_lbl.setMinimumHeight(24)
     if subtitle_lbl is not None:
@@ -550,47 +568,38 @@ def make_empty_state(parent=None, *, title, text="", icon_name="fa6s.folder-open
     return card
 
 
-def make_editor_field(label_text, value_text="", *, height=30, value_font=None, accent=False):
-    """Create a label-above-input field matching the card editor language."""
-    from PyQt6.QtGui import QFont
-    from PyQt6.QtWidgets import QLabel, QLineEdit, QVBoxLayout, QWidget
+def make_editor_field(label_text, value_text="", *, height=Size.CONTROL, value_font=None, accent=False):
+    """Standard field, using the same shell as combo boxes and custom controls."""
+    from PyQt6.QtWidgets import QLineEdit
+    from core.ui.editor_widgets import configure_input
 
-    field = QWidget()
-    field.setStyleSheet(ss_transparent())
-    field_layout = QVBoxLayout(field)
-    field_layout.setContentsMargins(0, 0, 0, 0)
-    field_layout.setSpacing(4)
-
-    label = QLabel(str(label_text))
-    label.setFont(QFont("Segoe UI", 12))
-    label.setStyleSheet(ss_field_label())
-    field_layout.addWidget(label)
-
+    field, field_layout, _label, _hint = make_editor_field_shell(label_text, wrap_label=False)
     edit = QLineEdit(str(value_text))
-    edit.setFixedHeight(height)
-    edit.setFont(value_font or QFont("Consolas", 13))
-    edit.setStyleSheet(ss_input() + (f"QLineEdit {{ color: {P['accent']}; font-weight: bold; }}" if accent else ""))
+    configure_input(edit, height=height, font=value_font)
+    if accent:
+        edit.setStyleSheet(ss_input_accent())
     edit.setCursorPosition(_first_printable_pos(str(value_text)))
     field_layout.addWidget(edit)
     return field, edit
 
 
-def make_editor_field_shell(label_text, hint_text="", *, label_font_size=12, hint_font_size=9, spacing=3):
+def make_editor_field_shell(label_text, hint_text="", *, label_font_size=TypeSize.LABEL, hint_font_size=TypeSize.HINT, spacing=Size.GAP_SM, wrap_label=True):
     """Create the standard label/hint shell for custom editor controls."""
-    from PyQt6.QtGui import QFont
+    from core.ui.editor_widgets import configure_layout
     from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
     frame = QWidget()
     frame.setMinimumWidth(0)
     frame.setStyleSheet(ss_transparent())
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(spacing)
+    configure_layout(layout, LayoutRole.COMPACT_FIELD if spacing == Size.GAP_XS else LayoutRole.FIELD)
+    if spacing not in (Size.GAP_SM, Size.GAP_XS):
+        layout.setSpacing(spacing)
 
     label = QLabel(str(label_text))
     label.setMinimumWidth(0)
-    label.setWordWrap(True)
-    label.setFont(QFont("Segoe UI", label_font_size))
+    label.setWordWrap(wrap_label)
+    label.setFont(ui_font(label_font_size))
     label.setStyleSheet(ss_field_label())
     layout.addWidget(label)
 
@@ -599,7 +608,7 @@ def make_editor_field_shell(label_text, hint_text="", *, label_font_size=12, hin
         hint = QLabel(str(hint_text))
         hint.setMinimumWidth(0)
         hint.setWordWrap(True)
-        hint.setFont(QFont("Segoe UI", hint_font_size))
+        hint.setFont(ui_font(hint_font_size))
         hint.setStyleSheet(ss_dim_label())
         layout.addWidget(hint)
 
@@ -612,11 +621,11 @@ def make_editor_grid_card(
     title=None,
     icon_name="fa6s.sliders",
     subtitle=None,
-    margins=(16, 14, 16, 14),
+    margins=Insets.CARD,
     spacing=10,
     grid_margins=None,
-    horizontal_spacing=16,
-    vertical_spacing=10,
+    horizontal_spacing=Size.GRID_GAP,
+    vertical_spacing=Size.CARD_GAP,
 ):
     """Create a standard editor card containing a field grid.
 
@@ -634,7 +643,7 @@ def make_editor_grid_card(
     inner.setStyleSheet(ss_transparent())
     grid = QGridLayout(inner)
     if grid_margins is None:
-        grid_margins = (0, 4, 0, 0) if title else (12, 12, 12, 12)
+        grid_margins = Insets.GRID_TITLE if title else Insets.NONE
     grid.setContentsMargins(*grid_margins)
     grid.setHorizontalSpacing(horizontal_spacing)
     grid.setVerticalSpacing(vertical_spacing)
@@ -691,64 +700,24 @@ def ss_progressbar() -> str:
     )
 
 
-def ss_embedded_tool_surface() -> str:
-    """Shared visual polish applied by the host around every embedded editor.
+def ss_editor_surface() -> str:
+    """Fallbacks shared by standalone and embedded roots; child styles win."""
+    return (
+        ss_btn() + ss_input() + ss_table() + ss_textedit() + ss_listwidget()
+        + ss_treewidget() + ss_check() + ss_tab_widget() + ss_splitter()
+        + ss_progressbar() + ss_blocking_overlay() + ss_blocking_overlay_card()
+        + f"QToolTip {{ background: {P.get('dialog_bg', P['bg_panel'])}; color: {P['text_main']}; "
+          f"border: 1px solid {P['border']}; padding: {Padding.TABLE_HEADER}; }}"
+    )
 
-    The rules are deliberately palette-driven and mostly target stock Qt
-    controls that older editors may not style themselves yet. Editor-local
-    styles still win for highly custom widgets.
-    """
-    bg = P.get("bg_dark", "#000000")
-    panel = P.get("panel_bg", P["bg_panel"])
-    card = P.get("panel_card_bg", P["bg_panel"])
-    border = P.get("panel_card_border", P["border"])
-    input_bg = P.get("input_bg", P["bg_card"])
-    input_border = P.get("input_border", P["border"])
-    selection_bg = P.get("selection_bg", P["accent"])
-    selection_text = P.get("selection_text", P["bg_dark"])
-    radius = P.get("panel_card_radius", "10px")
-    input_radius = P.get("input_radius", "4px")
-    tooltip_bg = P.get("toast_bg", P.get("dialog_bg", P["bg_panel"]))
-    tooltip_border = P.get("toast_border", P["border_hov"])
-    splitter = P.get("splitter_handle", P["mid"])
-    splitter_hover = P.get("splitter_handle_hover", P["accent_dim"])
+
+def ss_embedded_tool_surface() -> str:
+    """Host chrome only. Ordinary controls use the same helpers as standalone."""
     return (
         f"QWidget#EmbeddedToolFrame, QWidget#EmbeddedToolBody, QWidget#EmbeddedToolEditor {{"
-        f"  background: {bg}; color: {P['text_main']}; }}"
+        f"background: {P['bg_dark']}; color: {P['text_main']}; }}"
         f"QWidget#EmbeddedToolHeader {{ background: {P.get('toolbar_bg', P['bg_panel'])}; }}"
-        f"QWidget#EmbeddedToolEditor QSplitter::handle {{ background: {splitter}; }}"
-        f"QWidget#EmbeddedToolEditor QSplitter::handle:hover {{ background: {splitter_hover}; }}"
-        f"QWidget#EmbeddedToolEditor QSplitter::handle:horizontal {{ width: 2px; margin: 0px; }}"
-        f"QWidget#EmbeddedToolEditor QSplitter::handle:vertical {{ height: 2px; margin: 0px; }}"
-        f"QWidget#EmbeddedToolEditor QGroupBox {{ color: {P['text_main']}; border: 1px solid {border}; "
-        f"  border-radius: {radius}; margin-top: 10px; padding: 10px 8px 8px 8px; background: {card}; }}"
-        f"QWidget#EmbeddedToolEditor QGroupBox::title {{ subcontrol-origin: margin; left: 10px; "
-        f"  padding: 0px 5px; color: {P.get('text_sec', P['text_main'])}; background: transparent; }}"
-        f"QWidget#EmbeddedToolEditor QPlainTextEdit {{ background-color: {input_bg}; color: {P['text_main']}; "
-        f"  border: 1px solid {input_border}; border-radius: {input_radius}; padding: 6px; "
-        f"  selection-background-color: {selection_bg}; selection-color: {selection_text}; }}"
-        f"QWidget#EmbeddedToolEditor QTextBrowser {{ background-color: {input_bg}; color: {P['text_main']}; "
-        f"  border: 1px solid {input_border}; border-radius: {input_radius}; padding: 6px; }}"
-        f"QWidget#EmbeddedToolEditor QTableWidget, QWidget#EmbeddedToolEditor QTableView, "
-        f"QWidget#EmbeddedToolEditor QTreeWidget, QWidget#EmbeddedToolEditor QListWidget {{"
-        f"  background-color: {input_bg}; color: {P['text_main']}; border: 1px solid {input_border}; "
-        f"  border-radius: {input_radius}; outline: none; }}"
-        f"QWidget#EmbeddedToolEditor QTableWidget::item, QWidget#EmbeddedToolEditor QTableView::item, "
-        f"QWidget#EmbeddedToolEditor QTreeWidget::item, QWidget#EmbeddedToolEditor QListWidget::item {{"
-        f"  padding: 4px 6px; }}"
-        f"QWidget#EmbeddedToolEditor QTableWidget::item:selected, QWidget#EmbeddedToolEditor QTableView::item:selected, "
-        f"QWidget#EmbeddedToolEditor QTreeWidget::item:selected, QWidget#EmbeddedToolEditor QListWidget::item:selected {{"
-        f"  background-color: {selection_bg}; color: {selection_text}; }}"
-        f"QWidget#EmbeddedToolEditor QHeaderView::section {{ background-color: {P.get('table_header_bg', panel)}; "
-        f"  color: {P.get('table_header_text', P['text_sec'])}; border: 1px solid {input_border}; "
-        f"  padding: 5px 7px; font-weight: 600; }}"
-        f"QWidget#EmbeddedToolEditor QTabWidget::pane {{ border: none; background: {bg}; }}"
-        f"QWidget#EmbeddedToolEditor QToolTip {{ background-color: {tooltip_bg}; color: {P['text_main']}; "
-        f"  border: 1px solid {tooltip_border}; padding: 5px 7px; border-radius: 5px; }}"
-        f"{ss_progressbar()}"
-        f"{ss_blocking_overlay()}"
-        f"{ss_blocking_overlay_card()}"
-        f"{ss_scrollbars(panel, size=10)}"
+        + ss_editor_surface()
     )
 
 
@@ -776,7 +745,7 @@ def polish_widget_tree(widget) -> None:
 
 def ss_entry_card(selected: bool = False) -> str:
     """Editable entry card used in card-based editors."""
-    bg = P.get("entry_card_bg", P.get("panel_card_bg", P["bg_panel"]))
+    bg = P.get("entry_card_bg", color(ColorRole.CARD))
     border = P.get("entry_card_selected_border", P["accent"]) if selected else P.get("entry_card_border", P["bg_panel"])
     radius = P.get("panel_card_radius", "10px")
     return (
@@ -933,9 +902,9 @@ def ss_scrollarea_panel_edge() -> str:
 
 def ss_scrollarea_card() -> str:
     """Card-framed scroll area for image/preview panes."""
-    bg = P.get("input_bg", P["bg_card"])
-    border = P.get("input_border", P["border"])
-    radius = P.get("input_radius", "4px")
+    bg = color(ColorRole.INPUT)
+    border = color(ColorRole.INPUT_BORDER)
+    radius = token_radius(Radius.INPUT)
     return (
         f"QScrollArea {{ background: {bg}; border: 1px solid {border}; border-radius: {radius}; }}"
         f"{ss_scrollbars(P['bg_dark'], size=8)}"
@@ -970,8 +939,8 @@ def ss_sidebar_btn(selected: bool = False) -> str:
     selected=True  → active entry uses bg_card background.
     """
     bg = P.get("sidebar_item_selected_bg", P['bg_card']) if selected else "transparent"
-    hover = P.get("sidebar_item_hover_bg", P['bg_card_hov'])
-    radius = P.get("sidebar_item_radius", "6px")
+    hover = bg if selected else P.get("sidebar_item_hover_bg", P['bg_card_hov'])
+    radius = token_radius(Radius.LIST_ROW)
     return (
         f"QPushButton {{ background-color: {bg}; border-radius: {radius}; "
         f"text-align: left; padding: 0px; border: none; }}"
@@ -983,7 +952,7 @@ def ss_sidebar_edge_toggle() -> str:
     """Narrow sidebar edge toggle that visually belongs to the sidebar rail."""
     bg = P.get("toolbar_bg", P.get("panel_bg", P["bg_panel"]))
     hover = P.get("bg_card_hov", P["mid"])
-    radius = P.get("button_radius", "6px")
+    radius = token_radius(Radius.BUTTON)
     return (
         f"QPushButton {{ background-color: {bg}; color: {P.get('button_text', P['text_main'])}; "
         f"border: none; border-radius: {radius}; padding: 0px; }}"
@@ -1102,9 +1071,9 @@ def ss_audio_format_badge(fmt: str) -> str:
 
 def ss_check() -> str:
     """QCheckBox with themed indicator — used in card-based editors."""
-    bg = P.get("input_bg", P["bg_card"])
-    border = P.get("input_border", P["border"])
-    radius = P.get("checkbox_radius", "3px")
+    bg = color(ColorRole.INPUT)
+    border = color(ColorRole.INPUT_BORDER)
+    radius = token_radius(Radius.CHECKBOX)
     return (
         f"QCheckBox {{ color: {P['text_main']}; spacing: 6px; background: transparent; }}"
         f"QCheckBox::indicator {{ width: 16px; height: 16px; border: 1px solid {border}; "
@@ -1162,7 +1131,7 @@ def ss_settings_tab_widget() -> str:
         f"height: 34px; padding: 0px 18px; margin: 8px 4px 0px 4px; min-width: 108px; "
         f"border-top-left-radius: {tab_radius}; border-top-right-radius: {tab_radius}; "
         f"border-bottom-left-radius: 0px; border-bottom-right-radius: 0px; "
-        f"font-family: 'Segoe UI'; font-size: 13px; font-weight: 500; }}"
+        f"font-family: '{P.get('font_ui', 'Segoe UI')}'; font-size: {int(TypeSize.BODY)}pt; font-weight: 500; }}"
         f"QTabBar::tab:selected {{ background: {tab_selected_bg}; color: {tab_selected_text}; "
         f"border: 1px solid {tab_border}; border-bottom: none; }}"
         f"QTabBar::tab:hover:!selected {{ background: {tab_hover_bg}; color: {P['text_main']}; }}"
@@ -1197,22 +1166,14 @@ def ss_unlock_toast() -> str:
 # Dialogs
 
 def ss_dialog() -> str:
-    """Base background/text for QDialog windows."""
+    """Dialogs share ordinary controls with editors, including interaction states."""
     bg = P.get('dialog_bg', P['bg_panel'])
     text = P.get('dialog_text', P['text_main'])
-    border = P.get('settings_card_border', P['border'])
-    radius = P.get('settings_card_radius', '12px')
     return (
         f"QDialog, QMessageBox {{ background-color: {bg}; color: {text}; }}"
         f"QLabel {{ color: {text}; background: transparent; }}"
         f"QFrame {{ background: transparent; }}"
-        f"QPushButton {{ background-color: {P['mid']}; color: {P.get('button_text', text)}; "
-        f"border: {P.get('button_border', 'none')}; border-radius: {P.get('button_radius', '8px')}; "
-        f"padding: 6px 14px; min-height: 24px; }}"
-        f"QPushButton:hover {{ background-color: {P.get('button_hover', P['bg_card_hov'])}; color: {P.get('button_hover_text', text)}; }}"
-        f"QPushButton:focus {{ border: 1px solid {P.get('input_focus_border', P['accent'])}; }}"
-        f"QTextEdit, QPlainTextEdit {{ background-color: {P.get('input_bg', bg)}; color: {text}; "
-        f"border: 1px solid {border}; border-radius: {radius}; padding: 8px; }}"
+        + ss_editor_surface() + ss_radio()
     )
 
 

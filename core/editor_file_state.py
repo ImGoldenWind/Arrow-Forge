@@ -19,15 +19,24 @@ def file_display_name(path_or_name: str | None, *, dirty: bool = False, empty_te
 
 
 def set_file_label(label, path_or_name: str | None = None, *, dirty: bool = False, empty_text: str = "") -> None:
+    from core.ui.editor_actions import refresh_file_actions
     label.setText(file_display_name(path_or_name, dirty=dirty, empty_text=empty_text))
     label.setStyleSheet(ss_file_label_dirty() if dirty else ss_file_label_loaded())
     if path_or_name:
+        refresh_file_actions(label, loaded=True)
         label.setToolTip(path_or_name)
         if not dirty and os.path.isfile(path_or_name):
+            owner = label.parentWidget()
+            while owner is not None:
+                if hasattr(owner, '_message_lookup_signature'):
+                    owner._message_lookup_signature = None
+                owner = owner.parentWidget()
             notify_editor_file_loaded(label, path_or_name)
 
 
 def set_file_label_empty(label, text: str) -> None:
+    from core.ui.editor_actions import refresh_file_actions
+    refresh_file_actions(label, loaded=False)
     label.setText(text)
     label.setStyleSheet(ss_file_label())
     label.setToolTip("")

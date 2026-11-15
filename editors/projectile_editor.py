@@ -1,448 +1,62 @@
-"""editors/projectile_editor.py  –  Editor for 0xxx00_x.xfbin projectile/skill files."""
+"""Projectile Editor: focused forms for embedded Skill XML."""
 
+from core.design_tokens import (
+    Insets,
+    LayoutRole,
+    Size,
+    TypeSize,
+    ui_font,
+)
+from core.style_helpers import (
+    make_empty_state,
+    ss_bg_dark,
+    ss_sidebar_btn,
+    ss_transparent,
+)
+from core.ui.editor_widgets import (
+    EditorActionRow,
+    EditorListRow,
+    EditorSeparator,
+    EditorSidebar,
+    EditorToolbar,
+    configure_button,
+    configure_file_label,
+    configure_layout,
+    configure_scrollarea,
+    configure_search,
+)
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.editor_actions import install_file_actions
 import copy
 import os
-import re
 import threading
-import xml.etree.ElementTree as ET
 
 from PyQt6.QtWidgets import (
-    QWidget, QFrame, QLabel, QPushButton, QLineEdit,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea,
-    QFileDialog, QMessageBox, QSizePolicy,
+    QWidget, QFrame, QLabel, QPushButton, QLineEdit, QVBoxLayout, QHBoxLayout,
+    QScrollArea, QFileDialog, QMessageBox, QSizePolicy,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from core.themes import P
-from core.style_helpers import (
-    ss_btn, ss_sep, ss_accent_sep, ss_search, ss_sidebar_btn,
-    ss_scrollarea, ss_scrollarea_transparent, ss_input, ss_file_label,
-    ss_transparent, ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
-    make_editor_card, make_editor_field_shell, make_editor_grid_card,
-    make_empty_state, add_editor_card_title,
-    TOOLBAR_H, TOOLBAR_BTN_H,
-)
 from core.editor_file_state import set_file_label
+from core.projectile_tools import parse_skill, skill_xml, unique_skill_id
+from core.spm_tools import SpmNames
 from parsers.projectile_parser import parse_projectile_xfbin, save_projectile_xfbin
 from core.translations import ui_text
 from core.settings import create_backup_on_open, game_files_dialog_dir
+from editors.projectile_forms import _SkillTable, clear_layout as _clear_layout
 
 
-# Helpers
+def _truncate(text, limit=28):
+    return text if len(text) <= limit else text[:limit - 3].rstrip() + '...'
 
-def _clear_layout(layout):
-    if layout is None:
-        return
-    while layout.count():
-        item = layout.takeAt(0)
-        if item.widget():
-            widget = item.widget()
-            widget.hide()
-            widget.setParent(None)
-            widget.deleteLater()
-        elif item.layout():
-            _clear_layout(item.layout())
 
+_DEFAULT_SKILL_XML = ('<?xml version="1.0" encoding="Shift_JIS"?>\r\n'
+    '<Skill id="new_skill" type="SKILL_TYPE_EFFECT">'
+    '<Actions FirstActionId="0" num="1"><Action id="0" type="SKILL_ACTION_TYPE_ARROW"></Action></Actions>'
+    '<GenActions num="0"></GenActions></Skill>')
 
-def _truncate(text: str, limit: int = 28) -> str:
-    text = str(text)
-    return text if len(text) <= limit else text[: max(0, limit - 3)].rstrip() + "..."
-
-
-_DEFAULT_SKILL_XML = (
-    '<?xml version="1.0" encoding="Shift_JIS"?>\r\n'
-    '<Skill id="new_skill" type="SKILL_TYPE_NORMAL"></Skill>'
-)
-
-XML_DETAILS = 'Details'
-XML_ACTIONS = 'Actions'
-XML_ACTION = 'Action'
-XML_HIT = 'Hit'
-XML_VELOCITY = 'Velocity'
-XML_SKILL_ATTACK = 'SkillAttack'
-
-ATTR_SHAPE = 'Shape'
-ATTR_HIT_RADIUS = 'hitRadius'
-ATTR_AMOUNT = 'Amount'
-ATTR_KNOCK_BACK = 'KnockBack'
-ATTR_GUARD_DAMAGE = 'GuardDamage'
-ATTR_STRENGTH = 'Strength'
-ATTR_HH_GAUGE = 'HHGauge'
-ATTR_STUN_DAMAGE = 'StunDamage'
-ATTR_HIT_STOP = 'HitStop'
-ATTR_REAC_XY = 'ReacXY'
-ATTR_REAC_Z = 'ReacZ'
-ATTR_DMG_ID = 'dmgId'
-
-# Fields per Action card: (label, xml_tag, xml_attr)
-# xml_tag=None means attribute lives directly on <Action>
-_ACTION_FIELDS = [
-    (ui_text("ui_projectile_action_id"),  None,           'id'),
-    (ui_text("ui_dlcinfoparam_type"),       None,           'type'),
-    (ui_text("ui_projectile_hit_shape"),  XML_HIT,          ATTR_SHAPE),
-    (ui_text("ui_projectile_hit_radius"), XML_HIT,          ATTR_HIT_RADIUS),
-    (ui_text("ui_projectile_velocity"),   XML_VELOCITY,     'value'),
-    (ui_text("skill_param_damage"),       XML_SKILL_ATTACK, ATTR_AMOUNT),
-    (ui_text("ui_projectile_knock_back"), XML_SKILL_ATTACK, ATTR_KNOCK_BACK),
-    (ui_text("ui_projectile_guard_dmg"),  XML_SKILL_ATTACK, ATTR_GUARD_DAMAGE),
-    (ui_text("ui_projectile_strength"),   XML_SKILL_ATTACK, ATTR_STRENGTH),
-    (ui_text("ui_projectile_hh_gauge"),   XML_SKILL_ATTACK, ATTR_HH_GAUGE),
-    (ui_text("ui_projectile_stun"),       XML_SKILL_ATTACK, ATTR_STUN_DAMAGE),
-    (ui_text("ui_projectile_hit_stop"),   XML_SKILL_ATTACK, ATTR_HIT_STOP),
-    (ui_text("ui_projectile_reacxy"),     XML_SKILL_ATTACK, ATTR_REAC_XY),
-    (ui_text("ui_projectile_reacz"),      XML_SKILL_ATTACK, ATTR_REAC_Z),
-    (ui_text("ui_projectile_dmg_id"),     XML_SKILL_ATTACK, ATTR_DMG_ID),
-]
-_CARD_COLS = 5
-
-
-# Skill Table Widget
-
-class _SkillTable(QWidget):
-    xml_changed      = pyqtSignal(str)
-    skill_id_changed = pyqtSignal(str)
-
-    def __init__(self, parent=None, lang_func=None):
-        super().__init__(parent)
-        self.t = lang_func or (lambda k, **kw: k)
-        self._root_el     = None
-        self._blocked     = False
-        self._action_cards = []
-        self._header_field_shells = []
-        self._header_grid = None
-        self._last_header_cols = 0
-        self._last_action_cols = 0
-        self._resize_timer = QTimer(self)
-        self._resize_timer.setSingleShot(True)
-        self._resize_timer.setInterval(80)
-        self._resize_timer.timeout.connect(self._handle_resize_layout_change)
-        self._build_ui()
-
-    def _build_ui(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(8)
-
-        # Skill Properties Card
-        card, card_grid = make_editor_grid_card(
-            self,
-            title=ui_text("ui_projectile_skill_id"),
-            icon_name="fa6s.crosshairs",
-            grid_margins=(0, 2, 0, 0),
-            vertical_spacing=10,
-        )
-        self._prep_card(card)
-        self._header_grid = card_grid
-
-        self._id_fld = self._type_fld = self._det_fld = None
-        for col, label_text in enumerate((ui_text("ui_projectile_skill_id"), ui_text("ui_dlcinfoparam_type"), ui_text("ui_projectile_details"))):
-            f, fl, _label, _hint = make_editor_field_shell(label_text)
-            self._prep_field_shell(f)
-            fld = QLineEdit()
-            fld.setFixedHeight(30)
-            fld.setFont(QFont("Consolas", 13))
-            fld.setStyleSheet(ss_input())
-            fld.setMinimumWidth(0)
-            fld.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            fl.addWidget(fld)
-            self._header_field_shells.append(f)
-            if col == 0:
-                self._id_fld = fld
-            elif col == 1:
-                self._type_fld = fld
-            else:
-                self._det_fld = fld
-        self._layout_header_fields()
-
-        root.addWidget(card)
-
-        # Add Action button
-        add_bar = QWidget()
-        add_bar.setStyleSheet(ss_transparent())
-        add_bar_layout = QHBoxLayout(add_bar)
-        add_bar_layout.setContentsMargins(0, 0, 0, 0)
-        add_bar_layout.setSpacing(4)
-
-        self._add_btn = QPushButton(self.t("btn_new"))
-        self._add_btn.setFixedHeight(28)
-        self._add_btn.setFont(QFont("Segoe UI", 10))
-        self._add_btn.setStyleSheet(ss_btn())
-        self._add_btn.clicked.connect(self._add_action)
-        add_bar_layout.addWidget(self._add_btn)
-        add_bar_layout.addStretch()
-        root.addWidget(add_bar)
-
-        # Action cards scroll area
-        self._cards_scroll = QScrollArea()
-        self._cards_scroll.setWidgetResizable(True)
-        self._cards_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._cards_scroll.setStyleSheet(ss_scrollarea_transparent())
-
-        self._cards_widget = QWidget()
-        self._cards_widget.setStyleSheet(ss_transparent())
-        self._cards_layout = QVBoxLayout(self._cards_widget)
-        self._cards_layout.setContentsMargins(0, 0, 0, 0)
-        self._cards_layout.setSpacing(8)
-        self._cards_layout.addStretch()
-        self._cards_scroll.setWidget(self._cards_widget)
-        root.addWidget(self._cards_scroll, 1)
-
-        self._id_fld.textChanged.connect(self._on_header_changed)
-        self._type_fld.textChanged.connect(self._on_header_changed)
-        self._det_fld.textChanged.connect(self._on_header_changed)
-
-    def _available_width(self) -> int:
-        if hasattr(self, "_cards_scroll") and self._cards_scroll is not None:
-            return max(0, self._cards_scroll.viewport().width())
-        return max(0, self.width())
-
-    def _header_columns(self) -> int:
-        return 1 if self._available_width() < 640 else 3
-
-    def _action_columns(self) -> int:
-        width = self._available_width()
-        if width < 560:
-            return 2
-        if width < 820:
-            return 3
-        if width < 1080:
-            return 4
-        return 5
-
-    def _prep_card(self, card: QWidget, *, max_width: int = 1120):
-        card.setMinimumWidth(0)
-        card.setMaximumWidth(max_width)
-        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-
-    def _prep_field_shell(self, field: QWidget):
-        field.setMinimumWidth(120)
-        field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-    def _layout_header_fields(self):
-        if self._header_grid is None:
-            return
-        container = self._header_grid.parentWidget()
-        if container is not None:
-            container.setMinimumWidth(0)
-            container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-        while self._header_grid.count():
-            item = self._header_grid.takeAt(0)
-            if item.widget():
-                item.widget().setParent(None)
-        cols = self._header_columns()
-        self._last_header_cols = cols
-        for col in range(3):
-            self._header_grid.setColumnStretch(col, 0)
-            self._header_grid.setColumnMinimumWidth(col, 0)
-        if cols == 1:
-            self._header_grid.setColumnMinimumWidth(0, max(180, self._available_width() - 32))
-        for idx, field in enumerate(self._header_field_shells):
-            row, col = divmod(idx, cols)
-            self._header_grid.addWidget(field, row, col)
-            self._header_grid.setColumnStretch(col, 1)
-
-    def _handle_resize_layout_change(self):
-        header_cols = self._header_columns()
-        action_cols = self._action_columns()
-        if header_cols != self._last_header_cols:
-            self._layout_header_fields()
-        if action_cols != self._last_action_cols and self._root_el is not None:
-            self._rebuild_cards()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._resize_timer.start()
-
-    # Public
-
-    def load(self, xml_text):
-        self._blocked = True
-        self._id_fld.blockSignals(True)
-        self._type_fld.blockSignals(True)
-        self._det_fld.blockSignals(True)
-
-        try:
-            stripped = re.sub(r'<\?xml[^>]*\?>\s*', '', xml_text)
-            self._root_el = ET.fromstring(stripped.encode('utf-8', errors='replace'))
-        except ET.ParseError:
-            self._root_el = None
-            self._id_fld.blockSignals(False)
-            self._type_fld.blockSignals(False)
-            self._det_fld.blockSignals(False)
-            self._blocked = False
-            self._rebuild_cards()
-            return
-
-        self._id_fld.setText(self._root_el.get('id', ''))
-        self._type_fld.setText(self._root_el.get('type', ''))
-        det_el = self._root_el.find(XML_DETAILS)
-        self._det_fld.setText(det_el.get('text', '') if det_el is not None else '')
-
-        self._id_fld.blockSignals(False)
-        self._type_fld.blockSignals(False)
-        self._det_fld.blockSignals(False)
-        self._blocked = False
-
-        self._rebuild_cards()
-
-    # Card building
-
-    def _rebuild_cards(self):
-        self._blocked = True
-        _clear_layout(self._cards_layout)
-        self._action_cards = []
-
-        if self._root_el is not None:
-            self._last_action_cols = self._action_columns()
-            for idx, action_el in enumerate(list(self._root_el.iter(XML_ACTION))):
-                card = self._make_action_card(action_el, idx)
-                self._cards_layout.addWidget(card)
-                self._action_cards.append(card)
-
-        self._cards_layout.addStretch()
-        self._blocked = False
-
-    def _make_action_card(self, action_el, idx):
-        card, card_layout = make_editor_card(self._cards_widget, margins=(12, 10, 12, 12), spacing=8)
-        self._prep_card(card)
-
-        # Card header: "Action N" + inline Dup/Delete
-        hdr, _title_lbl, _subtitle_lbl = add_editor_card_title(
-            card_layout,
-            ui_text("ui_projectile_action_value", p0=idx + 1),
-            "fa6s.bolt",
-        )
-        hdr_layout = hdr.layout()
-
-        btn_font = QFont("Segoe UI", 9)
-
-        dup_btn = QPushButton(self.t("btn_dup_short"))
-        dup_btn.setFixedHeight(24)
-        dup_btn.setFont(btn_font)
-        dup_btn.setStyleSheet(ss_btn())
-        dup_btn.clicked.connect(lambda checked=False, el=action_el: self._dup_action_el(el))
-        hdr_layout.addWidget(dup_btn)
-
-        del_btn = QPushButton(self.t("btn_delete"))
-        del_btn.setFixedHeight(24)
-        del_btn.setFont(btn_font)
-        del_btn.setStyleSheet(ss_btn(danger=True))
-        del_btn.clicked.connect(lambda checked=False, el=action_el: self._del_action_el(el))
-        hdr_layout.addWidget(del_btn)
-
-        # Fields grid
-        inner = QWidget()
-        inner.setStyleSheet(ss_transparent())
-        grid = QGridLayout(inner)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(8)
-
-        cols = self._action_columns()
-        for i, (label_text, tag, attr) in enumerate(_ACTION_FIELDS):
-            row, col = divmod(i, cols)
-
-            if tag is None:
-                value = action_el.get(attr, '')
-            else:
-                sub_el = action_el.find(tag)
-                value = sub_el.get(attr, '') if sub_el is not None else ''
-
-            f, fl, _label, _hint = make_editor_field_shell(label_text)
-            self._prep_field_shell(f)
-
-            fld = QLineEdit()
-            fld.setFixedHeight(30)
-            fld.setFont(QFont("Consolas", 13))
-            fld.setStyleSheet(ss_input())
-            fld.setMinimumWidth(0)
-            fld.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            fld.setText(value)
-            fld.textChanged.connect(self._make_field_updater(action_el, tag, attr))
-            fl.addWidget(fld)
-
-            grid.addWidget(f, row, col)
-            grid.setColumnStretch(col, 1)
-
-        card_layout.addWidget(inner)
-        return card
-
-    def _make_field_updater(self, action_el, tag, attr):
-        def updater(val):
-            if self._blocked:
-                return
-            if tag is None:
-                action_el.set(attr, val)
-            else:
-                el = action_el.find(tag)
-                if el is None:
-                    el = ET.SubElement(action_el, tag)
-                el.set(attr, val)
-            self._emit_xml()
-        return updater
-
-    # Signal handlers
-
-    def _on_header_changed(self):
-        if self._blocked or self._root_el is None:
-            return
-        self._root_el.set('id', self._id_fld.text())
-        self._root_el.set('type', self._type_fld.text())
-        det_text = self._det_fld.text()
-        det_el = self._root_el.find(XML_DETAILS)
-        if det_text:
-            if det_el is None:
-                det_el = ET.Element(XML_DETAILS)
-                self._root_el.insert(0, det_el)
-            det_el.set('text', det_text)
-        self.skill_id_changed.emit(self._id_fld.text())
-        self._emit_xml()
-
-    def _emit_xml(self):
-        if self._root_el is not None:
-            self.xml_changed.emit(self._serialize())
-
-    def _serialize(self) -> str:
-        body = ET.tostring(self._root_el, encoding='unicode')
-        return '<?xml version="1.0" encoding="Shift_JIS"?>\r\n' + body
-
-    # Add / Dup / Delete actions
-
-    def _add_action(self):
-        if self._root_el is None:
-            return
-        all_actions = list(self._root_el.iter(XML_ACTION))
-        new_id = str(len(all_actions))
-        container = self._root_el.find(XML_ACTIONS) or self._root_el
-        new_el = ET.SubElement(container, XML_ACTION)
-        new_el.set('id', new_id)
-        new_el.set('type', 'SKILL_ACTION_TYPE_ARROW')
-        self._rebuild_cards()
-        self._emit_xml()
-        QTimer.singleShot(50, lambda: self._cards_scroll.verticalScrollBar().setValue(
-            self._cards_scroll.verticalScrollBar().maximum()
-        ))
-
-    def _dup_action_el(self, action_el):
-        if self._root_el is None:
-            return
-        parent_map = {c: p for p in self._root_el.iter() for c in p}
-        new_el = copy.deepcopy(action_el)
-        parent_map.get(action_el, self._root_el).append(new_el)
-        self._rebuild_cards()
-        self._emit_xml()
-
-    def _del_action_el(self, action_el):
-        if self._root_el is None:
-            return
-        parent_map = {c: p for p in self._root_el.iter() for c in p}
-        parent_map.get(action_el, self._root_el).remove(action_el)
-        self._rebuild_cards()
-        self._emit_xml()
-
-
-# Main Editor
 
 class ProjectileEditor(QWidget):
     _load_done_signal  = pyqtSignal(str, object, object)
@@ -450,7 +64,8 @@ class ProjectileEditor(QWidget):
 
     def __init__(self, parent=None, lang_func=None, embedded=False):
         super().__init__(parent)
-        self.t = lang_func or (lambda k, **kw: k)
+        self._embedded = embedded
+        self.t = lang_func or ui_text
 
         self._filepath      = None
         self._raw_data      = None
@@ -459,142 +74,140 @@ class ProjectileEditor(QWidget):
         self._current_chunk = None
         self._dirty         = False
         self._skill_buttons = []
+        self._loading = False
+        self._names = None
 
         self._load_done_signal.connect(self._on_load_done)
         self._load_error_signal.connect(self._on_load_error)
 
         self._build_ui()
+        install_file_actions(self, self._save_btn, existing_button=self._save_as_btn)
+        install_editor_chrome(self)
 
     # UI Construction
 
+    def closeEvent(self, event):
+        if not self._embedded and not self._can_leave():
+            event.ignore()
+            return
+        super().closeEvent(event)
+
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        configure_layout(root, LayoutRole.ROOT)
 
         # Top bar
-        top = QFrame()
-        top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(ss_bg_panel())
-        tl = QHBoxLayout(top)
-        tl.setContentsMargins(12, 8, 12, 8)
-        tl.setSpacing(4)
+        top = EditorToolbar()
+        tl = top.content_layout
 
         open_btn = QPushButton(self.t("btn_open_file"))
-        open_btn.setFixedHeight(TOOLBAR_BTN_H)
-        open_btn.setFont(QFont("Segoe UI", 10))
-        open_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(open_btn, accent=True)
         open_btn.clicked.connect(self._load_file)
+        open_btn.setProperty("designAction", 'open')
         tl.addWidget(open_btn)
 
         self._save_btn = QPushButton(self.t("btn_save_file"))
-        self._save_btn.setFixedHeight(TOOLBAR_BTN_H)
-        self._save_btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self._save_btn.setEnabled(False)
-        self._save_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._save_btn, accent=True)
         self._save_btn.clicked.connect(self._save_file)
         tl.addWidget(self._save_btn)
+        self._save_as_btn = QPushButton(ui_text("proj_save_as"))
+        configure_button(self._save_as_btn)
+        self._save_as_btn.setEnabled(False)
+        self._save_as_btn.clicked.connect(self._save_as)
+        tl.addWidget(self._save_as_btn)
 
         self._file_lbl = QLabel(self.t("no_file_loaded"))
-        self._file_lbl.setFont(QFont("Consolas", 12))
-        self._file_lbl.setStyleSheet(ss_file_label())
+
+        configure_file_label(self._file_lbl)
         tl.addWidget(self._file_lbl)
 
         tl.addStretch()
         root.addWidget(top)
 
-        sep = QFrame()
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
+        sep = EditorSeparator(accent=True)
+
+
         root.addWidget(sep)
 
         # Main area: sidebar + editor (always visible)
         main = QWidget()
         main_layout = QHBoxLayout(main)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        configure_layout(main_layout, LayoutRole.ROOT)
 
         # Left sidebar
-        left_frame = QFrame()
-        left_frame.setFixedWidth(276)
-        left_frame.setStyleSheet(ss_sidebar_frame())
-        lf_layout = QVBoxLayout(left_frame)
-        lf_layout.setContentsMargins(8, 8, 8, 4)
-        lf_layout.setSpacing(4)
+        left_frame = EditorSidebar(width=276)
+
+
+        lf_layout = left_frame.content_layout
+
 
         self._search_entry = QLineEdit()
-        self._search_entry.setPlaceholderText(self.t("search_placeholder"))
-        self._search_entry.setFixedHeight(32)
-        self._search_entry.setFont(QFont(P.get("font_ui", "Segoe UI"), 13))
-        self._search_entry.setStyleSheet(ss_search())
+        configure_search(self._search_entry)
+        self._search_entry.setClearButtonEnabled(True)
+        configure_search(self._search_entry)
         self._search_entry.textChanged.connect(self._filter_skill_list)
         lf_layout.addWidget(self._search_entry)
 
-        actions_frame = QWidget()
-        actions_frame.setStyleSheet(ss_transparent())
-        actions_layout = QHBoxLayout(actions_frame)
-        actions_layout.setContentsMargins(0, 2, 0, 4)
-        actions_layout.setSpacing(4)
+        actions_frame = EditorActionRow()
 
-        btn_font = QFont(P.get("font_ui", "Segoe UI"), 10)
+        actions_layout = actions_frame.content_layout
+
+
+        btn_font = ui_font(TypeSize.BODY)
 
         self._skill_add_btn = QPushButton(self.t("btn_new"))
-        self._skill_add_btn.setFixedHeight(28)
-        self._skill_add_btn.setFont(btn_font)
         self._skill_add_btn.setEnabled(False)
-        self._skill_add_btn.setStyleSheet(ss_btn())
+        configure_button(self._skill_add_btn, height=Size.COMPACT_CONTROL)
         self._skill_add_btn.clicked.connect(self._add_skill)
+        self._skill_add_btn.setProperty("designAction", 'new')
         actions_layout.addWidget(self._skill_add_btn, 1)
 
         self._skill_dup_btn = QPushButton(self.t("btn_duplicate"))
-        self._skill_dup_btn.setFixedHeight(28)
-        self._skill_dup_btn.setFont(btn_font)
         self._skill_dup_btn.setEnabled(False)
-        self._skill_dup_btn.setStyleSheet(ss_btn())
+        configure_button(self._skill_dup_btn, height=Size.COMPACT_CONTROL)
         self._skill_dup_btn.clicked.connect(self._dup_skill)
+        self._skill_dup_btn.setProperty("designAction", 'duplicate')
         actions_layout.addWidget(self._skill_dup_btn, 1)
 
         self._skill_del_btn = QPushButton(self.t("btn_delete"))
-        self._skill_del_btn.setFixedHeight(28)
-        self._skill_del_btn.setFont(btn_font)
         self._skill_del_btn.setEnabled(False)
-        self._skill_del_btn.setStyleSheet(ss_btn(danger=True))
+        configure_button(self._skill_del_btn, danger=True, height=Size.COMPACT_CONTROL)
         self._skill_del_btn.clicked.connect(self._del_skill)
+        self._skill_del_btn.setProperty("designAction", 'delete')
         actions_layout.addWidget(self._skill_del_btn, 1)
 
         lf_layout.addWidget(actions_frame)
 
         self._skill_scroll = QScrollArea()
-        self._skill_scroll.setWidgetResizable(True)
-        self._skill_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._skill_scroll.setStyleSheet(ss_scrollarea_transparent())
+
+
+        configure_scrollarea(self._skill_scroll, transparent=True)
         self._skill_list_widget = QWidget()
         self._skill_list_widget.setStyleSheet(ss_transparent())
         self._skill_list_layout = QVBoxLayout(self._skill_list_widget)
-        self._skill_list_layout.setContentsMargins(0, 0, 0, 0)
-        self._skill_list_layout.setSpacing(1)
+        configure_layout(self._skill_list_layout, LayoutRole.LIST)
         self._skill_list_layout.addStretch()
         self._skill_scroll.setWidget(self._skill_list_widget)
         lf_layout.addWidget(self._skill_scroll)
 
         main_layout.addWidget(left_frame)
 
-        divider = QFrame()
-        divider.setFixedWidth(1)
-        divider.setStyleSheet(ss_sep())
+        divider = EditorSeparator(orientation=Qt.Orientation.Vertical)
+
+
         main_layout.addWidget(divider)
 
         # Right: placeholder OR skill editor
         right_frame = QFrame()
         right_frame.setStyleSheet(ss_bg_dark())
         right_layout = QVBoxLayout(right_frame)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(0)
+        configure_layout(right_layout, LayoutRole.ROOT)
 
         self._placeholder_wrap = QWidget(right_frame)
         self._placeholder_wrap.setStyleSheet(ss_transparent())
         placeholder_layout = QVBoxLayout(self._placeholder_wrap)
-        placeholder_layout.setContentsMargins(0, 0, 0, 0)
+        placeholder_layout.setContentsMargins(*Insets.NONE)
         placeholder_layout.addStretch()
         self._placeholder = make_empty_state(
             self._placeholder_wrap,
@@ -610,6 +223,7 @@ class ProjectileEditor(QWidget):
         self._skill_table.setVisible(False)
         self._skill_table.xml_changed.connect(self._on_table_xml_changed)
         self._skill_table.skill_id_changed.connect(self._on_skill_id_changed)
+        self._skill_table.validity_changed.connect(lambda valid: self._update_save_buttons())
         right_layout.addWidget(self._skill_table, 1)
 
         main_layout.addWidget(right_frame, 1)
@@ -627,14 +241,23 @@ class ProjectileEditor(QWidget):
             self._start_load(path)
 
     def _start_load(self, path):
-        self._filepath = path
+        if self._loading or not self._can_leave():
+            return
+        self._loading = True
+        self._skill_table.setEnabled(False)
+        self._save_btn.setEnabled(False)
+        self._save_as_btn.setEnabled(False)
+        for button in (self._skill_add_btn, self._skill_dup_btn, self._skill_del_btn):
+            button.setEnabled(False)
         name = os.path.basename(path)
         self._file_lbl.setText(ui_text("ui_customcardparam_value_value", p0=self.t('loading'), p1=name))
-        self._file_lbl.setStyleSheet(ss_file_label())
+        configure_file_label(self._file_lbl)
 
         def _worker():
             try:
                 raw, chunks = parse_projectile_xfbin(path)
+                if not chunks:
+                    raise ValueError(ui_text("proj_no_skills"))
                 self._load_done_signal.emit(path, raw, chunks)
             except Exception as exc:
                 import traceback
@@ -643,6 +266,11 @@ class ProjectileEditor(QWidget):
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_load_done(self, path, raw, chunks):
+        self._loading = False
+        self._filepath = path
+        self._names = SpmNames(path)
+        self._skill_table.setEnabled(True)
+        self._search_entry.clear()
         self._raw_data      = raw
         self._chunks        = chunks
         self._cur_idx       = -1
@@ -654,7 +282,8 @@ class ProjectileEditor(QWidget):
         self._placeholder_wrap.setVisible(False)
         self._skill_table.setVisible(True)
 
-        self._save_btn.setEnabled(True)
+        self._save_btn.setEnabled(False)
+        self._save_as_btn.setEnabled(True)
         self._skill_add_btn.setEnabled(True)
         self._skill_dup_btn.setEnabled(True)
         self._skill_del_btn.setEnabled(True)
@@ -662,10 +291,12 @@ class ProjectileEditor(QWidget):
         self._populate_skill_list()
 
     def _on_load_error(self, msg):
-        self._placeholder_wrap.setVisible(True)
-        self._skill_table.setVisible(False)
-        self._file_lbl.setText(self.t("no_file_loaded"))
-        self._file_lbl.setStyleSheet(ss_file_label())
+        self._loading = False
+        self._skill_table.setEnabled(True)
+        set_file_label(self._file_lbl, self._filepath, dirty=self._dirty)
+        for button in (self._skill_add_btn, self._skill_dup_btn, self._skill_del_btn):
+            button.setEnabled(bool(self._chunks))
+        self._update_save_buttons()
         QMessageBox.critical(self, ui_text("ui_charviewer_load_error"), msg)
 
     # Skill list
@@ -674,7 +305,7 @@ class ProjectileEditor(QWidget):
         _clear_layout(self._skill_list_layout)
         self._skill_list_layout.addStretch()
 
-    def _populate_skill_list(self):
+    def _populate_skill_list(self, selected=None):
         self._clear_skill_list()
         self._skill_buttons = []
         for chunk in self._chunks:
@@ -684,27 +315,35 @@ class ProjectileEditor(QWidget):
             )
             self._skill_buttons.append((btn, chunk))
         if self._chunks:
-            self._select_skill(self._chunks[0])
+            self._select_skill(selected if selected is not None else self._chunks[0])
+        self._filter_skill_list()
 
     def _make_skill_button(self, chunk):
-        btn = QPushButton()
-        btn.setFixedHeight(44)
+        btn = EditorListRow(height=68)
+
         btn.setMinimumWidth(0)
         btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet(ss_sidebar_btn())
-        btn_layout = QVBoxLayout(btn)
-        btn_layout.setContentsMargins(10, 4, 10, 4)
-        btn_layout.setSpacing(0)
+
+
+        btn_layout = btn.content_layout
+
 
         full_name = chunk['skill_id']
-        name_lbl = QLabel(_truncate(full_name, 26))
+        root = parse_skill(chunk['xml_text'])
+        details = root.find('Details')
+        description = details.get('text', '') if details is not None else ''
+        chunk['_description'] = description
+        display_description = self._names.display(description) if self._names else description
+        chunk['_display_description'] = display_description
+        name_lbl = btn.add_title(_truncate(full_name, 26))
         name_lbl.setToolTip(full_name)
-        name_lbl.setFont(QFont(P.get("font_ui", "Segoe UI"), 12, QFont.Weight.Bold))
-        name_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
-        name_lbl.setMinimumWidth(0)
-        name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        btn_layout.addWidget(name_lbl)
+
+
+        description_lbl = QLabel(_truncate(display_description, 34) or ui_text("proj_no_description"))
+        description_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        configure_file_label(description_lbl)
+        btn_layout.addWidget(description_lbl)
+        btn.setToolTip(full_name + "\n" + display_description + "\n" + description)
 
         btn.clicked.connect(lambda checked=False, c=chunk: self._select_skill(c))
         return btn
@@ -712,9 +351,14 @@ class ProjectileEditor(QWidget):
     def _filter_skill_list(self):
         query = self._search_entry.text().lower()
         for btn, chunk in self._skill_buttons:
-            btn.setVisible(query in chunk['skill_id'].lower())
+            haystack = (chunk['skill_id'] + ' ' + chunk.get('_description', '') + ' ' + chunk.get('_display_description', '')).lower()
+            btn.setVisible(query in haystack)
+        count = sum(query in (c['skill_id'] + ' ' + c.get('_description', '') + ' ' + c.get('_display_description', '')).lower() for c in self._chunks)
 
     def _select_skill(self, chunk):
+        if self._skill_table.has_invalid:
+            self._skill_table._update_status()
+            return
         self._current_chunk = chunk
         self._cur_idx = self._chunks.index(chunk)
 
@@ -724,17 +368,29 @@ class ProjectileEditor(QWidget):
             except Exception:
                 pass
 
+        original_id = chunk['skill_id']
+        self._skill_table.id_validator = lambda value: value == original_id or all(
+            c is chunk or c['skill_id'] != value for c in self._chunks)
         self._skill_table.load(chunk['xml_text'])
 
     # Table ↔ chunk sync
 
     def _on_table_xml_changed(self, new_xml):
         if 0 <= self._cur_idx < len(self._chunks):
-            norm = new_xml.replace('\r\n', '\n').replace('\r', '\n').replace('\n', '\r\n')
-            skill_close = norm.rfind('</Skill>')
-            if skill_close >= 0:
-                norm = norm[:skill_close + 8]
-            self._chunks[self._cur_idx]['xml_text'] = norm
+            chunk = self._chunks[self._cur_idx]
+            chunk['xml_text'] = new_xml
+            root = parse_skill(new_xml)
+            details = root.find('Details')
+            chunk['_description'] = details.get('text', '') if details is not None else ''
+            display_description = self._names.display(chunk['_description']) if self._names else chunk['_description']
+            chunk['_display_description'] = display_description
+            for btn, c in self._skill_buttons:
+                if c is chunk:
+                    labels = btn.findChildren(QLabel)
+                    if len(labels) > 1:
+                        labels[1].setText(_truncate(display_description, 34) or ui_text("proj_no_description"))
+                    btn.setToolTip(chunk['skill_id'] + "\n" + display_description + "\n" + chunk['_description'])
+            self._filter_skill_list()
             self._mark_dirty()
 
     def _on_skill_id_changed(self, new_id):
@@ -752,30 +408,37 @@ class ProjectileEditor(QWidget):
     # Add / Dup / Delete skills
 
     def _add_skill(self):
-        if self._chunks is None:
+        if self._raw_data is None or self._loading or self._skill_table.has_invalid:
             return
         new_chunk = {
-            'skill_id':  'new_skill',
+            'skill_id':  unique_skill_id(self._chunks, 'new_skill'),
             'xml_start': 0,
             'xml_end':   0,
             'xml_text':  _DEFAULT_SKILL_XML,
         }
+        root = parse_skill(new_chunk['xml_text'])
+        root.set('id', new_chunk['skill_id'])
+        new_chunk['xml_text'] = skill_xml(root)
         self._chunks.append(new_chunk)
-        self._populate_skill_list()
-        self._select_skill(new_chunk)
+        self._search_entry.clear()
+        self._populate_skill_list(new_chunk)
         self._mark_dirty()
 
     def _dup_skill(self):
-        if not self._chunks or self._current_chunk is None:
+        if not self._chunks or self._current_chunk is None or self._skill_table.has_invalid or self._loading:
             return
         new_chunk = copy.deepcopy(self._current_chunk)
+        new_chunk['skill_id'] = unique_skill_id(self._chunks, new_chunk['skill_id'])
+        root = parse_skill(new_chunk['xml_text'])
+        root.set('id', new_chunk['skill_id'])
+        new_chunk['xml_text'] = skill_xml(root)
         self._chunks.append(new_chunk)
-        self._populate_skill_list()
-        self._select_skill(new_chunk)
+        self._search_entry.clear()
+        self._populate_skill_list(new_chunk)
         self._mark_dirty()
 
     def _del_skill(self):
-        if not self._chunks or self._current_chunk is None:
+        if not self._chunks or self._current_chunk is None or self._skill_table.has_invalid or self._loading:
             return
         if len(self._chunks) <= 1:
             QMessageBox.warning(self, ui_text("dlg_title_warning"), ui_text("ui_projectile_cannot_delete_the_last_skill"))
@@ -794,24 +457,59 @@ class ProjectileEditor(QWidget):
 
     # Save
 
-    def _save_file(self):
-        if not self._chunks:
-            return
-        if self._filepath:
-            self._do_save(self._filepath)
-
-    def _do_save(self, path):
-        try:
-            save_projectile_xfbin(path, self._raw_data, self._chunks)
-            self._filepath = path
-            self._dirty    = False
-            set_file_label(self._file_lbl, path)
-            self._raw_data, _ = parse_projectile_xfbin(path)
-        except Exception as exc:
-            import traceback
-            QMessageBox.critical(self, ui_text("ui_assist_save_error"), ui_text("ui_ASBR-Tools_value_value", p0=exc, p1=traceback.format_exc()))
-
-    def _mark_dirty(self):
-        if not self._dirty:
+    def _update_save_buttons(self):
+        if self._skill_table.has_invalid and not self._dirty:
             self._dirty = True
             set_file_label(self._file_lbl, self._filepath, dirty=True)
+        valid = bool(self._chunks) and not self._loading and not self._skill_table.has_invalid
+        self._save_btn.setEnabled(valid and self._dirty)
+        self._save_as_btn.setEnabled(valid)
+
+    def _can_leave(self):
+        if self._skill_table.has_invalid:
+            QMessageBox.warning(self, ui_text("dlg_title_warning"), ui_text("proj_invalid"))
+            return False
+        if not self._dirty:
+            return True
+        answer = QMessageBox.question(self, ui_text("proj_unsaved"), ui_text("proj_unsaved_hint"),
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+        if answer == QMessageBox.StandardButton.Save:
+            return self._do_save(self._filepath)
+        return answer == QMessageBox.StandardButton.Discard
+
+    def _save_file(self):
+        if self._chunks and self._filepath and not self._skill_table.has_invalid and not self._loading:
+            return self._do_save(self._filepath)
+        return False
+
+    def _save_as(self):
+        if not self._chunks or self._skill_table.has_invalid or self._loading:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, ui_text("proj_save_as"),
+            self._filepath or '', 'XFBIN (*.xfbin)')
+        if path:
+            self._do_save(path)
+
+    def _do_save(self, path):
+        if self._skill_table.has_invalid or self._loading:
+            return False
+        try:
+            save_projectile_xfbin(path, self._raw_data, self._chunks)
+            selected = self._cur_idx
+            raw, chunks = parse_projectile_xfbin(path)
+            self._raw_data = raw
+            self._chunks = chunks
+            self._filepath = path
+            self._dirty = False
+            self._populate_skill_list(chunks[min(selected, len(chunks) - 1)])
+            set_file_label(self._file_lbl, path)
+            self._update_save_buttons()
+            return True
+        except Exception as exc:
+            QMessageBox.critical(self, ui_text("ui_assist_save_error"), str(exc))
+            return False
+
+    def _mark_dirty(self):
+        self._dirty = True
+        set_file_label(self._file_lbl, self._filepath, dirty=True)
+        self._update_save_buttons()

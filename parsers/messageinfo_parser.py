@@ -29,6 +29,8 @@ Pointer resolution (matches 010 Editor template logic):
 """
 
 import struct
+import os
+import tempfile
 
 
 # constants
@@ -75,7 +77,7 @@ def _read_cstr(data: bytes | bytearray, off: int) -> str:
 def _find_binary_chunk(data: bytes | bytearray):
     """
     Return (chunk_header_offset, chunk_size) for the first non-null chunk.
-    Chunk header: size(4 BE), type_idx(2 BE), path_idx(2 BE), flags(4 BE).
+    Chunk header: size(4 BE), map_idx(4 BE), version/flags(4 BE).
     """
     chunk_table_size = struct.unpack(">I", data[16:20])[0]
     offset = 28 + chunk_table_size
@@ -84,7 +86,7 @@ def _find_binary_chunk(data: bytes | bytearray):
 
     while offset + 12 <= len(data):
         size = struct.unpack(">I", data[offset: offset + 4])[0]
-        type_idx = struct.unpack(">H", data[offset + 4: offset + 6])[0]
+        type_idx = struct.unpack(">I", data[offset + 4: offset + 8])[0]
         if size > 0 and (type_idx == 1 or size > 512):
             return offset, size
         next_off = offset + 12 + size
@@ -131,6 +133,10 @@ def parse_messageinfo_xfbin(filepath: str) -> tuple[bytearray, int, list[dict]]:
     with open(filepath, "rb") as fh:
         data = bytearray(fh.read())
 
+    return data, *_parse_messageinfo_data(data)
+
+
+def _parse_messageinfo_data(data):
     chunk_hdr_off, _chunk_size = _find_binary_chunk(data)
     payload_off = chunk_hdr_off + 12
 
@@ -181,10 +187,10 @@ def parse_messageinfo_xfbin(filepath: str) -> tuple[bytearray, int, list[dict]]:
             "unk7":      unk7,
         })
 
-    return data, version, entries
+    return version, entries
 
 
-def _build_messageinfo_binary(version: int, entries: list[dict]) -> bytes:
+def _build_messageinfo_binary(version: int, entries: list[dict], notes: bytes = b"") -> bytes:
     """
     Build the inner messageInfo binary (WITHOUT the leading 4-byte BE inner_size).
 
@@ -194,6 +200,15 @@ def _build_messageinfo_binary(version: int, entries: list[dict]) -> bytes:
       string pool (null-terminated UTF-8, each padded to 8-byte boundary)
     """
     count = len(entries)
+    for e in entries:
+        for key in ('crc32_id', 'ref_crc32', 'unk1', 'unk2', 'unk3', 'unk7'):
+            if not isinstance(e[key], int) or not 0 <= e[key] <= 0xFFFFFFFF:
+                raise ValueError(f'{key}: expected uint32')
+        for key in ('char_id', 'cue_id', 'is_ref', 'unk6'):
+            if not isinstance(e[key], int) or not -32768 <= e[key] <= 32767:
+                raise ValueError(f'{key}: expected int16')
+        if '\x00' in e['message']:
+            raise ValueError('Message contains a NUL character')
 
     # 1. Build string pool
     pool_bytes: bytearray = bytearray()
@@ -214,7 +229,7 @@ def _build_messageinfo_binary(version: int, entries: list[dict]) -> bytes:
 
     # 2. Compute template offsets
     # Template offset of string pool start (includes leading inner_size field)
-    pool_tmpl_off = _INNER_SIZE_FIELD + HEADER_SIZE + count * ENTRY_SIZE
+    pool_tmpl_off = _INNER_SIZE_FIELD + HEADER_SIZE + len(notes) + count * ENTRY_SIZE
 
     # 3. Assemble binary
     buf = bytearray()
@@ -222,12 +237,13 @@ def _build_messageinfo_binary(version: int, entries: list[dict]) -> bytes:
     # Header
     buf += struct.pack("<I", version)   # version
     buf += struct.pack("<I", count)     # count
-    buf += struct.pack("<Q", 8)         # first_pointer = 8 (no notes)
+    buf += struct.pack("<Q", 8 + len(notes))
+    buf += notes
 
     # Entries
     for i, (e, pool_off) in enumerate(zip(entries, pool_offsets)):
         # Template offset of this entry's pointer field
-        ptr_field_tmpl_off = _INNER_SIZE_FIELD + HEADER_SIZE + i * ENTRY_SIZE + 16
+        ptr_field_tmpl_off = _INNER_SIZE_FIELD + HEADER_SIZE + len(notes) + i * ENTRY_SIZE + 16
         ptr_val = pool_tmpl_off + pool_off - ptr_field_tmpl_off
 
         buf += struct.pack(">I", e["crc32_id"] & 0xFFFFFFFF)  # BE
@@ -260,7 +276,15 @@ def save_messageinfo_xfbin(
     """
     Rebuild the XFBIN file with updated messageInfo data and write to *filepath*.
     """
-    new_inner = _build_messageinfo_binary(version, entries)
+    old_version, old_entries = _parse_messageinfo_data(original_data)
+    if old_version == version and old_entries == entries:
+        _atomic_write(filepath, bytes(original_data))
+        return
+    header, _ = _find_binary_chunk(original_data)
+    inner_offset = header + 16
+    notes_length = struct.unpack_from('<Q', original_data, inner_offset + 8)[0] - 8
+    notes = bytes(original_data[inner_offset + HEADER_SIZE:inner_offset + HEADER_SIZE + notes_length])
+    new_inner = _build_messageinfo_binary(version, entries, notes)
     inner_size = len(new_inner)
     new_payload = struct.pack(">I", inner_size) + new_inner
     new_chunk_size = len(new_payload)
@@ -287,5 +311,18 @@ def save_messageinfo_xfbin(
 
     result = prefix + new_hdr + new_payload + trailing
 
-    with open(filepath, "wb") as fh:
-        fh.write(result)
+    _atomic_write(filepath, result)
+
+
+def _atomic_write(filepath, data):
+    destination = os.path.abspath(filepath)
+    fd, temporary = tempfile.mkstemp(prefix='.messageinfo-', suffix='.tmp', dir=os.path.dirname(destination))
+    try:
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)

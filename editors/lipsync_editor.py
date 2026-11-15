@@ -1,7 +1,52 @@
+from __future__ import annotations
 """Visual editor for ASBR character *_lip.xfbin lip-sync files."""
 
-from __future__ import annotations
 
+from core.design_tokens import (
+    IconButtonRole,
+    Insets,
+    LayoutRole,
+    Size,
+    TypeSize,
+    mono_font,
+    ui_font,
+)
+from core.style_helpers import (
+    add_editor_card_title,
+    make_empty_state,
+    ss_accent_label,
+    ss_bg_dark,
+    ss_blocking_overlay,
+    ss_blocking_overlay_card,
+    ss_dim_label,
+    ss_editor_card,
+    ss_field_label,
+    ss_glass_panel,
+    ss_menu,
+    ss_panel_menu_button,
+    ss_panel_title,
+    ss_progressbar,
+    ss_sidebar_btn,
+    ss_slider,
+    ss_transparent,
+)
+from core.ui.editor_widgets import (
+    EditorActionRow,
+    EditorListRow,
+    EditorSeparator,
+    EditorSidebar,
+    EditorToolbar,
+    configure_button,
+    configure_icon_button,
+    configure_input,
+    configure_layout,
+    configure_scrollarea,
+    configure_search,
+)
+from core.ui.clip_timeline import ClipTimelineWidget, TimelineOverviewWidget
+from core.ui.timeline_controls import TimelineZoomControls, timeline_icon_button
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.editor_actions import commit_save_path, editor_path, install_file_actions
 import copy
 import io
 import json
@@ -13,7 +58,7 @@ import threading
 import wave
 
 from PyQt6.QtCore import QCoreApplication, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QAction, QBrush, QFont, QKeySequence, QPainter, QPainterPath, QColor, QPen, QShortcut
+from PyQt6.QtGui import QAction, QBrush, QFont, QPainter, QPainterPath, QColor, QPen
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -39,39 +84,6 @@ from core.editor_file_state import set_file_label, set_file_label_empty
 from core.external_tools import find_ffmpeg, find_rhubarb_lip_sync, find_vgaudio_cli, find_vgmstream_cli, tool_command
 from core.icons import _themed_icon
 from core.settings import create_backup_on_open, game_files_dialog_dir
-from core.style_helpers import (
-    TOOLBAR_BTN_H,
-    TOOLBAR_H,
-    add_editor_card_title,
-    make_empty_state,
-    ss_accent_label,
-    ss_accent_sep,
-    ss_blocking_overlay,
-    ss_blocking_overlay_card,
-    ss_bg_dark,
-    ss_bg_panel,
-    ss_btn,
-    ss_dim_label,
-    ss_field_label,
-    ss_glass_panel,
-    ss_input,
-    ss_icon_tool_btn,
-    ss_main_label,
-    ss_menu,
-    ss_editor_card,
-    ss_panel_menu_button,
-    ss_panel_title,
-    ss_progressbar,
-    ss_scrollarea,
-    ss_scrollarea_transparent,
-    ss_search,
-    ss_sep,
-    ss_sidebar_btn,
-    ss_sidebar_edge_toggle,
-    ss_slider,
-    ss_toggle_btn,
-    ss_transparent,
-)
 from core.themes import P
 from core.translations import ui_text
 from editors.sound_editor import _decode_audio_to_wav
@@ -584,7 +596,7 @@ def _card() -> QFrame:
 
 def _section_label(text: str) -> QLabel:
     label = QLabel(text)
-    label.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
+    label.setFont(ui_font(TypeSize.SECTION, QFont.Weight.Bold))
     label.setStyleSheet(ss_accent_label())
     label.setContentsMargins(20, 10, 0, 2)
     return label
@@ -592,217 +604,31 @@ def _section_label(text: str) -> QLabel:
 
 def _panel_title(text: str) -> QLabel:
     label = QLabel(text.upper())
-    label.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+    label.setFont(ui_font(TypeSize.HINT, QFont.Weight.Bold))
     label.setStyleSheet(ss_panel_title())
-    label.setContentsMargins(0, 0, 0, 0)
+    label.setContentsMargins(*Insets.NONE)
     return label
 
 
-class LipTimelineWidget(QWidget):
-    keySelected = pyqtSignal(int)
-    keyMoved = pyqtSignal(int, float)
-    playheadScrubbed = pyqtSignal(float)
-    viewRangeChanged = pyqtSignal(float, float)
-    segmentSplitRequested = pyqtSignal(int, float)
-    lockToggleRequested = pyqtSignal(int)
-    editStarted = pyqtSignal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._keys: list[LipKey] = []
-        self._selected = -1
-        self._dragging = False
-        self._drag_idx = -1
-        self._playhead_time: float | None = None
-        self._duration_override: float | None = None
-        self._view_start = 0.0
-        self._view_span_ratio = 0.45
-        self._range_drag_mode: str | None = None
-        self._range_drag_x = 0.0
-        self._range_drag_start = 0.0
-        self._range_drag_end = 0.0
-        self._drag_mode: str | None = None
-        self._drag_next_idx = -1
-        self._drag_x = 0.0
-        self._drag_start_time = 0.0
-        self._drag_end_time = 0.0
-        self._scrubbing_playhead = False
-        self._waveform: list[float] = []
-        self._waveform_duration = 0.0
-        self._tool_mode = "cursor"
-        self._snap_enabled = True
-        self._locked_indices: set[int] = set()
-        self.setMinimumHeight(210)
-        self.setMouseTracking(True)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-
-    def set_keys(self, keys: list[LipKey], selected: int = -1):
-        self._keys = keys
-        self._selected = selected
-        self._clamp_view_range()
-        self.update()
-
-    def set_playhead_time(self, time_value: float | None):
-        self._playhead_time = time_value
-        self.update()
-
-    def set_waveform(self, peaks: list[float] | None, duration: float = 0.0):
-        self._waveform = list(peaks or [])
-        self._waveform_duration = max(0.0, float(duration or 0.0))
-        self.update()
-
-    def set_tool_mode(self, mode: str):
-        self._tool_mode = "blade" if mode == "blade" else "cursor"
-        self.update()
-
-    def set_snap_enabled(self, enabled: bool):
-        self._snap_enabled = bool(enabled)
-
-    def set_locked_indices(self, indices: set[int] | list[int] | tuple[int, ...]):
-        self._locked_indices = {int(idx) for idx in indices}
-        self.update()
-
-    def set_duration_override(self, duration: float | None):
-        self._duration_override = duration if duration and duration > 0 else None
-        self._clamp_view_range()
-        self.update()
-
-    def _duration(self) -> float:
-        if not self._keys:
-            return self._duration_override or 1.0
-        max_time = max(key.time for key in self._keys)
-        if self._duration_override is not None:
-            return max(0.001, self._duration_override)
-        return max(1.0, max_time + max(0.25, max_time * 0.1))
-
-    def _visible_duration(self) -> float:
-        duration = self._duration()
-        return min(duration, max(self._min_visible_duration(), duration * self._view_span_ratio))
-
-    def _min_visible_duration(self) -> float:
-        duration = self._duration()
-        return min(duration, max(0.15, duration * 0.04))
-
-    def _view_end(self) -> float:
-        return min(self._duration(), self._view_start + self._visible_duration())
-
-    def _max_view_start(self) -> float:
-        return max(0.0, self._duration() - self._visible_duration())
-
-    def _clamp_view_range(self):
-        duration = self._duration()
-        self._view_span_ratio = max(self._min_visible_duration() / duration, min(1.0, self._view_span_ratio))
-        max_start = self._max_view_start()
-        self._view_start = min(max(self._view_start, 0.0), max_start)
-
-    def _set_view_range(self, start: float, end: float):
-        duration = self._duration()
-        min_span = self._min_visible_duration()
-        start = max(0.0, min(duration - min_span, start))
-        end = max(start + min_span, min(duration, end))
-        if end - start > duration:
-            start, end = 0.0, duration
-        self._view_start = start
-        self._view_span_ratio = max(min_span / duration, min(1.0, (end - start) / duration))
-        self._clamp_view_range()
-        self.update()
-        self.viewRangeChanged.emit(self._view_start, self._view_end())
-
-    def view_range(self) -> tuple[float, float]:
-        return self._view_start, self._view_end()
-
-    def timeline_duration(self) -> float:
-        return self._duration()
-
-    def set_view_range(self, start: float, end: float):
-        self._set_view_range(start, end)
-
-    def shift_view(self, direction: float):
-        span = self._visible_duration()
-        delta = span * 0.35 * direction
-        self._set_view_range(self._view_start + delta, self._view_end() + delta)
-
-    def zoom_view(self, factor: float):
-        duration = self._duration()
-        start = self._view_start
-        end = self._view_end()
-        center = (start + end) * 0.5
-        new_span = max(self._min_visible_duration(), min(duration, (end - start) * factor))
-        self._set_view_range(center - new_span * 0.5, center + new_span * 0.5)
-
-    def zoom_normalized(self) -> float:
-        duration = self._duration()
-        min_span = self._min_visible_duration()
-        span_range = max(0.000001, duration - min_span)
-        return max(0.0, min(1.0, (duration - self._visible_duration()) / span_range))
-
-    def set_zoom_normalized(self, value: float):
-        duration = self._duration()
-        min_span = self._min_visible_duration()
-        value = max(0.0, min(1.0, float(value)))
-        span = duration - (duration - min_span) * value
-        center = (self._view_start + self._view_end()) * 0.5
-        self._set_view_range(center - span * 0.5, center + span * 0.5)
-
-    def fit_view(self):
-        self._set_view_range(0.0, self._duration())
-
-    def _ordered_key_indices(self) -> list[int]:
-        return sorted(range(len(self._keys)), key=lambda idx: (self._keys[idx].time, idx))
-
+class LipTimelineWidget(ClipTimelineWidget):
     def _is_neutral_key(self, key: LipKey) -> bool:
         return key.animation.upper().rstrip().endswith("_N")
 
-    def _is_locked(self, idx: int) -> bool:
-        return idx in self._locked_indices
 
-    def _key_time_limits(self, idx: int) -> tuple[float, float]:
-        ordered = self._ordered_key_indices()
-        if idx not in ordered:
-            return 0.0, self._duration()
-        pos = ordered.index(idx)
-        epsilon = min(0.01, max(0.001, self._duration() * 0.0005))
-        min_time = 0.0
-        max_time = self._duration()
-        if pos > 0:
-            min_time = self._keys[ordered[pos - 1]].time + epsilon
-        if pos < len(ordered) - 1:
-            max_time = self._keys[ordered[pos + 1]].time - epsilon
-        return min(min_time, max_time), max(min_time, max_time)
+    def _color_for_key(self, key: LipKey) -> QColor:
+        token = key.animation.upper()
+        if token.endswith("_A"):
+            return QColor(P["accent"])
+        if token.endswith("_U"):
+            return QColor(P["secondary"])
+        if token.endswith("_O"):
+            return QColor(P["highlight"])
+        if token.endswith("_E"):
+            return QColor(P["accent_dim"])
+        if token.endswith("_I"):
+            return QColor(P["secondary"]).lighter(118)
+        return QColor(P["text_dim"])
 
-    def _segment_time_range(self, idx: int) -> tuple[float, float]:
-        if (
-            self._dragging
-            and self._drag_mode == "body"
-            and idx == self._drag_idx
-            and 0 <= self._drag_next_idx < len(self._keys)
-        ):
-            start = max(0.0, self._keys[self._drag_idx].time)
-            end = max(start, self._keys[self._drag_next_idx].time)
-            return start, end
-        ordered = self._ordered_key_indices()
-        if idx not in ordered:
-            return 0.0, 0.0
-        pos = ordered.index(idx)
-        start = max(0.0, self._keys[idx].time)
-        end = self._duration()
-        if pos < len(ordered) - 1:
-            end = self._keys[ordered[pos + 1]].time
-        return start, max(start, end)
-
-    def _segment_next_index(self, idx: int) -> int:
-        if (
-            self._dragging
-            and self._drag_mode == "body"
-            and idx == self._drag_idx
-            and 0 <= self._drag_next_idx < len(self._keys)
-        ):
-            return self._drag_next_idx
-        ordered = self._ordered_key_indices()
-        if idx not in ordered:
-            return -1
-        pos = ordered.index(idx)
-        return ordered[pos + 1] if pos < len(ordered) - 1 else -1
 
     def _ensure_gap_before_segment(self, idx: int) -> int:
         ordered = self._ordered_key_indices()
@@ -824,471 +650,13 @@ class LipTimelineWidget(QWidget):
         }
         return idx + 1
 
-    def _visible_segment_indices(self) -> list[int]:
-        view_start = self._view_start
-        view_end = self._view_end()
-        indices: list[int] = []
-        for idx in self._ordered_key_indices():
-            key = self._keys[idx]
-            if self._is_neutral_key(key):
-                continue
-            start, end = self._segment_time_range(idx)
-            if end >= view_start and start <= view_end:
-                indices.append(idx)
-        return indices
 
-    def _track_bounds(self) -> tuple[int, int]:
-        left = 10
-        return left, max(left + 1, self.width() - 10)
+    def _label_for_key(self, key):
+        return key.animation.rsplit('_', 1)[-1] if '_' in key.animation else key.animation
 
-    def _scrollbar_track_rect(self) -> QRectF:
-        left, right = self._track_bounds()
-        return QRectF(left, max(0, self.height() - 18), right - left, 8)
+    def _format_time(self, value):
+        return ui_text('ui_lipsync_time_tick', time=value)
 
-    def _ruler_y(self) -> int:
-        return 54
-
-    def _lane_rect(self) -> QRectF:
-        left, right = self._track_bounds()
-        top = self._ruler_y() + 8
-        bottom = max(top + 60, self.height() - 12)
-        return QRectF(left, top, right - left, bottom - top)
-
-    def _scrollbar_thumb_rect(self) -> QRectF:
-        track = self._scrollbar_track_rect()
-        duration = self._duration()
-        start_ratio = self._view_start / duration
-        end_ratio = self._view_end() / duration
-        return QRectF(
-            track.left() + track.width() * start_ratio,
-            track.top() - 1,
-            track.width() * max(0.0, end_ratio - start_ratio),
-            track.height() + 2,
-        )
-
-    def _scrollbar_hit_mode(self, pos) -> str | None:
-        track = self._scrollbar_track_rect().adjusted(0, -3, 0, 3)
-        if not track.contains(pos):
-            return None
-        thumb = self._scrollbar_thumb_rect().adjusted(-2, -5, 2, 5)
-        edge_width = 10
-        if abs(pos.x() - thumb.left()) <= edge_width:
-            return "left"
-        if abs(pos.x() - thumb.right()) <= edge_width:
-            return "right"
-        if self._duration() <= self._visible_duration() + 0.0001:
-            return None
-        if thumb.contains(pos):
-            return "move"
-        return "jump"
-
-    def _x_for_time(self, value: float) -> int:
-        left, right = self._track_bounds()
-        ratio = (value - self._view_start) / max(0.000001, self._visible_duration())
-        return int(left + (right - left) * ratio)
-
-    def _time_for_x(self, x: float, duration: float | None = None) -> float:
-        left, right = self._track_bounds()
-        ratio = min(1.0, max(0.0, (x - left) / (right - left)))
-        return min(self._duration(), max(0.0, self._view_start + ratio * (duration if duration is not None else self._visible_duration())))
-
-    def _color_for_key(self, key: LipKey) -> QColor:
-        token = key.animation.upper()
-        if token.endswith("_A"):
-            return QColor(P["accent"])
-        if token.endswith("_U"):
-            return QColor(P["secondary"])
-        if token.endswith("_O"):
-            return QColor(P["highlight"])
-        if token.endswith("_E"):
-            return QColor(P["accent_dim"])
-        if token.endswith("_I"):
-            return QColor(P["secondary"]).lighter(118)
-        return QColor(P["text_dim"])
-
-    def _segment_rect(self, idx: int) -> QRectF:
-        start, end = self._segment_time_range(idx)
-        view_start = self._view_start
-        view_end = self._view_end()
-        clipped_start = max(start, view_start)
-        clipped_end = min(end, view_end)
-        left, right = self._track_bounds()
-        x1 = max(left, min(right, self._x_for_time(clipped_start)))
-        x2 = max(left, min(right, self._x_for_time(clipped_end)))
-        if x2 - x1 < 5:
-            x2 = min(right, x1 + 5)
-        lane = self._lane_rect()
-        lane_h = 38
-        lane_y = lane.center().y() - lane_h // 2
-        return QRectF(x1, lane_y, max(1.0, x2 - x1), lane_h)
-
-    def _segment_hit(self, pos) -> tuple[str, int] | None:
-        edge_width = 12
-        for idx in reversed(self._visible_segment_indices()):
-            base_rect = self._segment_rect(idx)
-            hit_rect = base_rect.adjusted(-edge_width, -4, edge_width, 4)
-            if not hit_rect.contains(pos):
-                continue
-            short_segment = base_rect.width() <= edge_width * 2.4
-            center_x = base_rect.center().x()
-            if short_segment:
-                return ("left" if pos.x() <= center_x else "right"), idx
-            if abs(pos.x() - base_rect.left()) <= edge_width:
-                return "left", idx
-            next_idx = self._segment_next_index(idx)
-            if next_idx >= 0 and abs(pos.x() - base_rect.right()) <= edge_width:
-                return "right", idx
-            return "body", idx
-        return None
-
-    def _lock_rect(self, idx: int) -> QRectF:
-        clip_rect = self._segment_rect(idx)
-        size = 15
-        return QRectF(clip_rect.right() - size - 4, clip_rect.top() + 5, size, size)
-
-    def _lock_hit(self, pos) -> int:
-        for idx in reversed(self._visible_segment_indices()):
-            if self._lock_rect(idx).adjusted(-3, -3, 3, 3).contains(pos):
-                return idx
-        return -1
-
-    def _snap_time(self, value: float, exclude: set[int] | None = None) -> float:
-        if not self._snap_enabled:
-            return value
-        exclude = exclude or set()
-        threshold = max(0.015, self._visible_duration() * 0.018)
-        candidates = [0.0, self._duration()]
-        candidates.extend(key.time for idx, key in enumerate(self._keys) if idx not in exclude)
-        best = min(candidates, key=lambda candidate: abs(candidate - value))
-        return best if abs(best - value) <= threshold else value
-
-    def _timeline_lane_rect(self) -> QRectF:
-        return self._lane_rect()
-
-    def _playhead_hit(self, pos) -> bool:
-        if self._playhead_time is None:
-            return False
-        x = self._x_for_time(self._playhead_time)
-        marker = QRectF(x - 8, 4, 16, 16)
-        center = QRectF(x - 7, self._lane_rect().center().y() - 7, 14, 14)
-        return marker.contains(pos) or center.contains(pos)
-
-    def _ruler_hit(self, pos) -> bool:
-        left, right = self._track_bounds()
-        ruler_y = self._ruler_y()
-        return QRectF(left, ruler_y - 34, right - left, 42).contains(pos)
-
-    def _set_scrub_position_from_x(self, x: float):
-        time_value = self._time_for_x(x)
-        self._playhead_time = time_value
-        self.playheadScrubbed.emit(time_value)
-        self.update()
-
-    def _paint_waveform(self, painter: QPainter, lane: QRectF):
-        if not self._waveform or self._waveform_duration <= 0:
-            return
-        view_start = self._view_start
-        view_end = self._view_end()
-        sample_count = len(self._waveform)
-        if sample_count <= 0:
-            return
-
-        visible_start = max(0, int(math.floor((view_start / self._waveform_duration) * sample_count)))
-        visible_end = min(sample_count, int(math.ceil((view_end / self._waveform_duration) * sample_count)) + 1)
-        if visible_end <= visible_start:
-            return
-
-        center_y = lane.center().y()
-        max_h = lane.height() * 0.42
-        waveform_color = QColor(P["text_dim"])
-        waveform_color.setAlpha(70)
-        painter.setPen(QPen(waveform_color, 1))
-
-        left, right = self._track_bounds()
-        last_x = -1000
-        column_peak = 0.0
-        for idx in range(visible_start, visible_end):
-            time_value = self._waveform_duration * (idx / max(1, sample_count - 1))
-            x = max(left, min(right, self._x_for_time(time_value)))
-            peak = self._waveform[idx]
-            if x == last_x:
-                column_peak = max(column_peak, peak)
-                continue
-            if last_x >= left:
-                half_h = max(1.0, column_peak * max_h)
-                painter.drawLine(last_x, int(center_y - half_h), last_x, int(center_y + half_h))
-            last_x = x
-            column_peak = peak
-        if last_x >= left:
-            half_h = max(1.0, column_peak * max_h)
-            painter.drawLine(last_x, int(center_y - half_h), last_x, int(center_y + half_h))
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-
-        rect = self.rect()
-        painter.fillRect(rect, QColor(P.get("panel_card_bg", P["bg_panel"])))
-
-        if not self._keys:
-            painter.setPen(QColor(P["text_dim"]))
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, ui_text("ui_lipsync_no_keys"))
-            painter.end()
-            return
-
-        left, right = self._track_bounds()
-        canvas_top = max(0, self._ruler_y() - 36)
-        canvas = QRectF(left, canvas_top, right - left, max(1, rect.height() - canvas_top - 8))
-        painter.setPen(QPen(QColor(P["border"]), 1))
-        painter.setBrush(QColor(P["bg_card"]))
-        painter.drawRoundedRect(canvas, 6, 6)
-
-        lane = self._lane_rect()
-        axis_y = int(lane.center().y())
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(P.get("panel_card_bg", P["bg_panel"])))
-        painter.drawRoundedRect(lane, 6, 6)
-        self._paint_waveform(painter, lane.adjusted(0, 3, 0, -3))
-
-        grid_pen = QPen(QColor(P["border"]), 1)
-        grid_pen.setStyle(Qt.PenStyle.DotLine)
-        painter.setPen(grid_pen)
-        minor_count = max(8, min(64, int(self._visible_duration() * 12)))
-        for tick in range(minor_count + 1):
-            time_value = self._view_start + self._visible_duration() * tick / minor_count
-            x = self._x_for_time(time_value)
-            painter.drawLine(x, int(lane.top()), x, int(lane.bottom()))
-
-        if self._playhead_time is not None:
-            playhead_x = self._x_for_time(self._playhead_time)
-            progress_width = 0
-            if self._playhead_time >= self._view_end():
-                progress_width = right - left
-            elif self._playhead_time >= self._view_start:
-                progress_width = max(0, playhead_x - left)
-            progress = QRectF(left, lane.bottom() - 3, progress_width, 2)
-            painter.setBrush(QColor(P["accent_dim"]))
-            painter.drawRoundedRect(progress, 1, 1)
-
-        view_start = self._view_start
-        view_end = self._view_end()
-        visible_duration = max(0.000001, view_end - view_start)
-        tick_count = max(2, min(10, int(visible_duration * 2) + 2))
-        painter.setFont(QFont("Consolas", 8))
-        painter.setPen(QPen(QColor(P["text_dim"]), 1))
-        ruler_y = self._ruler_y()
-        for tick in range(tick_count + 1):
-            time_value = view_start + visible_duration * tick / tick_count
-            x = self._x_for_time(time_value)
-            painter.drawLine(x, ruler_y - 8, x, ruler_y)
-            painter.drawText(
-                x - 18,
-                ruler_y - 28,
-                36,
-                14,
-                Qt.AlignmentFlag.AlignCenter,
-                ui_text("ui_lipsync_time_tick", time=time_value),
-            )
-
-        for idx in self._visible_segment_indices():
-            key = self._keys[idx]
-            color = self._color_for_key(key)
-            clip_rect = self._segment_rect(idx)
-            fill = QColor(color)
-            fill.setAlpha(210 if idx == self._selected else 165)
-            painter.setBrush(color)
-            painter.setBrush(fill)
-            painter.setPen(QPen(QColor(P["shine"] if idx == self._selected else P["border"]), 1))
-            painter.drawRoundedRect(clip_rect, 5, 5)
-
-            edge = QColor(P["shine"])
-            edge.setAlpha(190 if idx == self._selected else 120)
-            painter.setBrush(edge)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(QRectF(clip_rect.left() + 3, clip_rect.top() + 4, 2, clip_rect.height() - 8), 1, 1)
-            if self._segment_next_index(idx) >= 0 and clip_rect.width() > 16:
-                painter.drawRoundedRect(QRectF(clip_rect.right() - 5, clip_rect.top() + 4, 2, clip_rect.height() - 8), 1, 1)
-
-            label = key.animation.rsplit("_", 1)[-1] if "_" in key.animation else key.animation
-            painter.setPen(QColor(P["shine"]))
-            painter.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
-            if clip_rect.width() >= 24:
-                painter.drawText(clip_rect.adjusted(0, -4, 0, -4), Qt.AlignmentFlag.AlignCenter, label)
-                painter.setFont(QFont("Consolas", 7))
-                start, end = self._segment_time_range(idx)
-                painter.drawText(
-                    clip_rect.adjusted(3, 18, -3, 0),
-                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                    ui_text("ui_lipsync_time_tick", time=max(0.0, end - start)),
-                )
-            elif idx == self._selected:
-                painter.drawText(clip_rect.adjusted(-12, -16, 12, -16), Qt.AlignmentFlag.AlignCenter, label)
-
-            lock_rect = self._lock_rect(idx)
-            if clip_rect.width() >= 34:
-                lock_bg = QColor(P["bg_card"])
-                lock_bg.setAlpha(185)
-                painter.setBrush(lock_bg)
-                painter.setPen(QPen(QColor(P["border"]), 1))
-                painter.drawRoundedRect(lock_rect, 3, 3)
-                lock_color = QColor(P["shine"] if self._is_locked(idx) else P["text_dim"])
-                painter.setPen(QPen(lock_color, 1))
-                body = QRectF(lock_rect.left() + 4, lock_rect.top() + 7, 7, 5)
-                painter.drawRoundedRect(body, 1, 1)
-                painter.drawArc(QRectF(lock_rect.left() + 4, lock_rect.top() + 3, 7, 8), 0, 180 * 16)
-                if not self._is_locked(idx):
-                    painter.drawLine(int(lock_rect.left() + 10), int(lock_rect.top() + 4), int(lock_rect.left() + 13), int(lock_rect.top() + 3))
-
-        if self._playhead_time is not None:
-            x = self._x_for_time(self._playhead_time)
-            if left <= x <= right:
-                painter.setPen(QPen(QColor(P["shine"]), 2))
-                painter.drawLine(x, self._ruler_y() - 8, x, rect.height() - 12)
-                painter.setBrush(QColor(P["shine"]))
-                handle = QPainterPath()
-                handle.moveTo(x, self._ruler_y() - 8)
-                handle.lineTo(x - 6, self._ruler_y() - 18)
-                handle.lineTo(x + 6, self._ruler_y() - 18)
-                handle.closeSubpath()
-                painter.drawPath(handle)
-                painter.drawEllipse(x - 4, axis_y - 4, 8, 8)
-
-        painter.end()
-
-    def mousePressEvent(self, event):
-        if not self._keys:
-            return
-
-        if event.button() == Qt.MouseButton.LeftButton and self._playhead_hit(event.position()):
-            self._scrubbing_playhead = True
-            self.setCursor(Qt.CursorShape.SizeHorCursor)
-            self._set_scrub_position_from_x(event.position().x())
-            return
-
-        if event.button() == Qt.MouseButton.LeftButton and self._ruler_hit(event.position()):
-            self._scrubbing_playhead = True
-            self.setCursor(Qt.CursorShape.SizeHorCursor)
-            self._set_scrub_position_from_x(event.position().x())
-            return
-
-        lock_idx = self._lock_hit(event.position())
-        if event.button() == Qt.MouseButton.LeftButton and lock_idx >= 0:
-            self.lockToggleRequested.emit(lock_idx)
-            return
-
-        segment_hit = self._segment_hit(event.position())
-        if segment_hit:
-            hit_mode, idx = segment_hit
-            self._selected = idx
-            self.keySelected.emit(idx)
-            if self._tool_mode == "blade":
-                if not self._is_locked(idx):
-                    self.editStarted.emit()
-                    self.segmentSplitRequested.emit(idx, self._time_for_x(event.position().x()))
-                self.update()
-                return
-            if self._is_locked(idx):
-                self.update()
-                return
-            if event.button() == Qt.MouseButton.LeftButton:
-                self.editStarted.emit()
-            if hit_mode == "body":
-                idx = self._ensure_gap_before_segment(idx)
-                self._selected = idx
-                self.keySelected.emit(idx)
-            self._dragging = event.button() == Qt.MouseButton.LeftButton
-            self._drag_mode = hit_mode
-            self._drag_idx = idx
-            self._drag_next_idx = self._segment_next_index(idx)
-            self._drag_x = event.position().x()
-            self._drag_start_time, self._drag_end_time = self._segment_time_range(idx)
-            if self._dragging:
-                if hit_mode == "right" and self._drag_next_idx < 0:
-                    self._dragging = False
-                    self._drag_mode = None
-                elif hit_mode == "body" and self._drag_next_idx < 0:
-                    self._drag_mode = "left"
-                self.setCursor(Qt.CursorShape.SizeAllCursor if self._drag_mode == "body" else Qt.CursorShape.SizeHorCursor)
-            self.update()
-            return
-
-    def mouseMoveEvent(self, event):
-        if not self._keys:
-            return
-        if self._scrubbing_playhead:
-            self._set_scrub_position_from_x(event.position().x())
-            return
-        if self._dragging and 0 <= self._drag_idx < len(self._keys):
-            if self._drag_mode == "body" and 0 <= self._drag_next_idx < len(self._keys):
-                left, right = self._track_bounds()
-                delta = (event.position().x() - self._drag_x) / max(1.0, right - left) * self._visible_duration()
-                span = self._drag_end_time - self._drag_start_time
-                raw_start = max(0.0, min(max(0.0, self._duration() - span), self._drag_start_time + delta))
-                raw_end = raw_start + span
-                snapped_start = self._snap_time(raw_start, {self._drag_idx, self._drag_next_idx})
-                snapped_end = self._snap_time(raw_end, {self._drag_idx, self._drag_next_idx})
-                if abs(snapped_start - raw_start) <= abs(snapped_end - raw_end):
-                    start_time = max(0.0, min(max(0.0, self._duration() - span), snapped_start))
-                    end_time = start_time + span
-                else:
-                    end_time = max(span, min(self._duration(), snapped_end))
-                    start_time = end_time - span
-                self._keys[self._drag_idx].time = start_time
-                self._keys[self._drag_next_idx].time = end_time
-                self.keyMoved.emit(self._drag_idx, start_time)
-                self.keyMoved.emit(self._drag_next_idx, end_time)
-                self._selected = self._drag_idx
-                self.keySelected.emit(self._drag_idx)
-            else:
-                target_idx = self._drag_next_idx if self._drag_mode == "right" else self._drag_idx
-                new_time = self._time_for_x(event.position().x())
-                min_time, max_time = self._key_time_limits(target_idx)
-                new_time = max(min_time, min(max_time, new_time))
-                new_time = max(min_time, min(max_time, self._snap_time(new_time, {target_idx})))
-                self._keys[target_idx].time = new_time
-                self.keyMoved.emit(target_idx, new_time)
-                if self._drag_mode == "right":
-                    self._selected = self._drag_idx
-                    self.keySelected.emit(self._drag_idx)
-            self.update()
-            return
-        if self._lock_hit(event.position()) >= 0:
-            self.setCursor(Qt.CursorShape.PointingHandCursor)
-            return
-        segment_hit = self._segment_hit(event.position())
-        if segment_hit:
-            hit_mode, _idx = segment_hit
-            if self._tool_mode == "blade":
-                self.setCursor(Qt.CursorShape.CrossCursor)
-            else:
-                self.setCursor(Qt.CursorShape.SizeAllCursor if hit_mode == "body" else Qt.CursorShape.SizeHorCursor)
-            return
-        if self._playhead_hit(event.position()):
-            self.setCursor(Qt.CursorShape.SizeHorCursor)
-            return
-        if self._ruler_hit(event.position()):
-            self.setCursor(Qt.CursorShape.SizeHorCursor)
-            return
-        if not self._visible_segment_indices():
-            self.setCursor(Qt.CursorShape.ArrowCursor)
-            return
-        self.setCursor(Qt.CursorShape.ArrowCursor)
-
-    def mouseReleaseEvent(self, event):
-        if self._dragging and self._drag_mode == "body" and 0 <= self._drag_idx < len(self._keys):
-            selected_key = self._keys[self._drag_idx]
-            self._keys.sort(key=lambda key: key.time)
-            self._selected = self._keys.index(selected_key) if selected_key in self._keys else -1
-            if self._selected >= 0:
-                self.keySelected.emit(self._selected)
-        self._dragging = False
-        self._drag_idx = -1
-        self._drag_next_idx = -1
-        self._drag_mode = None
-        self._range_drag_mode = None
-        self._scrubbing_playhead = False
-        self.unsetCursor()
-        self.update()
 
 
 class LipMouthPreviewWidget(QWidget):
@@ -1442,168 +810,36 @@ class LipMouthPreviewWidget(QWidget):
             painter.drawLine(int(cx - w * 0.15), int(cy), int(cx + w * 0.15), int(cy))
 
         painter.setPen(QColor(P["text_dim"]))
-        painter.setFont(QFont("Consolas", 8))
+        painter.setFont(mono_font(TypeSize.CAPTION))
         painter.drawText(rect.adjusted(6, 4, -6, -4), Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, self._token)
         painter.end()
 
 
-class LipTimelineOverviewWidget(QWidget):
-    viewRangeChanged = pyqtSignal(float, float)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._keys: list[LipKey] = []
-        self._duration = 1.0
-        self._view_start = 0.0
-        self._view_end = 1.0
-        self._dragging = False
-        self._drag_mode: str | None = None
-        self._drag_x = 0.0
-        self._drag_start = 0.0
-        self._drag_end = 1.0
-        self.setFixedHeight(34)
-        self.setMouseTracking(True)
-
-    def set_data(self, keys: list[LipKey], duration: float, view_start: float, view_end: float):
-        self._keys = keys
-        self._duration = max(0.001, float(duration or 1.0))
-        self._view_start = max(0.0, min(self._duration, float(view_start)))
-        self._view_end = max(self._view_start, min(self._duration, float(view_end)))
-        self.update()
-
-    def _track_rect(self) -> QRectF:
-        return QRectF(6, 8, max(1, self.width() - 12), 18)
-
-    def _x_for_time(self, time_value: float) -> float:
-        track = self._track_rect()
-        return track.left() + track.width() * (time_value / self._duration)
-
-    def _time_for_x(self, x: float) -> float:
-        track = self._track_rect()
-        ratio = max(0.0, min(1.0, (x - track.left()) / max(1.0, track.width())))
-        return ratio * self._duration
-
-    def _thumb_rect(self) -> QRectF:
-        track = self._track_rect()
-        left = self._x_for_time(self._view_start)
-        right = self._x_for_time(self._view_end)
-        return QRectF(left, track.top() - 4, max(14.0, right - left), track.height() + 8)
-
-    def _thumb_hit_mode(self, pos) -> str | None:
-        thumb = self._thumb_rect().adjusted(-4, -4, 4, 4)
-        if not thumb.contains(pos):
-            return None
-        edge = 9
-        if abs(pos.x() - thumb.left()) <= edge:
-            return "left"
-        if abs(pos.x() - thumb.right()) <= edge:
-            return "right"
-        return "move"
-
-    def _emit_view(self, start: float, end: float):
-        span = max(0.03, end - start)
-        start = max(0.0, min(self._duration - span, start))
-        end = start + span
-        self._view_start = start
-        self._view_end = end
-        self.viewRangeChanged.emit(start, end)
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        rect = self.rect()
-        bg = QColor(P.get("bg_card", P["bg_panel"]))
-        bg.setAlpha(70)
-        painter.fillRect(rect, bg)
-        track = self._track_rect()
-        painter.setPen(Qt.PenStyle.NoPen)
-        track_color = QColor(P["mid"])
-        track_color.setAlpha(105)
-        painter.setBrush(track_color)
-        painter.drawRoundedRect(track, 3, 3)
-
+class LipTimelineOverviewWidget(TimelineOverviewWidget):
+    def _segments(self):
+        result = []
         ordered = sorted(range(len(self._keys)), key=lambda idx: (self._keys[idx].time, idx))
         for pos, idx in enumerate(ordered):
             key = self._keys[idx]
-            if key.animation.upper().rstrip().endswith("_N"):
+            if LipTimelineWidget._is_neutral_key(self, key):
                 continue
             start = max(0.0, key.time)
             end = self._duration
             if pos < len(ordered) - 1:
                 end = max(start, self._keys[ordered[pos + 1]].time)
-            x1 = self._x_for_time(start)
-            x2 = self._x_for_time(end)
-            color = QColor(P["text_dim"])
+            color = QColor(P['text_dim'])
             token = key.animation.upper()
-            if token.endswith("_A"):
-                color = QColor(P["accent"])
-            elif token.endswith("_U") or token.endswith("_I"):
-                color = QColor(P["secondary"])
-            elif token.endswith("_O"):
-                color = QColor(P["highlight"])
-            elif token.endswith("_E"):
-                color = QColor(P["accent_dim"])
-            color.setAlpha(170)
-            painter.setBrush(color)
-            painter.drawRoundedRect(QRectF(x1, track.top() + 3, max(2.0, x2 - x1), track.height() - 6), 2, 2)
+            if token.endswith('_A'):
+                color = QColor(P['accent'])
+            elif token.endswith('_U') or token.endswith('_I'):
+                color = QColor(P['secondary'])
+            elif token.endswith('_O'):
+                color = QColor(P['highlight'])
+            elif token.endswith('_E'):
+                color = QColor(P['accent_dim'])
+            result.append((start, end, color))
+        return result
 
-        thumb = self._thumb_rect()
-        thumb_fill = QColor(P.get("bg_card_hov", P["bg_panel"]))
-        thumb_fill.setAlpha(108)
-        thumb_border = QColor(P["border_hov"] if self._dragging else P["border"])
-        thumb_border.setAlpha(195)
-        painter.setBrush(thumb_fill)
-        painter.setPen(QPen(thumb_border, 1))
-        painter.drawRoundedRect(thumb, 5, 5)
-        highlight = QColor(P["shine"])
-        highlight.setAlpha(45)
-        painter.setBrush(highlight)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(thumb.adjusted(2, 2, -2, -thumb.height() / 2), 4, 4)
-        grip_color = QColor(P["shine"])
-        grip_color.setAlpha(215)
-        painter.setBrush(grip_color)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(QRectF(thumb.left() + 5, thumb.top() + 6, 2, thumb.height() - 12), 1, 1)
-        painter.drawRoundedRect(QRectF(thumb.right() - 7, thumb.top() + 6, 2, thumb.height() - 12), 1, 1)
-        painter.end()
-
-    def mousePressEvent(self, event):
-        if event.button() != Qt.MouseButton.LeftButton:
-            return
-        self._drag_mode = self._thumb_hit_mode(event.position())
-        if self._drag_mode is None:
-            return
-        self._dragging = True
-        self._drag_x = event.position().x()
-        self._drag_start = self._view_start
-        self._drag_end = self._view_end
-        self.setCursor(Qt.CursorShape.ClosedHandCursor if self._drag_mode == "move" else Qt.CursorShape.SizeHorCursor)
-
-    def mouseMoveEvent(self, event):
-        if not self._dragging:
-            mode = self._thumb_hit_mode(event.position())
-            if mode in ("left", "right"):
-                self.setCursor(Qt.CursorShape.SizeHorCursor)
-            elif mode == "move":
-                self.setCursor(Qt.CursorShape.OpenHandCursor)
-            else:
-                self.setCursor(Qt.CursorShape.ArrowCursor)
-            return
-        delta = self._time_for_x(event.position().x()) - self._time_for_x(self._drag_x)
-        if self._drag_mode == "move":
-            span = self._drag_end - self._drag_start
-            self._emit_view(self._drag_start + delta, self._drag_start + delta + span)
-        elif self._drag_mode == "left":
-            self._emit_view(min(self._drag_end - 0.03, self._drag_start + delta), self._drag_end)
-        elif self._drag_mode == "right":
-            self._emit_view(self._drag_start, max(self._drag_start + 0.03, self._drag_end + delta))
-
-    def mouseReleaseEvent(self, event):
-        self._dragging = False
-        self._drag_mode = None
-        self.unsetCursor()
 
 
 class LipSyncEditor(QWidget):
@@ -1687,7 +923,8 @@ class LipSyncEditor(QWidget):
         self._sig_reference_audio_error.connect(self._on_reference_audio_error)
         self.destroyed.connect(lambda _=None: self._cleanup_audio_previews())
         self._build_ui()
-        self._install_timeline_shortcuts()
+        install_file_actions(self, self._btn_save, save_to=lambda path: self._save_file(target_path=path))
+        install_editor_chrome(self)
 
     def _tr(self, key: str, **kw) -> str:
         try:
@@ -1695,179 +932,121 @@ class LipSyncEditor(QWidget):
         except TypeError:
             return ui_text(key, **kw)
 
-    def _install_timeline_shortcuts(self):
-        shortcuts = (
-            ("Ctrl+Z", self._undo_timeline),
-            ("Ctrl+Shift+Z", self._redo_timeline),
-            ("Delete", self._delete_key),
-            ("Ctrl+C", self._copy_selected_segment),
-        )
-        for sequence, callback in shortcuts:
-            shortcut = QShortcut(QKeySequence(sequence), self)
-            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-            shortcut.activated.connect(callback)
-
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        configure_layout(root, LayoutRole.ROOT)
 
-        top = QFrame()
-        top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(ss_bg_panel())
-        top_layout = QHBoxLayout(top)
-        top_layout.setContentsMargins(12, 8, 12, 8)
-        top_layout.setSpacing(4)
+        top = EditorToolbar()
+        top_layout = top.content_layout
 
         self._btn_open = QPushButton(ui_text("btn_open_file"))
-        self._btn_open.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_open.setFont(QFont("Segoe UI", 10))
-        self._btn_open.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._btn_open, accent=True)
         self._btn_open.clicked.connect(self._open_file)
+        self._btn_open.setProperty("designAction", 'open')
         top_layout.addWidget(self._btn_open)
 
         self._btn_save = QPushButton(ui_text("btn_save_file"))
-        self._btn_save.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_save.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self._btn_save.setEnabled(False)
-        self._btn_save.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._btn_save, accent=True)
         self._btn_save.clicked.connect(self._save_file)
         top_layout.addWidget(self._btn_save)
 
         self._btn_load_audio_container = QPushButton(ui_text("ui_lipsync_load_audio_container"))
-        self._btn_load_audio_container.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_load_audio_container.setFont(QFont("Segoe UI", 10))
         self._btn_load_audio_container.setEnabled(False)
-        self._btn_load_audio_container.setStyleSheet(ss_btn())
+        configure_button(self._btn_load_audio_container)
         self._btn_load_audio_container.clicked.connect(self._load_audio_container_file)
         top_layout.addWidget(self._btn_load_audio_container)
 
         self._file_lbl = QLabel()
-        self._file_lbl.setFont(QFont("Consolas", 12))
+        self._file_lbl.setFont(mono_font(TypeSize.LABEL))
         set_file_label_empty(self._file_lbl, ui_text("xfa_no_file"))
         top_layout.addWidget(self._file_lbl)
         top_layout.addStretch()
 
         self._btn_load_reference_top = QPushButton(ui_text("ui_lipsync_load_reference_audio"))
-        self._btn_load_reference_top.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_load_reference_top.setFont(QFont("Segoe UI", 10))
         self._btn_load_reference_top.setEnabled(False)
-        self._btn_load_reference_top.setStyleSheet(ss_btn())
+        configure_button(self._btn_load_reference_top)
         self._btn_load_reference_top.clicked.connect(self._load_reference_audio_file)
         top_layout.addWidget(self._btn_load_reference_top)
 
         self._btn_generate_audio_top = QPushButton(ui_text("ui_lipsync_generate_from_audio"))
-        self._btn_generate_audio_top.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_generate_audio_top.setFont(QFont("Segoe UI", 10))
         self._btn_generate_audio_top.setEnabled(False)
-        self._btn_generate_audio_top.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._btn_generate_audio_top, accent=True)
         self._btn_generate_audio_top.clicked.connect(self._generate_keys_from_audio_file)
         top_layout.addWidget(self._btn_generate_audio_top)
 
         root.addWidget(top)
 
-        sep = QFrame()
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
+        sep = EditorSeparator(accent=True)
+
+
         root.addWidget(sep)
 
         main = QWidget()
         main_layout = QHBoxLayout(main)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        configure_layout(main_layout, LayoutRole.ROOT)
 
-        sidebar = QFrame()
+        sidebar = EditorSidebar(width=286)
         self._sidebar = sidebar
-        sidebar.setFixedWidth(286)
-        sidebar.setStyleSheet(ss_bg_panel())
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(8, 8, 8, 4)
-        sidebar_layout.setSpacing(4)
+        sidebar_layout = sidebar.content_layout
 
         self._search = QLineEdit()
-        self._search.setPlaceholderText(ui_text("ui_lipsync_search_clips"))
-        self._search.setFixedHeight(32)
-        self._search.setFont(QFont("Segoe UI", 13))
-        self._search.setStyleSheet(ss_search())
+        configure_search(self._search)
         self._search.textChanged.connect(self._filter_clips)
         sidebar_layout.addWidget(self._search)
 
-        clip_actions = QWidget()
-        clip_actions.setStyleSheet(ss_transparent())
-        clip_actions_layout = QHBoxLayout(clip_actions)
-        clip_actions_layout.setContentsMargins(0, 2, 0, 4)
-        clip_actions_layout.setSpacing(4)
-        action_font = QFont("Segoe UI", 10)
+        clip_actions = EditorActionRow()
+
+        clip_actions_layout = clip_actions.content_layout
+
+
+        action_font = ui_font(TypeSize.BODY)
 
         self._btn_add_clip = QPushButton(ui_text("ui_messageinfo_add"))
-        self._btn_add_clip.setFixedHeight(28)
-        self._btn_add_clip.setFont(action_font)
         self._btn_add_clip.setEnabled(False)
-        self._btn_add_clip.setStyleSheet(ss_btn())
+        configure_button(self._btn_add_clip, height=Size.COMPACT_CONTROL)
         self._btn_add_clip.clicked.connect(self._add_clip)
+        self._btn_add_clip.setProperty("designAction", 'new')
         clip_actions_layout.addWidget(self._btn_add_clip, 1)
 
         self._btn_dup_clip = QPushButton(ui_text("btn_dup_short"))
-        self._btn_dup_clip.setFixedHeight(28)
-        self._btn_dup_clip.setFont(action_font)
         self._btn_dup_clip.setEnabled(False)
-        self._btn_dup_clip.setStyleSheet(ss_btn())
+        configure_button(self._btn_dup_clip, height=Size.COMPACT_CONTROL)
         self._btn_dup_clip.clicked.connect(self._duplicate_clip)
+        self._btn_dup_clip.setProperty("designAction", 'duplicate')
         clip_actions_layout.addWidget(self._btn_dup_clip, 1)
 
         self._btn_del_clip = QPushButton(ui_text("btn_delete"))
-        self._btn_del_clip.setFixedHeight(28)
-        self._btn_del_clip.setFont(action_font)
         self._btn_del_clip.setEnabled(False)
-        self._btn_del_clip.setStyleSheet(ss_btn(danger=True))
+        configure_button(self._btn_del_clip, danger=True, height=Size.COMPACT_CONTROL)
         self._btn_del_clip.clicked.connect(self._delete_clip)
+        self._btn_del_clip.setProperty("designAction", 'delete')
         clip_actions_layout.addWidget(self._btn_del_clip, 1)
         sidebar_layout.addWidget(clip_actions)
 
         self._clip_scroll = QScrollArea()
-        self._clip_scroll.setWidgetResizable(True)
-        self._clip_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._clip_scroll.setStyleSheet(ss_scrollarea_transparent())
+
+
+        configure_scrollarea(self._clip_scroll, transparent=True)
         self._clip_inner = QWidget()
         self._clip_inner.setStyleSheet(ss_transparent())
         self._clip_layout = QVBoxLayout(self._clip_inner)
-        self._clip_layout.setContentsMargins(0, 0, 0, 0)
-        self._clip_layout.setSpacing(1)
+        configure_layout(self._clip_layout, LayoutRole.LIST)
         self._clip_layout.addStretch()
         self._clip_scroll.setWidget(self._clip_inner)
         sidebar_layout.addWidget(self._clip_scroll, 1)
         main_layout.addWidget(sidebar)
 
-        toggle_rail = QFrame()
-        toggle_rail.setFixedWidth(20)
-        toggle_rail.setStyleSheet(ss_bg_panel())
-        toggle_rail_layout = QVBoxLayout(toggle_rail)
-        toggle_rail_layout.setContentsMargins(0, 0, 0, 0)
-        toggle_rail_layout.setSpacing(0)
-        toggle_rail_layout.addStretch()
-        self._btn_toggle_sidebar = QPushButton()
-        self._btn_toggle_sidebar.setFixedSize(20, 58)
-        self._btn_toggle_sidebar.setToolTip(ui_text("ui_lipsync_hide_clips"))
-        self._btn_toggle_sidebar.setIcon(_themed_icon("fa6s.chevron-left", color=P.get("button_text", P["text_main"]), size=12))
-        self._btn_toggle_sidebar.setIconSize(QSize(12, 12))
-        self._btn_toggle_sidebar.setStyleSheet(ss_sidebar_edge_toggle())
-        self._btn_toggle_sidebar.clicked.connect(self._toggle_sidebar)
-        toggle_rail_layout.addWidget(self._btn_toggle_sidebar)
-        toggle_rail_layout.addStretch()
-        self._sidebar_toggle_rail = toggle_rail
-        main_layout.addWidget(toggle_rail)
-
-        divider = QFrame()
+        divider = EditorSeparator(orientation=Qt.Orientation.Vertical)
         self._sidebar_divider = divider
-        divider.setFixedWidth(1)
-        divider.setStyleSheet(ss_sep())
+
+
         main_layout.addWidget(divider)
 
         right = QWidget()
         right.setStyleSheet(ss_bg_dark())
         right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(0)
+        configure_layout(right_layout, LayoutRole.ROOT)
 
         self._placeholder = make_empty_state(
             right,
@@ -1878,14 +1057,13 @@ class LipSyncEditor(QWidget):
         right_layout.addWidget(self._placeholder, 1, Qt.AlignmentFlag.AlignCenter)
 
         self._editor_scroll = QScrollArea()
-        self._editor_scroll.setWidgetResizable(True)
-        self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._editor_scroll.setStyleSheet(ss_scrollarea())
+
+
+        configure_scrollarea(self._editor_scroll)
         self._editor_inner = QWidget()
         self._editor_inner.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_inner)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        configure_layout(self._editor_layout, LayoutRole.PAGE)
         self._editor_scroll.setWidget(self._editor_inner)
         self._editor_scroll.setVisible(False)
         right_layout.addWidget(self._editor_scroll, 1)
@@ -1901,7 +1079,7 @@ class LipSyncEditor(QWidget):
         self._busy_overlay.hide()
 
         overlay_layout = QVBoxLayout(self._busy_overlay)
-        overlay_layout.setContentsMargins(0, 0, 0, 0)
+        overlay_layout.setContentsMargins(*Insets.NONE)
         overlay_layout.addStretch()
 
         card = QFrame()
@@ -1910,16 +1088,16 @@ class LipSyncEditor(QWidget):
         card.setStyleSheet(ss_blocking_overlay_card())
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(22, 18, 22, 18)
-        card_layout.setSpacing(10)
+        card_layout.setSpacing(Size.CARD_GAP)
 
         self._busy_title_lbl = QLabel(ui_text("loading"))
-        self._busy_title_lbl.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        self._busy_title_lbl.setFont(ui_font(TypeSize.SUBHEADING, QFont.Weight.Bold))
         self._busy_title_lbl.setStyleSheet(ss_accent_label())
         self._busy_title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card_layout.addWidget(self._busy_title_lbl)
 
         self._busy_detail_lbl = QLabel("")
-        self._busy_detail_lbl.setFont(QFont("Segoe UI", 10))
+        self._busy_detail_lbl.setFont(ui_font(TypeSize.BODY))
         self._busy_detail_lbl.setStyleSheet(ss_dim_label())
         self._busy_detail_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card_layout.addWidget(self._busy_detail_lbl)
@@ -1939,16 +1117,8 @@ class LipSyncEditor(QWidget):
         self._busy_overlay.setGeometry(self.rect())
 
     def _toggle_sidebar(self):
-        self._sidebar_visible = not self._sidebar_visible
-        if hasattr(self, "_sidebar"):
-            self._sidebar.setVisible(self._sidebar_visible)
-        if hasattr(self, "_sidebar_divider"):
-            self._sidebar_divider.setVisible(self._sidebar_visible)
-        if hasattr(self, "_btn_toggle_sidebar"):
-            tooltip_key = "ui_lipsync_hide_clips" if self._sidebar_visible else "ui_lipsync_show_clips"
-            icon_name = "fa6s.chevron-left" if self._sidebar_visible else "fa6s.chevron-right"
-            self._btn_toggle_sidebar.setToolTip(ui_text(tooltip_key))
-            self._btn_toggle_sidebar.setIcon(_themed_icon(icon_name, color=P.get("button_text", P["text_main"]), size=12))
+        self._sidebar._design_sidebar_pane.toggle()
+
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2014,18 +1184,20 @@ class LipSyncEditor(QWidget):
         self._rebuild_clip_list()
         self._select_clip(0)
 
-    def _save_file(self):
-        if not self._filepath or self._xfbin is None:
+    def _save_file(self, target_path=None):
+        save_path = target_path or editor_path(self)
+        if not save_path or self._xfbin is None:
             return
         try:
-            save_lipsync_xfbin(self._xfbin, self._filepath, self._clips)
+            save_lipsync_xfbin(self._xfbin, save_path, self._clips)
         except Exception as exc:
-            QMessageBox.critical(self, ui_text("dlg_title_error"), ui_text("msg_save_error", error=exc))
+            QMessageBox.critical(self, ui_text('dlg_title_error'), ui_text('msg_save_error', error=exc))
             return
+        commit_save_path(self, save_path)
         self._dirty = False
         self._capture_clip_snapshots()
-        set_file_label(self._file_lbl, self._filepath)
-        QMessageBox.information(self, ui_text("dlg_title_success"), ui_text("msg_save_success", path=self._filepath))
+        set_file_label(self._file_lbl, save_path)
+        QMessageBox.information(self, ui_text('dlg_title_success'), ui_text('msg_save_success', path=save_path))
 
     def _clear_awb_state(self):
         self._awb_path = None
@@ -2280,25 +1452,17 @@ class LipSyncEditor(QWidget):
         _clear_layout(self._clip_layout)
         self._clip_buttons = []
         for idx, clip in enumerate(self._clips):
-            btn = QPushButton()
-            btn.setFixedHeight(52)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(ss_sidebar_btn(selected=(idx == self._selected_clip_idx)))
-            layout = QVBoxLayout(btn)
-            layout.setContentsMargins(10, 4, 10, 4)
-            layout.setSpacing(0)
+            btn = EditorListRow(height=52)
 
-            title = QLabel(clip.name or ui_text("ui_lipsync_unnamed_clip"))
-            title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-            title.setStyleSheet(ss_main_label())
-            title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            layout.addWidget(title)
 
-            subtitle = QLabel(ui_text("ui_lipsync_clip_subtitle", keys=len(clip.keys), duration=clip.duration))
-            subtitle.setFont(QFont("Consolas", 9))
-            subtitle.setStyleSheet(ss_dim_label())
-            subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            layout.addWidget(subtitle)
+            layout = btn.content_layout
+
+
+            title = btn.add_title(clip.name or ui_text('ui_lipsync_unnamed_clip'))
+
+
+            subtitle = btn.add_subtitle(ui_text('ui_lipsync_clip_subtitle', duration=clip.duration), value_font=mono_font(TypeSize.CODE))
+
 
             btn.clicked.connect(lambda checked=False, clip_idx=idx: self._select_clip(clip_idx))
             self._clip_layout.addWidget(btn)
@@ -2431,10 +1595,9 @@ class LipSyncEditor(QWidget):
         preview_card.setFixedWidth(300)
         preview_layout = QVBoxLayout(preview_card)
         preview_layout.setContentsMargins(12, 10, 12, 8)
-        preview_layout.setSpacing(4)
+        preview_layout.setSpacing(Size.GAP_SM)
         preview_header = QHBoxLayout()
-        preview_header.setContentsMargins(0, 0, 0, 0)
-        preview_header.setSpacing(4)
+        configure_layout(preview_header, LayoutRole.FIELD)
         preview_header.addWidget(_panel_title(ui_text("ui_lipsync_mouth_preview")))
         preview_header.addStretch()
         self._btn_mouth_preview_menu = QPushButton()
@@ -2467,30 +1630,28 @@ class LipSyncEditor(QWidget):
 
         work_row = QHBoxLayout()
         work_row.setContentsMargins(8, 0, 8, 0)
-        work_row.setSpacing(8)
+        work_row.setSpacing(Size.GAP)
 
         instruments_card = _card()
         instruments_card.setFixedWidth(150)
         instruments_layout = QVBoxLayout(instruments_card)
-        instruments_layout.setContentsMargins(12, 12, 12, 12)
+        instruments_layout.setContentsMargins(*Insets.PAGE)
         instruments_layout.setSpacing(12)
         instruments_layout.addWidget(_panel_title(ui_text("ui_lipsync_instruments")))
         tool_grid = QGridLayout()
-        tool_grid.setContentsMargins(0, 0, 0, 0)
-        tool_grid.setHorizontalSpacing(8)
-        tool_grid.setVerticalSpacing(8)
+        tool_grid.setContentsMargins(*Insets.NONE)
+        tool_grid.setHorizontalSpacing(Size.GAP)
+        tool_grid.setVerticalSpacing(Size.GAP)
         self._btn_cursor_tool = self._make_tool_button(ui_text("ui_lipsync_tool_cursor"), "cursor")
         self._btn_move_tool = self._make_static_tool_button(ui_text("ui_lipsync_tool_move"), "fa6s.arrows-up-down-left-right")
         self._btn_blade_tool = self._make_tool_button(ui_text("ui_lipsync_tool_blade"), "blade")
         self._btn_snap = QPushButton()
         self._btn_snap.setCheckable(True)
         self._btn_snap.setChecked(self._timeline_snap_enabled)
-        self._btn_snap.setFixedSize(54, 48)
         self._btn_snap.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._btn_snap.setToolTip(ui_text("ui_lipsync_snap"))
         self._btn_snap.setIcon(_themed_icon("fa6s.magnet", color=P.get("button_text", P["text_main"]), size=16))
-        self._btn_snap.setIconSize(QSize(18, 18))
-        self._btn_snap.setStyleSheet(ss_icon_tool_btn())
+        configure_icon_button(self._btn_snap, IconButtonRole.TIMELINE_TOOL)
         self._btn_snap.clicked.connect(self._toggle_snap)
         tool_grid.addWidget(self._btn_cursor_tool, 0, 0)
         tool_grid.addWidget(self._btn_move_tool, 0, 1)
@@ -2503,10 +1664,9 @@ class LipSyncEditor(QWidget):
         timeline_card = _card()
         timeline_layout = QVBoxLayout(timeline_card)
         timeline_layout.setContentsMargins(14, 12, 14, 10)
-        timeline_layout.setSpacing(10)
+        timeline_layout.setSpacing(Size.CARD_GAP)
         timeline_header = QHBoxLayout()
-        timeline_header.setContentsMargins(0, 0, 0, 0)
-        timeline_header.setSpacing(4)
+        configure_layout(timeline_header, LayoutRole.FIELD)
         timeline_header.addWidget(_panel_title(ui_text("ui_lipsync_phoneme_timeline")))
         timeline_header.addStretch()
         self._btn_undo = self._make_icon_button(ui_text("ui_lipsync_undo"), "fa6s.rotate-left", self._undo_timeline)
@@ -2515,34 +1675,19 @@ class LipSyncEditor(QWidget):
         self._btn_delete_segment = self._make_icon_button(ui_text("ui_lipsync_delete_segment"), "fa6s.trash", self._delete_key, danger=True)
         self._btn_reset_clip_timeline = self._make_icon_button(ui_text("ui_lipsync_reset_clip"), "fa6s.arrows-rotate", self._reset_current_clip)
         self._btn_reset_clip_timeline.setEnabled(False)
-        self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
-        self._zoom_slider.setRange(0, 100)
-        self._zoom_slider.setFixedWidth(92)
-        self._zoom_slider.setFixedHeight(28)
-        self._zoom_slider.setToolTip(ui_text("ui_lipsync_zoom_fit"))
-        self._zoom_slider.setStyleSheet(ss_slider())
-        self._zoom_slider.valueChanged.connect(self._set_timeline_zoom_from_slider)
-        zoom_out_lbl = QLabel("-")
-        zoom_out_lbl.setStyleSheet(ss_dim_label())
-        zoom_out_lbl.setFixedWidth(10)
-        zoom_out_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        zoom_in_lbl = QLabel("+")
-        zoom_in_lbl.setStyleSheet(ss_dim_label())
-        zoom_in_lbl.setFixedWidth(10)
-        zoom_in_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._btn_view_fit = self._make_icon_button(ui_text("ui_lipsync_view_fit"), "fa6s.expand", self._fit_timeline)
+        self._btn_reset_clip_timeline.hide()
+        self._zoom_controls = TimelineZoomControls()
+        self._zoom_slider = self._zoom_controls.slider
+        self._btn_view_fit = self._zoom_controls.fit_button
         timeline_header.addWidget(self._btn_undo)
         timeline_header.addWidget(self._btn_redo)
         timeline_header.addWidget(self._btn_copy_segment)
         timeline_header.addWidget(self._btn_delete_segment)
         timeline_header.addWidget(self._btn_reset_clip_timeline)
-        timeline_header.addSpacing(8)
-        timeline_header.addWidget(zoom_out_lbl)
-        timeline_header.addWidget(self._zoom_slider)
-        timeline_header.addWidget(zoom_in_lbl)
-        timeline_header.addWidget(self._btn_view_fit)
+        timeline_header.addWidget(self._zoom_controls)
         timeline_layout.addLayout(timeline_header)
         self._timeline = LipTimelineWidget()
+        self._zoom_controls.bind(self._timeline)
         self._timeline.set_duration_override(self._playback_duration(clip) if self._audio_preview_duration(clip) > 0 else None)
         self._timeline.set_keys(clip.keys, self._selected_key_idx)
         self._timeline.set_waveform(self._current_audio_waveform(), self._audio_preview_duration(clip))
@@ -2563,15 +1708,15 @@ class LipSyncEditor(QWidget):
         phonemes_card = _card()
         phonemes_card.setFixedWidth(150)
         phonemes_layout = QVBoxLayout(phonemes_card)
-        phonemes_layout.setContentsMargins(12, 12, 12, 12)
+        phonemes_layout.setContentsMargins(*Insets.PAGE)
         phonemes_layout.setSpacing(12)
         phonemes_layout.addWidget(_panel_title(ui_text("ui_lipsync_phonemes")))
         mouth_grid_widget = QWidget()
         mouth_grid_widget.setStyleSheet(ss_transparent())
         mouth_grid = QGridLayout(mouth_grid_widget)
-        mouth_grid.setContentsMargins(0, 0, 0, 0)
-        mouth_grid.setHorizontalSpacing(8)
-        mouth_grid.setVerticalSpacing(8)
+        mouth_grid.setContentsMargins(*Insets.NONE)
+        mouth_grid.setHorizontalSpacing(Size.GAP)
+        mouth_grid.setVerticalSpacing(Size.GAP)
         for pos, token in enumerate(("PL_ANM_LIP_NO_A", "PL_ANM_LIP_NO_E", "PL_ANM_LIP_NO_I", "PL_ANM_LIP_NO_O", "PL_ANM_LIP_NO_U", "PL_ANM_LIP_NO_N")):
             mouth_grid.addWidget(self._make_mouth_add_button(token), pos // 2, pos % 2)
         phonemes_layout.addWidget(mouth_grid_widget, 0, Qt.AlignmentFlag.AlignTop)
@@ -2583,10 +1728,9 @@ class LipSyncEditor(QWidget):
         playback_card.setStyleSheet(ss_glass_panel())
         playback_layout = QVBoxLayout(playback_card)
         playback_layout.setContentsMargins(16, 10, 16, 10)
-        playback_layout.setSpacing(8)
+        playback_layout.setSpacing(Size.GAP)
         playback_actions = QHBoxLayout()
-        playback_actions.setContentsMargins(0, 0, 0, 0)
-        playback_actions.setSpacing(4)
+        configure_layout(playback_actions, LayoutRole.FIELD)
         playback_actions.addStretch()
 
         self._btn_jump_start = self._make_icon_button(ui_text("ui_lipsync_jump_start"), "fa6s.backward-step", lambda: self._set_playback_position(0.0))
@@ -2605,15 +1749,14 @@ class LipSyncEditor(QWidget):
         playback_actions.addWidget(self._btn_jump_end)
 
         self._play_time_lbl = QLabel(ui_text("ui_lipsync_time_readout", time=0.0, duration=self._playback_duration(clip)))
-        self._play_time_lbl.setFont(QFont("Consolas", 10))
+        self._play_time_lbl.setFont(mono_font(TypeSize.BODY))
         self._play_time_lbl.setStyleSheet(ss_dim_label())
         self._play_time_lbl.setMinimumWidth(150)
         self._play_time_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         playback_actions.addWidget(self._play_time_lbl)
 
         self._playback_speed_combo = QComboBox()
-        self._playback_speed_combo.setFixedHeight(28)
-        self._playback_speed_combo.setStyleSheet(ss_input())
+        configure_input(self._playback_speed_combo)
         for value in ("0.5x", "0.75x", "1.0x", "1.25x", "1.5x"):
             self._playback_speed_combo.addItem(value)
         self._playback_speed_combo.setCurrentText("1.0x")
@@ -2625,16 +1768,14 @@ class LipSyncEditor(QWidget):
         playback_actions.addWidget(self._btn_loop)
 
         self._btn_mute_audio = QPushButton()
-        self._btn_mute_audio.setFixedHeight(28)
-        self._btn_mute_audio.setFont(QFont("Segoe UI", 10))
-        self._btn_mute_audio.setStyleSheet(ss_btn())
+        configure_button(self._btn_mute_audio, height=Size.COMPACT_CONTROL)
         self._btn_mute_audio.clicked.connect(self._toggle_audio_mute)
         playback_actions.addWidget(self._btn_mute_audio)
         playback_actions.addStretch()
         playback_layout.addLayout(playback_actions)
 
         overview_actions = QHBoxLayout()
-        overview_actions.setContentsMargins(0, 0, 0, 0)
+        overview_actions.setContentsMargins(*Insets.NONE)
         overview_actions.setSpacing(6)
         overview_actions.addWidget(self._make_icon_button(ui_text("ui_lipsync_scroll_left"), "fa6s.chevron-left", lambda: self._shift_timeline(-1.0)))
         self._timeline_overview = LipTimelineOverviewWidget()
@@ -2650,15 +1791,14 @@ class LipSyncEditor(QWidget):
 
         meta = _card()
         meta_outer = QVBoxLayout(meta)
-        meta_outer.setContentsMargins(12, 12, 12, 12)
-        meta_outer.setSpacing(8)
+        configure_layout(meta_outer, LayoutRole.PAGE)
         add_editor_card_title(meta_outer, ui_text("ui_lipsync_clip_metadata"), "fa6s.file-lines")
         meta_inner = QWidget(meta)
         meta_inner.setStyleSheet(ss_transparent())
         meta_layout = QGridLayout(meta_inner)
-        meta_layout.setContentsMargins(0, 4, 0, 0)
+        meta_layout.setContentsMargins(*Insets.GRID_TITLE)
         meta_layout.setHorizontalSpacing(12)
-        meta_layout.setVerticalSpacing(8)
+        meta_layout.setVerticalSpacing(Size.GAP)
 
         self._clip_name_edit = self._make_line(meta, ui_text("ui_lipsync_clip_name"), clip.name)
         self._clip_path_edit = self._make_line(meta, ui_text("ui_lipsync_chunk_path"), clip.file_path)
@@ -2685,7 +1825,6 @@ class LipSyncEditor(QWidget):
     def _make_tool_button(self, text: str, mode: str) -> QPushButton:
         btn = QPushButton()
         btn.setCheckable(True)
-        btn.setFixedSize(54, 48)
         btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn.setToolTip(text)
         btn.setIcon(_themed_icon(
@@ -2693,40 +1832,30 @@ class LipSyncEditor(QWidget):
             color=P.get("button_text", P["text_main"]),
             size=16,
         ))
-        btn.setIconSize(QSize(19, 19))
-        btn.setStyleSheet(ss_icon_tool_btn())
+        configure_icon_button(btn, IconButtonRole.TIMELINE_TOOL)
         btn.clicked.connect(lambda checked=False, m=mode: self._set_timeline_tool(m))
         return btn
 
     def _make_static_tool_button(self, text: str, icon_name: str) -> QPushButton:
         btn = QPushButton()
-        btn.setFixedSize(54, 48)
         btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn.setToolTip(text)
         btn.setIcon(_themed_icon(icon_name, color=P.get("button_text", P["text_main"]), size=16))
-        btn.setIconSize(QSize(19, 19))
-        btn.setStyleSheet(ss_icon_tool_btn())
+        configure_icon_button(btn, IconButtonRole.TIMELINE_TOOL)
         btn.setEnabled(False)
         return btn
 
     def _make_icon_button(self, tooltip: str, icon_name: str, callback, *, danger: bool = False) -> QPushButton:
-        btn = QPushButton()
-        btn.setFixedSize(34, 28)
-        btn.setToolTip(tooltip)
-        btn.setIcon(_themed_icon(icon_name, color=P.get("button_text", P["text_main"]), size=16))
-        btn.setIconSize(QSize(17, 17))
-        btn.setStyleSheet(ss_btn(danger=danger))
-        btn.clicked.connect(callback)
-        return btn
+        return timeline_icon_button(tooltip, icon_name, callback, danger=danger)
 
     def _make_mouth_add_button(self, token: str) -> QPushButton:
         suffix = token.rsplit("_", 1)[-1] if "_" in token else token
         btn = QPushButton(suffix)
         btn.setFixedSize(54, 56)
-        btn.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
-        btn.setStyleSheet(ss_btn(accent=(suffix != "N")))
+        configure_button(btn, accent=suffix != 'N')
         btn.setToolTip(ui_text("ui_lipsync_add_mouth_segment", token=suffix))
         btn.clicked.connect(lambda checked=False, t=token: self._add_segment_token(t))
+        btn.setProperty("designAction", 'new')
         return btn
 
     def _set_timeline_tool(self, mode: str):
@@ -2887,6 +2016,12 @@ class LipSyncEditor(QWidget):
         self._restore_keys_for_current_clip(stack.pop())
 
     def shortcut_action(self, action_id: str) -> bool:
+        if action_id == "editor.copy":
+            self._copy_selected_segment()
+            return True
+        if action_id == "editor.delete":
+            self._delete_key()
+            return True
         if action_id == "editor.undo":
             self._undo_timeline()
             return True
@@ -2899,16 +2034,13 @@ class LipSyncEditor(QWidget):
         container = QWidget(parent)
         container.setStyleSheet(ss_transparent())
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        configure_layout(layout, LayoutRole.TITLE_TEXT)
         label = QLabel(label_text)
-        label.setFont(QFont("Segoe UI", 11))
+        label.setFont(ui_font(TypeSize.CODE))
         label.setStyleSheet(ss_field_label())
         layout.addWidget(label)
         edit = QLineEdit(value)
-        edit.setFixedHeight(30)
-        edit.setFont(QFont("Consolas", 11))
-        edit.setStyleSheet(ss_input())
+        configure_input(edit, monospace=True)
         layout.addWidget(edit)
         return container, edit
 
@@ -2919,14 +2051,14 @@ class LipSyncEditor(QWidget):
         spin.setSingleStep(0.01 if field == "time" else 1.0)
         spin.setKeyboardTracking(False)
         spin.setValue(float(value))
-        spin.setStyleSheet(ss_input())
+        configure_input(spin)
         spin.valueChanged.connect(lambda val, r=row, f=field: self._set_key_float(r, f, val))
         return spin
 
     def _make_combo(self, value: str, options: list[str], row: int, field: str, max_len: int) -> QComboBox:
         combo = QComboBox()
         combo.setEditable(True)
-        combo.setStyleSheet(ss_input())
+        configure_input(combo)
         for option in options:
             combo.addItem(option)
         if value and combo.findText(value) < 0:
@@ -3806,7 +2938,7 @@ class LipSyncEditor(QWidget):
         for _btn, idx, title, subtitle in self._clip_buttons:
             if idx == self._selected_clip_idx:
                 title.setText(clip.name or ui_text("ui_lipsync_unnamed_clip"))
-                subtitle.setText(ui_text("ui_lipsync_clip_subtitle", keys=len(clip.keys), duration=clip.duration))
+                subtitle.setText(ui_text("ui_lipsync_clip_subtitle", duration=clip.duration))
                 break
 
     def _mark_dirty(self):

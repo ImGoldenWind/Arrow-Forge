@@ -1,5 +1,29 @@
 """editors/btladjprm_editor.py  –  Editor for btladjprm.bin.xfbin (Battle Adjust Params)."""
 
+from core.design_tokens import (
+    LayoutRole,
+    Size,
+)
+from core.style_helpers import (
+    make_editor_field_shell,
+    make_editor_grid_card,
+    make_empty_state,
+    ss_bg_dark,
+)
+from core.ui.editor_widgets import (
+    EditorSeparator,
+    EditorToolbar,
+    configure_button,
+    configure_card,
+    configure_field,
+    configure_file_label,
+    configure_input,
+    configure_layout,
+    configure_scrollarea,
+    configure_search,
+)
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.editor_actions import commit_save_path, install_file_actions
 import os
 
 from PyQt6.QtWidgets import (
@@ -10,15 +34,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 
-from core.style_helpers import (
-    make_empty_state,
-    make_editor_field_shell,
-    make_editor_grid_card,
-    ss_btn, ss_sep, ss_accent_sep, ss_search, ss_file_label,
-    ss_scrollarea, ss_dim_label, ss_input, ss_transparent,
-    ss_bg_dark, ss_bg_panel,
-    TOOLBAR_H, TOOLBAR_BTN_H,
-)
 from core.editor_file_state import set_file_label
 from parsers.btladjprm_parser import parse_btladjprm_xfbin, save_btladjprm_xfbin
 from core.translations import ui_text
@@ -141,90 +156,76 @@ class BtlAdjPrmEditor(QWidget):
         self._last_compact = None
 
         self._build_ui()
+        install_file_actions(self, self._btn_save, save_to=self._save_to)
+        install_editor_chrome(self)
 
     # UI construction
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        configure_layout(root, LayoutRole.ROOT)
 
         # Toolbar
-        top = QFrame()
-        top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(ss_bg_panel())
-        lo = QHBoxLayout(top)
-        lo.setContentsMargins(12, 8, 12, 8)
-        lo.setSpacing(4)
+        top = EditorToolbar()
+        lo = top.content_layout
 
         self._btn_open = QPushButton(ui_text("btn_open_file"))
-        self._btn_open.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_open.setFont(QFont("Segoe UI", 10))
-        self._btn_open.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._btn_open, accent=True)
         self._btn_open.clicked.connect(self._on_open)
+        self._btn_open.setProperty("designAction", 'open')
         lo.addWidget(self._btn_open)
 
         self._btn_save = QPushButton(ui_text("btn_save_file"))
-        self._btn_save.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_save.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        self._btn_save.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._btn_save, accent=True)
         self._btn_save.setEnabled(False)
         self._btn_save.clicked.connect(self._on_save)
         lo.addWidget(self._btn_save)
 
         self._file_lbl = QLabel(ui_text("ui_btladjprm_no_file_loaded"))
-        self._file_lbl.setFont(QFont("Consolas", 12))
-        self._file_lbl.setStyleSheet(ss_file_label())
+
+        configure_file_label(self._file_lbl)
         lo.addWidget(self._file_lbl)
         lo.addStretch(1)
 
         root.addWidget(top)
 
         # Separator
-        sep = QFrame()
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
+        sep = EditorSeparator(accent=True)
+
+
         root.addWidget(sep)
 
         # Body
         body = QWidget()
         body.setStyleSheet(ss_bg_dark())
         bl = QVBoxLayout(body)
-        bl.setContentsMargins(16, 10, 16, 12)
-        bl.setSpacing(8)
+        configure_layout(bl, LayoutRole.PAGE)
 
         # Search row
         search_row = QHBoxLayout()
-        search_row.setSpacing(8)
+        search_row.setSpacing(Size.GAP)
 
         self._search = QLineEdit()
-        self._search.setPlaceholderText(ui_text("ui_btladjprm_search_parameters"))
-        self._search.setFixedHeight(32)
-        self._search.setFont(QFont("Segoe UI", 13))
-        self._search.setStyleSheet(ss_search())
+        configure_search(self._search)
         self._search.textChanged.connect(self._on_filter)
         search_row.addWidget(self._search, 1)
 
-        self._count_lbl = QLabel("")
-        self._count_lbl.setFont(QFont("Segoe UI", 10))
-        self._count_lbl.setStyleSheet(ss_dim_label())
-        search_row.addWidget(self._count_lbl)
 
         bl.addLayout(search_row)
 
         # Scroll area with cards
         self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._scroll.setStyleSheet(ss_scrollarea())
+        configure_scrollarea(self._scroll)
 
         self._cards_widget = QWidget()
         self._cards_widget.setMinimumWidth(0)
         self._cards_widget.setStyleSheet(ss_bg_dark())
         self._cards_layout = QVBoxLayout(self._cards_widget)
         self._cards_layout.setContentsMargins(0, 2, 0, 0)
-        self._cards_layout.setSpacing(8)
+        self._cards_layout.setSpacing(Size.GAP)
 
         self._scroll.setWidget(self._cards_widget)
         bl.addWidget(self._scroll, 1)
@@ -247,7 +248,6 @@ class BtlAdjPrmEditor(QWidget):
     def _show_placeholder(self):
         self._clear_cards()
         self._param_inputs.clear()
-        self._count_lbl.setText("")
 
         card = make_empty_state(
             self._cards_widget,
@@ -276,16 +276,11 @@ class BtlAdjPrmEditor(QWidget):
         return max_columns
 
     def _prep_card(self, card: QFrame):
-        card.setMinimumWidth(0)
-        card.setMaximumWidth(980)
-        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        configure_card(card)
         return card
 
     def _prep_field(self, frame: QWidget, editor: QWidget):
-        frame.setMinimumWidth(0)
-        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        editor.setMinimumWidth(0)
-        editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        configure_field(frame, editor)
 
     def _field_position(self, logical_index: int, max_columns: int) -> tuple[int, int]:
         return divmod(logical_index, self._grid_columns(max_columns))
@@ -320,30 +315,19 @@ class BtlAdjPrmEditor(QWidget):
 
             section_title = getattr(self, "_pending_section_title", None)
             self._pending_section_title = None
-            card, grid = make_editor_grid_card(
-                self._cards_widget,
-                title=section_title,
-                icon_name="fa6s.sliders",
-                vertical_spacing=10,
-            )
+            card, grid = make_editor_grid_card(self._cards_widget, title=section_title, icon_name='fa6s.sliders')
             self._prep_card(card)
 
             for i, e in enumerate(group_entries):
                 row, col = self._field_position(i, _COLS)
                 name = e['name']
 
-                cell, cell_vl, _label, _hint = make_editor_field_shell(
-                    _display_param_name(name),
-                    label_font_size=10,
-                    spacing=3,
-                )
+                cell, cell_vl, _label, _hint = make_editor_field_shell(_display_param_name(name))
 
                 inp = QLineEdit()
-                inp.setFixedHeight(30)
                 inp.setMinimumWidth(0)
                 inp.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-                inp.setFont(QFont("Consolas", 13))
-                inp.setStyleSheet(ss_input())
+                configure_input(inp, monospace=True)
                 inp.setText(ui_text("ui_btladjprm_value", p0=e['value']))
                 inp.editingFinished.connect(self._make_value_handler(name, inp))
                 cell_vl.addWidget(inp)
@@ -359,9 +343,6 @@ class BtlAdjPrmEditor(QWidget):
 
         total = len(entries)
         shown = len(visible)
-        self._count_lbl.setText(
-            f"{shown} / {total} params" if ft else f"{total} params"
-        )
 
     def _make_value_handler(self, name, inp):
         def _handler():
@@ -441,9 +422,9 @@ class BtlAdjPrmEditor(QWidget):
     def _save_to(self, filepath):
         try:
             save_btladjprm_xfbin(filepath, self._raw, self._result)
+            commit_save_path(self, filepath)
             self._dirty = False
             set_file_label(self._file_lbl, filepath)
-            QMessageBox.information(self, ui_text("ui_assist_saved"),
-                                    ui_text("ui_assist_file_saved_value", p0=os.path.basename(filepath)))
+            QMessageBox.information(self, ui_text('ui_assist_saved'), ui_text('ui_assist_file_saved_value', p0=os.path.basename(filepath)))
         except Exception as e:
-            QMessageBox.critical(self, ui_text("ui_assist_save_error"), ui_text("ui_assist_failed_to_save_value", p0=e))
+            QMessageBox.critical(self, ui_text('ui_assist_save_error'), ui_text('ui_assist_failed_to_save_value', p0=e))

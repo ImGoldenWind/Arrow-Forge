@@ -1,3 +1,6 @@
+from core.design_tokens import TypeSize
+from core.ui.editor_widgets import configure_button
+from core.design_tokens import ui_font
 import inspect
 import os
 from unittest.mock import patch
@@ -108,7 +111,7 @@ class EditorPanelMixin:
     def _embedded_editor_save_method(self):
         return self._method_without_required_args(
             self._embedded_editor,
-            ("_save_file", "_on_save", "_do_save", "_save_xfbin", "save_file"),
+            ("_save_file", "_on_save", "_do_save", "_save_xfbin", "_save_repack", "save_file", "_save_as"),
         )
 
     def _save_embedded_editor(self) -> bool:
@@ -184,19 +187,28 @@ class EditorPanelMixin:
         if action_id == "editor.focus_search":
             return self._focus_editor_search()
         if action_id == "editor.open":
+            from core.shortcuts import trigger_editor_action
+            if self._embedded_editor is not None and hasattr(self._embedded_editor, "_file_actions"):
+                return trigger_editor_action(self._embedded_editor, action_id)
+            if trigger_editor_action(self._embedded_editor, action_id):
+                return True
             method = self._embedded_editor_open_method()
             if method is not None:
                 method()
                 return True
             return False
         if action_id == "editor.save":
+            actions = getattr(self._embedded_editor, "_file_actions", None)
+            if actions is not None and (not actions.save_button.isVisible() or not actions.save_button.isEnabled()):
+                return False
             return self._save_embedded_editor()
-
-        editor = self._embedded_editor
-        shortcut_action = getattr(editor, "shortcut_action", None)
-        if callable(shortcut_action):
-            return bool(shortcut_action(action_id))
-        return False
+        if action_id == "editor.compare":
+            if not self._editor_supports_compare():
+                return False
+            self._open_editor_compare()
+            return True
+        from core.shortcuts import trigger_editor_action
+        return trigger_editor_action(self._embedded_editor, action_id)
 
     def _build_command_palette_commands(self) -> list[Command]:
         commands: list[Command] = []
@@ -285,22 +297,9 @@ class EditorPanelMixin:
             return False
 
     def _focus_editor_search(self) -> bool:
-        editor = self._embedded_editor
-        if editor is not None:
-            for name in ("_search_entry", "_search", "_search_box", "_filter_edit"):
-                widget = getattr(editor, name, None)
-                if isinstance(widget, QLineEdit):
-                    widget.setFocus(Qt.FocusReason.ShortcutFocusReason)
-                    widget.selectAll()
-                    return True
-            focus_widget = QApplication.focusWidget()
-            if focus_widget is not None and editor.isAncestorOf(focus_widget):
-                for widget in editor.findChildren(QLineEdit):
-                    placeholder = widget.placeholderText().lower()
-                    if "search" in placeholder or "поиск" in placeholder:
-                        widget.setFocus(Qt.FocusReason.ShortcutFocusReason)
-                        widget.selectAll()
-                return True
+        from core.shortcuts import trigger_editor_action
+        if trigger_editor_action(self._embedded_editor, "editor.focus_search"):
+            return True
         return self._focus_tool_search()
 
     def _on_embedded_editor_file_loaded(self, editor, path: str):
@@ -338,7 +337,9 @@ class EditorPanelMixin:
             return False
         method = self._embedded_editor_load_path_method()
         if method is not None:
-            method(path)
+            started = method(path)
+            if started is False:
+                return False
         else:
             method = self._embedded_editor_open_method()
             if method is None:
@@ -359,7 +360,7 @@ class EditorPanelMixin:
                 method()
 
         editor = self._embedded_editor
-        if editor is not None:
+        if editor is not None and not getattr(editor, 'defer_file_load_notification', False):
             self._on_embedded_editor_file_loaded(editor, path)
         self._refresh_editor_toolbar_actions()
         return True
@@ -383,6 +384,8 @@ class EditorPanelMixin:
         self._refresh_editor_toolbar_actions()
 
     def _editor_supports_compare(self) -> bool:
+        if bool(getattr(self._embedded_editor, "disable_file_compare", False)):
+            return False
         return self._editor_supports_detailed_compare() or self._editor_supports_generic_compare()
 
     def _editor_supports_detailed_compare(self) -> bool:
@@ -660,12 +663,12 @@ class EditorPanelMixin:
 
         back_btn = _make_styled_btn(
             "\u2190 " + self.t("back"), P["mid"], P["bg_card_hov"], P["secondary"],
-            QFont("Segoe UI", 13), width=100, height=30)
+            ui_font(TypeSize.TITLE), width=100, height=30)
         back_btn.clicked.connect(self._close_tool_inline)
         bar_layout.addWidget(back_btn)
 
         tool_name_lbl = QLabel(name)
-        tool_name_lbl.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        tool_name_lbl.setFont(ui_font(TypeSize.SUBHEADING, QFont.Weight.Bold))
         tool_name_lbl.setStyleSheet(f"color: {P['accent']};")
         bar_layout.addWidget(tool_name_lbl)
         bar_layout.addStretch()
@@ -829,16 +832,16 @@ class EditorPanelMixin:
         workspace = self._settings.get("workspace", {})
         restore_path = workspace.get("active_file_path", "") if workspace.get("active_tool_id") == tool_id else ""
         current_path = self._embedded_editor_current_path()
-        if restore_path and os.path.normcase(restore_path) != os.path.normcase(current_path):
+        if tool_id != "dlg_char_skill" and restore_path and os.path.normcase(restore_path) != os.path.normcase(current_path):
             restore_btn = _make_styled_btn(
                 self.t("qol_restore_last_file"), P["mid"], P["bg_card_hov"], P["accent"],
-                QFont("Segoe UI", 11), width=150, height=30)
+                ui_font(TypeSize.CODE), width=150, height=30)
             restore_btn.clicked.connect(self._restore_workspace_file)
             add_widget(restore_btn)
 
             forget_btn = _make_styled_btn(
                 self.t("qol_forget"), P["mid"], P["bg_card_hov"], P["secondary"],
-                QFont("Segoe UI", 11), width=90, height=30)
+                ui_font(TypeSize.CODE), width=90, height=30)
             forget_btn.clicked.connect(self._forget_workspace_file)
             add_widget(forget_btn)
 
@@ -858,14 +861,14 @@ class EditorPanelMixin:
                 empty_action.setEnabled(False)
             recent_btn = _make_styled_btn(
                 self.t("qol_recent_files"), P["mid"], P["bg_card_hov"], P["secondary"],
-                QFont("Segoe UI", 11), width=110, height=30)
+                ui_font(TypeSize.CODE), width=110, height=30)
             recent_btn.setMenu(recent_menu)
             add_widget(recent_btn)
 
         if self._editor_supports_compare():
-            compare_btn = _make_styled_btn(
-                self.t("qol_compare_from_file"), P["mid"], P["bg_card_hov"], P["secondary"],
-                QFont("Segoe UI", 11), width=140, height=30)
+            compare_btn = configure_button(QPushButton(self.t("qol_compare_from_file")))
+            compare_btn.setObjectName("EditorCompare")
+            compare_btn.setMinimumWidth(compare_btn.sizeHint().width())
             compare_btn.clicked.connect(self._open_editor_compare)
             add_widget(compare_btn)
 
@@ -1081,7 +1084,7 @@ class EditorPanelMixin:
 
     def _embed_placeholder(self, body, layout, name, file_hint):
         lbl = QLabel(ui_text("ui_ASBR-Tools_value_value", p0=name, p1=file_hint))
-        lbl.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
+        lbl.setFont(ui_font(TypeSize.PAGE_TITLE, QFont.Weight.Bold))
         lbl.setStyleSheet(f"color: {P['text_dim']};")
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(lbl, 1)

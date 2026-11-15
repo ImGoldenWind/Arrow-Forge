@@ -10,10 +10,9 @@ ArcadeRewardParam.bin.xfbin layout (nuccChunkBinary payload):
 Each entry is 40 bytes and uses a self-relative string pointer:
   +0   uint64 LE - pointer to reward_id string
   +8   uint32 LE - difficulty_index
-  +12  uint32 LE - battle_step / progression value
-  +16  uint64 LE - reserved_1
-  +24  uint64 LE - reserved_2
-  +32  uint64 LE - reward_value
+  +12..+28 five uint32 LE - required clear counts for ranks S, A, B, C, D
+  +32  int32 LE - GP reward_value (native grant treats the word as signed)
+  +36  uint32 LE - padding_24 (skipped by native loader)
 
 CumulativeRewardParam.bin.xfbin uses the same header, but entries are 24 bytes:
   +0   uint32 LE - reward_index / slot
@@ -37,6 +36,7 @@ CUMULATIVE_ENTRY_SIZE = 24
 HEADER_SIZE = 16
 INNER_SIZE_FIELD = 4
 DEFAULT_VERSION = 1000
+ARCADE_RANK_FIELDS = tuple(f"rank_{rank}_count" for rank in "sabcd")
 TYPE_ARCADE = "arcade"
 TYPE_CUMULATIVE = "cumulative"
 
@@ -197,8 +197,8 @@ def parse_arcaderewardparam_xfbin(filepath: str) -> tuple[bytearray, dict]:
                 "reward_type": reward_type,
             })
         else:
-            ptr, difficulty_index, battle_step, reserved_1, reserved_2, reward_value = struct.unpack_from(
-                "<QIIQQQ",
+            ptr, difficulty_index, *values = struct.unpack_from(
+                "<Q8I",
                 data,
                 base,
             )
@@ -206,10 +206,9 @@ def parse_arcaderewardparam_xfbin(filepath: str) -> tuple[bytearray, dict]:
             entries.append({
                 "reward_id": reward_id,
                 "difficulty_index": difficulty_index,
-                "battle_step": battle_step,
-                "reserved_1": reserved_1,
-                "reserved_2": reserved_2,
-                "reward_value": reward_value,
+                **dict(zip(ARCADE_RANK_FIELDS, values[:5])),
+                "reward_value": struct.unpack_from("<i", data, base + 0x20)[0],
+                "padding_24": values[6],
             })
 
     return data, {
@@ -234,10 +233,9 @@ def make_default_entry(source: dict | None = None, param_type: str = TYPE_ARCADE
     return {
         "reward_id": "NORMAL_1",
         "difficulty_index": 2,
-        "battle_step": 1,
-        "reserved_1": 0,
-        "reserved_2": 0,
+        **dict(zip(ARCADE_RANK_FIELDS, (1, 0, 0, 0, 0))),
         "reward_value": 0,
+        "padding_24": 0,
     }
 
 
@@ -248,6 +246,21 @@ def _pad8(pool: bytearray, text: str) -> int:
     if rem:
         pool.extend(b"\x00" * (8 - rem))
     return off
+
+
+def rank_requirements(entry: dict) -> tuple[int, ...]:
+    """Five independent u32 counters; accept older exported dictionaries too."""
+    first_pair = int(entry.get("reserved_1", 0))
+    second_pair = int(entry.get("reserved_2", 0))
+    legacy = (int(entry.get("battle_step", 0)), first_pair & 0xFFFFFFFF,
+              first_pair >> 32, second_pair & 0xFFFFFFFF, second_pair >> 32)
+    return tuple(int(entry.get(key, fallback)) for key, fallback in zip(ARCADE_RANK_FIELDS, legacy))
+
+
+def arcade_gp_delta(entry: dict) -> int:
+    """Normalize former unsigned dictionaries to the signed native GP delta."""
+    value = int(entry.get("reward_value", 0)) & 0xFFFFFFFF
+    return value - 0x100000000 if value & 0x80000000 else value
 
 
 def _build_inner(version: int, notes: bytes, entries: list[dict], param_type: str) -> bytes:
@@ -284,13 +297,12 @@ def _build_inner(version: int, notes: bytes, entries: list[dict], param_type: st
             )
         else:
             buf += struct.pack(
-                "<QIIQQQ",
+                "<Q8I",
                 ptr,
                 int(entry.get("difficulty_index", 0)) & 0xFFFFFFFF,
-                int(entry.get("battle_step", 0)) & 0xFFFFFFFF,
-                int(entry.get("reserved_1", 0)) & 0xFFFFFFFFFFFFFFFF,
-                int(entry.get("reserved_2", 0)) & 0xFFFFFFFFFFFFFFFF,
-                int(entry.get("reward_value", 0)) & 0xFFFFFFFFFFFFFFFF,
+                *(value & 0xFFFFFFFF for value in rank_requirements(entry)),
+                int(entry.get("reward_value", 0)) & 0xFFFFFFFF,
+                int(entry.get("padding_24", 0)) & 0xFFFFFFFF,
             )
 
     buf += pool

@@ -9,11 +9,11 @@ Binary layout (nuccChunkBinary payload):
 
 Each entry (32 bytes):
   +0   uint64 LE  - self-relative pointer to result_id string
-  +8   uint32 LE  - value_1
-  +12  uint32 LE  - value_2
-  +16  uint32 LE  - value_3
-  +20  uint32 LE  - value_4
-  +24  uint32 LE  - value_5
+  +8   int32 LE   - value_1 (native comparisons/arithmetic are signed)
+  +12  int32 LE   - value_2
+  +16  int32 LE   - value_3
+  +20  int32 LE   - value_4
+  +24  int32 LE   - value_5
   +28  uint32 LE  - reserved
 
 Strings are null-terminated ASCII and 8-byte aligned.
@@ -103,7 +103,7 @@ def parse_battleresultparam_xfbin(filepath: str) -> tuple[bytearray, int, list[d
         base = entries_base + idx * ENTRY_SIZE
         ptr = struct.unpack_from("<Q", data, base)[0]
         result_id = _read_cstr(data, base + ptr) if ptr else ""
-        values = list(struct.unpack_from("<IIIII", data, base + 8))
+        values = list(struct.unpack_from("<5i", data, base + 8))
         reserved = struct.unpack_from("<I", data, base + 28)[0]
         entries.append({
             "result_id": result_id,
@@ -120,6 +120,16 @@ def make_default_entry() -> dict:
         "values": [0, 0, 0, 0, 0],
         "reserved": 0,
     }
+
+
+def signed_value(value: int) -> int:
+    """Accept old unsigned dictionary bit patterns as well as native i32 values."""
+    value = int(value)
+    if 0x80000000 <= value <= 0xFFFFFFFF:
+        value -= 0x100000000
+    if not -0x80000000 <= value <= 0x7FFFFFFF:
+        raise ValueError(f"Result value is outside the signed 32-bit range: {value}")
+    return value
 
 
 def _pad8(pool: bytearray, text: str) -> int:
@@ -152,7 +162,7 @@ def _build_binary(version: int, entries: list[dict]) -> bytes:
         reserved = int(entry.get("reserved", 0))
 
         buf += struct.pack("<Q", ptr)
-        buf += struct.pack("<IIIII", *(int(value) & 0xFFFFFFFF for value in values))
+        buf += struct.pack("<5i", *(signed_value(value) for value in values))
         buf += struct.pack("<I", reserved & 0xFFFFFFFF)
 
     buf += pool

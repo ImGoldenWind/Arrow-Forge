@@ -13,12 +13,16 @@ class Nut:
             return
         self.magic         = br_nut.magic
         self.version       = br_nut.version
+        self.header_template = br_nut.header_template
         self.texture_count = br_nut.texture_count
         self.textures      = []
         for br_tex in br_nut.textures:
             tex = NutTexture()
             tex.init_data(br_tex)
             self.textures.append(tex)
+
+    def storage_key(self):
+        return (self.magic, self.version, tuple(texture.storage_key() for texture in self.textures))
 
 
 class NutTexture:
@@ -41,3 +45,12 @@ class NutTexture:
             self.cubemap_faces = None
         self.mipmaps      = br_tex.mipmaps
         self.texture_data = br_tex.texture_data
+        self.hash_id = br_tex.hash_id
+        self._raw_record = getattr(br_tex, '_raw_record', None)
+        self._original_key = self.storage_key()
+
+    def storage_key(self):
+        return (self.width, self.height, self.pixel_format, self.mipmap_count,
+                self.cubemap_format, getattr(self, 'hash_id', 0),
+                self.texture_data, tuple(self.mipmaps) if isinstance(self.mipmaps, (tuple, list)) else self.mipmaps,
+                tuple(getattr(self, 'cubemap_faces', None) or ()))

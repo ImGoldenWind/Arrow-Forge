@@ -1,780 +1,700 @@
-"""editors/charviewer_editor.py  –  Full editor for CharViewerParam.bin.xfbin."""
-
-import os
+"""CharViewer gallery editor: file-backed choices and native lens inspection."""
 import copy
+from pathlib import Path
 
+from PyQt6.QtCore import Qt, QTimer, QSignalBlocker, QEvent
 from PyQt6.QtWidgets import (
-    QWidget, QFrame, QLabel, QPushButton, QLineEdit, QComboBox,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QMessageBox,
-    QScrollArea, QSizePolicy,
+    QWidget, QLabel, QPushButton, QLineEdit, QComboBox, QVBoxLayout,
+    QHBoxLayout, QFileDialog, QMessageBox, QScrollArea, QSizePolicy,
+    QTabWidget, QSlider,
 )
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont
-
+from core.design_tokens import LayoutRole, Size
 from core.style_helpers import (
-    make_empty_state,
-    make_editor_field_shell,
-    make_editor_grid_card,
-    ss_btn, ss_sep, ss_accent_sep, ss_input, ss_search,
-    ss_dim_label, ss_main_label,
-    ss_scrollarea, ss_scrollarea_transparent, ss_sidebar_btn,
-    ss_file_label, ss_transparent,
-    ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
-    TOOLBAR_H, TOOLBAR_BTN_H,
+    make_editor_field_shell, make_editor_grid_card, make_empty_state,
+    ss_bg_dark, ss_transparent, ss_dim_label, ss_input_validation, ss_slider, ss_tab_widget,
 )
+from core.ui.editor_widgets import (
+    EditorActionRow, EditorListRow, EditorSeparator, EditorSidebar, EditorToolbar,
+    EditorFilterCombo, configure_button, configure_file_label, configure_input,
+    configure_layout, configure_scrollarea, configure_search, configure_tabs,
+)
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.editor_actions import commit_save_path, install_file_actions, refresh_file_actions
+from core.ui.value_combo import EditorValueCombo
+from core.ui.number_input import IntegerStepper
+from core.ui.message_preview import MessagePreview, message_lookup
+from core.ui.angle_comparison import AngleComparison
+from core.ui.vector_comparison import VectorComparison
 from core.editor_file_state import set_file_label
-from parsers.charviewer_parser import (
-    parse_charviewer_xfbin,
-    save_charviewer_xfbin,
-    make_default_entry,
-)
 from core.translations import ui_text
-from core.settings import create_backup_on_open, game_files_dialog_dir
-
-_PART_NAMES = {
-    0: ui_text("ui_charviewer_all_none"),
-    1: ui_text("ui_charviewer_part_1"), 2: ui_text("ui_charviewer_part_2"), 3: ui_text("ui_charviewer_part_3"), 4: ui_text("ui_charviewer_part_4"),
-    5: ui_text("ui_charviewer_part_5"), 6: ui_text("ui_charviewer_part_6"), 7: ui_text("ui_charviewer_part_7"), 8: ui_text("ui_charviewer_part_8"),
-}
-
-_DLC_NAMES = {
-    0:     ui_text("ui_charviewer_base_game"),
-    10000: ui_text("ui_charviewer_dlc_0"),  10001: ui_text("ui_charviewer_dlc_1"),  10002: ui_text("ui_charviewer_dlc_2"),  10003: ui_text("ui_charviewer_dlc_3"),
-    10004: ui_text("ui_charviewer_dlc_4"),  10005: ui_text("ui_charviewer_dlc_5"),  10006: ui_text("ui_charviewer_dlc_6"),  10007: ui_text("ui_charviewer_dlc_7"),
-    10008: ui_text("ui_charviewer_dlc_8"),  10009: ui_text("ui_charviewer_dlc_9"),  10010: ui_text("ui_charviewer_dlc_10"), 10011: ui_text("ui_charviewer_dlc_11"),
-}
-
-_UNLOCK_NAMES = {
-    0: ui_text("ui_charviewer_0_default_free"),
-    1: ui_text("ui_charviewer_1_unlockable"),
-    2: ui_text("ui_charviewer_2_shop_purchase"),
-    3: ui_text("ui_charviewer_3_dlc_unlock"),
-    4: ui_text("ui_charviewer_4_special"),
-    5: ui_text("ui_charviewer_5_special_condition"),
-    6: ui_text("ui_charviewer_6_shop_alt"),
-}
+from core.settings import create_backup_on_open, game_files_dialog_dir, load_settings
+from core.charviewer_tools import (
+    INTEGER_RANGES, ANIMATION_KEYS, MESSAGE_KEYS, LIST_KEYS, parse_field,
+    data_root, viewer_index, field_choices, clamp_fov, camera_offset,
+)
+from parsers.charviewer_parser import (
+    parse_charviewer_xfbin, save_charviewer_xfbin, make_default_entry, _FLOAT_KEYS,
+)
 
 
-def _clear_layout(layout):
-    if layout is None:
-        return
-    while layout.count():
-        item = layout.takeAt(0)
-        if item.widget():
-            widget = item.widget()
-            widget.hide()
-            widget.setParent(None)
-            widget.deleteLater()
-        elif item.layout():
-            _clear_layout(item.layout())
+def _part_names():
+    return {i: ui_text('ui_charviewer_all_none' if i == 0 else f'ui_charviewer_part_{i}') for i in range(9)}
 
 
-def _truncate(text: str, limit: int) -> str:
-    text = str(text)
-    return text if len(text) <= limit else text[:max(1, limit - 1)] + "..."
+def _dlc_names(entries):
+    # Only names already shipped in Arrow Forge or values present in this file.
+    names = {0: ui_text('ui_charviewer_base_game')}
+    for i in range(12):
+        names[10000 + i] = ui_text(f'ui_charviewer_dlc_{i}')
+    return {v: f'{v} \u2014 {names.get(v, ui_text("hit_custom"))}'
+            for v in sorted(set(names) | {e['dlc_id'] for e in entries})}
+
+
+def _unlock_names(entries):
+    # Native flag conversion is known; full unlock requirements are not.
+    names = {1: ui_text('cv_unlock_flag', mask='0x01'),
+             2: ui_text('cv_unlock_flag', mask='0x40'),
+             3: ui_text('ui_charviewer_3_dlc_unlock'),
+             4: ui_text('cv_unlock_flag', mask='0x20')}
+    return {v: f'{v} \u2014 {names.get(v, ui_text("cv_unlock_other"))}'
+            for v in sorted(set(names) | {0, 5, 6} | {e['unlock_condition'] for e in entries})}
 
 
 class CharViewerEditor(QWidget):
-    """Embedded editor for CharViewerParam.bin.xfbin."""
-
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
-        self._t = t or (lambda k, **kw: k)
+        self._t = t or ui_text
         self._embedded = embedded
-
-        self._filepath: str | None = None
-        self._raw: bytearray | None = None
-        self._version: int = 1000
-        self._entries: list[dict] = []
-        self._dirty = False
-        self._loading_detail = False
-        self._filter_text = ""
-        self._visible_indices: list[int] = []
-        self._current_idx: int = -1
-        self._entry_buttons: list[tuple[QPushButton, int]] = []
-        self._detail_widgets: dict = {}
-        self._last_compact: bool | None = None
-        self._editor_columns = 3
-
+        self._filepath = self._raw = None
+        self._version = 1000
+        self._entries = []
+        self._originals = {}
+        self._dirty = self._loading_detail = False
+        self._current_idx = -1
+        self._entry_buttons = []
+        self._visible_indices = []
+        self._detail_widgets = {}
+        self._form_grids = []
+        self._filter_text = ''
+        self._index = {}
         self._build_ui()
-
-    # UI construction
+        install_file_actions(self, self._btn_save, save_to=self._do_save)
+        install_editor_chrome(self)
 
     def _build_ui(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        root.addWidget(self._build_top_bar())
-
-        sep = QFrame()
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
-        root.addWidget(sep)
-
+        root = configure_layout(QVBoxLayout(self), LayoutRole.ROOT)
+        toolbar = EditorToolbar()
+        self._btn_open = configure_button(QPushButton(ui_text('btn_open_file')), accent=True)
+        self._btn_open.setProperty('designAction', 'open')
+        self._btn_open.clicked.connect(self._on_open)
+        self._btn_save = configure_button(QPushButton(ui_text('btn_save_file')), accent=True)
+        self._btn_save.clicked.connect(self._on_save)
+        self._btn_save.setEnabled(False)
+        self._lbl_file = configure_file_label(QLabel(ui_text('xfa_no_file')))
+        toolbar.content_layout.addWidget(self._btn_open)
+        toolbar.content_layout.addWidget(self._btn_save)
+        toolbar.content_layout.addWidget(self._lbl_file, 1)
+        root.addWidget(toolbar)
+        root.addWidget(EditorSeparator(accent=True))
         main = QWidget()
-        main_layout = QHBoxLayout(main)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-
-        main_layout.addWidget(self._build_sidebar())
-
-        divider = QFrame()
-        divider.setFixedWidth(1)
-        divider.setStyleSheet(ss_sep())
-        main_layout.addWidget(divider)
-
-        # Editor scroll area
-        self._editor_scroll = QScrollArea()
-        self._editor_scroll.setWidgetResizable(True)
-        self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._editor_scroll.setStyleSheet(ss_scrollarea())
-        self._editor_widget = QWidget()
-        self._editor_widget.setStyleSheet(ss_bg_dark())
-        self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(12, 12, 12, 12)
-        self._editor_layout.setSpacing(8)
-        self._editor_scroll.setWidget(self._editor_widget)
-        main_layout.addWidget(self._editor_scroll, 1)
-
+        body = configure_layout(QHBoxLayout(main), LayoutRole.ROOT)
+        body.addWidget(self._build_sidebar())
+        body.addWidget(EditorSeparator(orientation=Qt.Orientation.Vertical))
+        self._content = QWidget()
+        self._content.installEventFilter(self)
+        self._editor_layout = configure_layout(QVBoxLayout(self._content), LayoutRole.PAGE)
+        body.addWidget(self._content, 1)
         root.addWidget(main, 1)
-
-        self._show_placeholder(ui_text("ui_charviewer_open_a_charviewerparam_bin_xfbin_file_to_begin_editing"))
+        self._show_placeholder(ui_text('ui_charviewer_open_a_charviewerparam_bin_xfbin_file_to_begin_editing'))
         self.setStyleSheet(ss_bg_dark())
 
-    def _build_top_bar(self) -> QFrame:
-        bar = QFrame()
-        bar.setFixedHeight(TOOLBAR_H)
-        bar.setStyleSheet(ss_bg_panel())
-
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(4)
-
-        self._btn_open = QPushButton(ui_text("btn_open_file"))
-        self._btn_open.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_open.setFont(QFont("Segoe UI", 10))
-        self._btn_open.setStyleSheet(ss_btn(accent=True))
-        self._btn_open.clicked.connect(self._on_open)
-        layout.addWidget(self._btn_open)
-
-        self._btn_save = QPushButton(ui_text("btn_save_file"))
-        self._btn_save.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_save.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        self._btn_save.setEnabled(False)
-        self._btn_save.setStyleSheet(ss_btn(accent=True))
-        self._btn_save.clicked.connect(self._on_save)
-        layout.addWidget(self._btn_save)
-
-        self._lbl_file = QLabel(ui_text("xfa_no_file"))
-        self._lbl_file.setFont(QFont("Consolas", 12))
-        self._lbl_file.setStyleSheet(ss_file_label())
-        layout.addWidget(self._lbl_file)
-        layout.addStretch()
-
-        return bar
-
-    def _build_sidebar(self) -> QFrame:
-        sidebar = QFrame()
-        sidebar.setFixedWidth(260)
-        sidebar.setStyleSheet(ss_sidebar_frame())
-
-        layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(8, 8, 8, 4)
-        layout.setSpacing(4)
-
-        # Search box
-        self._search_box = QLineEdit()
-        self._search_box.setPlaceholderText(ui_text("search_placeholder"))
-        self._search_box.setFixedHeight(32)
-        self._search_box.setFont(QFont("Segoe UI", 13))
-        self._search_box.setStyleSheet(ss_search())
+    def _build_sidebar(self):
+        sidebar = EditorSidebar()
+        layout = sidebar.content_layout
+        self._search_box = configure_search(QLineEdit())
         self._search_box.textChanged.connect(self._on_filter_changed)
         layout.addWidget(self._search_box)
-
-        # Action buttons
-        btn_row = QWidget()
-        btn_row.setStyleSheet(ss_transparent())
-        btn_layout = QHBoxLayout(btn_row)
-        btn_layout.setContentsMargins(0, 2, 0, 4)
-        btn_layout.setSpacing(4)
-        btn_font = QFont("Segoe UI", 10)
-
-        self._btn_add = QPushButton(ui_text("btn_new"))
-        self._btn_add.setFixedHeight(28)
-        self._btn_add.setFont(btn_font)
-        self._btn_add.setEnabled(False)
-        self._btn_add.setStyleSheet(ss_btn())
-        self._btn_add.clicked.connect(self._on_add)
-        btn_layout.addWidget(self._btn_add, 1)
-
-        self._btn_dup = QPushButton(ui_text("btn_duplicate"))
-        self._btn_dup.setFixedHeight(28)
-        self._btn_dup.setFont(btn_font)
-        self._btn_dup.setEnabled(False)
-        self._btn_dup.setStyleSheet(ss_btn())
-        self._btn_dup.clicked.connect(self._on_duplicate)
-        btn_layout.addWidget(self._btn_dup, 1)
-
-        self._btn_del = QPushButton(ui_text("btn_delete"))
-        self._btn_del.setFixedHeight(28)
-        self._btn_del.setFont(btn_font)
-        self._btn_del.setEnabled(False)
-        self._btn_del.setStyleSheet(ss_btn(danger=True))
-        self._btn_del.clicked.connect(self._on_delete)
-        btn_layout.addWidget(self._btn_del, 1)
-
-        layout.addWidget(btn_row)
-
-        # Scrollable entry list
-        self._list_scroll = QScrollArea()
-        self._list_scroll.setWidgetResizable(True)
-        self._list_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._list_scroll.setStyleSheet(ss_scrollarea_transparent())
+        self._part_filter = EditorFilterCombo()
+        self._part_filter.addItem(ui_text('ui_charviewer_part_3d_shop'), None)
+        for value, text in _part_names().items():
+            self._part_filter.addItem(text, value)
+        self._part_filter.currentIndexChanged.connect(self._rebuild_list)
+        layout.addWidget(self._part_filter)
+        self._dlc_filter = EditorFilterCombo()
+        self._dlc_filter.addItem(ui_text('ui_charviewer_dlc_id'), None)
+        self._dlc_filter.currentIndexChanged.connect(self._rebuild_list)
+        layout.addWidget(self._dlc_filter)
+        actions = EditorActionRow()
+        for attr, key, action, callback in (
+            ('_btn_add', 'btn_new', 'new', self._on_add),
+            ('_btn_dup', 'btn_duplicate', 'duplicate', self._on_duplicate),
+            ('_btn_del', 'btn_delete', 'delete', self._on_delete),
+        ):
+            button = configure_button(QPushButton(ui_text(key)), height=Size.COMPACT_CONTROL, danger=action == 'delete')
+            button.setProperty('designAction', action)
+            button.setEnabled(False)
+            button.clicked.connect(callback)
+            setattr(self, attr, button)
+            actions.content_layout.addWidget(button, 1)
+        layout.addWidget(actions)
+        self._list_scroll = configure_scrollarea(QScrollArea(), transparent=True)
         self._list_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._list_widget = QWidget()
-        self._list_widget.setMinimumWidth(0)
-        self._list_widget.setStyleSheet(ss_transparent())
-        self._list_layout = QVBoxLayout(self._list_widget)
-        self._list_layout.setContentsMargins(0, 0, 0, 0)
-        self._list_layout.setSpacing(1)
+        container = QWidget()
+        self._list_layout = configure_layout(QVBoxLayout(container), LayoutRole.LIST)
         self._list_layout.addStretch()
-        self._list_scroll.setWidget(self._list_widget)
-        layout.addWidget(self._list_scroll)
-
+        self._list_scroll.setWidget(container)
+        layout.addWidget(self._list_scroll, 1)
         return sidebar
 
-    # Placeholder / editor clear
-
-    def _show_placeholder(self, text: str = ui_text("ui_dictionaryparam_select_an_entry_to_edit")):
-        self._clear_editor()
-        card = make_empty_state(
-            self._editor_widget,
-            title=ui_text("no_file_loaded"),
-            text=text,
-            icon_name="fa6s.eye",
-        )
-        self._editor_layout.addStretch()
-        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
-        self._editor_layout.addStretch()
-
     def _clear_editor(self):
+        self._detail_widgets = {}
+        self._form_grids = []
+        self._applied_columns = None
+        self._tabs = None
+        self._lens = None
+        self._position_plot = None
         while self._editor_layout.count():
             item = self._editor_layout.takeAt(0)
             if item.widget():
-                widget = item.widget()
-                widget.hide()
-                widget.setParent(None)
-                widget.deleteLater()
+                item.widget().hide()
+                item.widget().deleteLater()
+        self._validation_label = None
 
-    # List management
+    def _show_placeholder(self, text):
+        self._clear_editor()
+        self._editor_layout.addStretch()
+        self._editor_layout.addWidget(make_empty_state(self._content,
+            title=ui_text('no_file_loaded') if self._raw is None else ui_text('ui_dictionaryparam_select_an_entry_to_edit'),
+            text=text, icon_name='fa6s.eye'), 0, Qt.AlignmentFlag.AlignCenter)
+        self._editor_layout.addStretch()
 
-    def _rebuild_list(self):
+    def _character_name(self, e):
+        code = e['chara_code']
+        key = f'char_{code}'
+        text = self._t(key)
+        return code if text == key else text
+
+    def _rebuild_list(self, *_):
         while self._list_layout.count() > 1:
             item = self._list_layout.takeAt(0)
             if item.widget():
+                item.widget().hide()
                 item.widget().deleteLater()
-
-        txt = self._filter_text.lower()
-        self._visible_indices = []
-        self._entry_buttons = []
-
+        query = self._search_box.text().casefold()
+        self._filter_text = query
+        self._entry_buttons, self._visible_indices = [], []
         for i, e in enumerate(self._entries):
-            if txt and txt not in e["viewer_id"].lower() \
-                    and txt not in e["chara_code"].lower() \
-                    and txt not in e["char_viewer_id"].lower():
+            if self._part_filter.currentData() is not None and e['part'] != self._part_filter.currentData():
                 continue
+            if self._dlc_filter.currentData() is not None and e['dlc_id'] != self._dlc_filter.currentData():
+                continue
+            haystack = ' '.join((e['char_viewer_id'], e['viewer_id'], e['chara_code'],
+                                 e['model_code'], self._character_name(e))).casefold()
+            if query not in haystack:
+                continue
+            button = EditorListRow()
+            button.set_texts(self._character_name(e) or e['char_viewer_id'],
+                             f'{e["char_viewer_id"]} \u2014 {e["viewer_id"]}', title_limit=27, subtitle_limit=30)
+            button.set_selected(i == self._current_idx)
+            button.clicked.connect(lambda _, index=i: self._select_entry(index))
+            self._list_layout.insertWidget(self._list_layout.count() - 1, button)
+            self._entry_buttons.append((button, i))
             self._visible_indices.append(i)
-            btn = self._make_entry_button(e, i)
-            self._list_layout.insertWidget(self._list_layout.count() - 1, btn)
-            self._entry_buttons.append((btn, i))
 
-    def _make_entry_button(self, e: dict, idx: int) -> QPushButton:
-        selected = (idx == self._current_idx)
-        btn = QPushButton()
-        btn.setFixedHeight(44)
-        btn.setMinimumWidth(0)
-        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet(ss_sidebar_btn(selected=selected))
+    def _on_filter_changed(self):
+        self._rebuild_list()
 
-        btn_layout = QVBoxLayout(btn)
-        btn_layout.setContentsMargins(10, 3, 10, 3)
-        btn_layout.setSpacing(0)
-
-        vid_text = e["viewer_id"] or e["char_viewer_id"]
-        vid_lbl = QLabel(_truncate(vid_text, 24))
-        vid_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        vid_lbl.setStyleSheet(ss_main_label())
-        vid_lbl.setMinimumWidth(0)
-        vid_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        vid_lbl.setToolTip(vid_text)
-        vid_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        btn_layout.addWidget(vid_lbl)
-
-        char_code = e["chara_code"]
-        resolved_key = f"char_{char_code}"
-        resolved = self._t(resolved_key)
-        sub_text = f"{char_code} • {resolved}" if resolved != resolved_key else char_code
-
-        code_lbl = QLabel(_truncate(sub_text, 28))
-        code_lbl.setFont(QFont("Consolas", 11))
-        code_lbl.setStyleSheet(ss_dim_label())
-        code_lbl.setMinimumWidth(0)
-        code_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        code_lbl.setToolTip(sub_text)
-        code_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        btn_layout.addWidget(code_lbl)
-
-        btn.clicked.connect(lambda checked=False, i=idx: self._select_entry(i))
-        return btn
-
-    def _select_entry(self, idx: int):
+    def _select_entry(self, idx):
+        if not 0 <= idx < len(self._entries) or not self._apply_current_entry(mark_dirty=False):
+            return False
         self._current_idx = idx
-        for btn, bi in self._entry_buttons:
-            if bi == idx:
-                btn.setStyleSheet(ss_sidebar_btn(selected=True))
-                self._list_scroll.ensureWidgetVisible(btn)
-            else:
-                btn.setStyleSheet(ss_sidebar_btn())
+        for button, i in self._entry_buttons:
+            button.set_selected(i == idx)
+            if i == idx:
+                self._list_scroll.ensureWidgetVisible(button)
         self._btn_dup.setEnabled(True)
         self._btn_del.setEnabled(True)
         self._build_editor(self._entries[idx])
+        return True
 
-    def _on_filter_changed(self):
-        self._filter_text = self._search_box.text()
-        self._rebuild_list()
+    def _add_tab(self, title):
+        scroll = configure_scrollarea(QScrollArea())
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        container = QWidget()
+        layout = configure_layout(QVBoxLayout(container), LayoutRole.PAGE)
+        scroll.setWidget(container)
+        self._tabs.addTab(scroll, title)
+        return layout
 
-    # Editor building
+    def _card(self, page, title, icon='fa6s.sliders', hint=''):
+        card, grid = make_editor_grid_card(title=title, icon_name=icon)
+        page.addWidget(card)
+        fields = []
+        label = None
+        if hint:
+            label = QLabel(hint)
+            label.setWordWrap(True)
+            label.setStyleSheet(ss_dim_label())
+            grid.addWidget(label, 0, 0, 1, 3)
+        self._form_grids.append((grid, fields, label))
+        return grid
 
-    def _is_compact_editor(self) -> bool:
-        if not hasattr(self, "_editor_scroll"):
-            return False
-        return self._editor_scroll.viewport().width() < 780
-
-    def _grid_columns(self, max_columns: int) -> int:
-        width = self._editor_scroll.viewport().width()
-        if width < 780:
-            return 1
-        if width < 1080:
-            return min(2, max_columns)
-        return max_columns
-
-    def _prep_card(self, card: QFrame):
-        card.setMinimumWidth(0)
-        card.setMaximumWidth(980)
-        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        return card
-
-    def _prep_field_widget(self, widget: QWidget):
+    def _field(self, grid, key, label, *, options=None, hint=''):
+        value = self._form_entry[key]
+        choices = options
+        if choices is None and key not in INTEGER_RANGES and key not in _FLOAT_KEYS:
+            rows = [e for e in self._entries if e['viewer_id'] == self._form_entry['viewer_id']] if key in ANIMATION_KEYS else self._entries
+            choices = field_choices(rows, key, self._index)
+        if choices is not None:
+            iterable = choices.items() if isinstance(choices, dict) else choices
+            widget = EditorValueCombo(iterable, value)
+        else:
+            widget = configure_input(QLineEdit(), monospace=True)
+            widget.setText(repr(value) if key in _FLOAT_KEYS else str(value))
         widget.setMinimumWidth(0)
-        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        widget.setAccessibleName(label)
+        widget.setProperty('charViewerField', key)
+        self._detail_widgets[key] = widget
+        self._initial_text[key] = self._text(widget)
+        help_text = hint or ui_text('cv_reference_help' if key not in INTEGER_RANGES and key not in _FLOAT_KEYS else 'cv_number_help')
+        if key in INTEGER_RANGES:
+            low, high = INTEGER_RANGES[key]
+            help_text += '\n' + ui_text('cv_storage_range', low=low, high=high)
+        widget.setToolTip(help_text)
+        shell, body, _, _ = make_editor_field_shell(label)
+        control = widget
+        if key in INTEGER_RANGES and options is None:
+            control = IntegerStepper(widget, *INTEGER_RANGES[key])
+        body.addWidget(control)
+        if key in MESSAGE_KEYS:
+            edit = widget.lineEdit() if isinstance(widget, QComboBox) else widget
+            body.addWidget(MessagePreview(edit, message_lookup(self)))
+        for owner, fields, _ in self._form_grids:
+            if owner is grid:
+                fields.append(shell)
+                break
+        if isinstance(widget, QComboBox):
+            widget.currentTextChanged.connect(self._save_current_entry)
+            if key in ('part', 'dlc_id'):
+                widget.activated.connect(self._refresh_filters)
+                widget.lineEdit().editingFinished.connect(self._refresh_filters)
+        else:
+            widget.textChanged.connect(self._save_current_entry)
         return widget
 
-    def _add_editor_card(self, card: QFrame):
-        self._editor_layout.addWidget(card)
+    @staticmethod
+    def _text(widget):
+        return widget.value_text() if isinstance(widget, EditorValueCombo) else widget.text()
 
-    def _field_position(self, row: int, col: int, col_span: int = 1) -> tuple[int, int, int]:
-        columns = max(1, getattr(self, "_editor_columns", 3))
-        logical_index = row * 3 + col
-        mapped_row, mapped_col = divmod(logical_index, columns)
-        mapped_span = min(max(1, col_span), columns - mapped_col)
-        return mapped_row, mapped_col, mapped_span
-
-    def _add_section(self, title: str, icon_name: str = "fa6s.sliders"):
-        self._pending_section_title = title
-        self._pending_section_icon = icon_name
-
-    def _add_card(self) -> tuple[QFrame, QGridLayout]:
-        section_title = getattr(self, "_pending_section_title", None)
-        section_icon = getattr(self, "_pending_section_icon", "fa6s.sliders")
-        self._pending_section_title = None
-        self._pending_section_icon = "fa6s.sliders"
-        card, grid = make_editor_grid_card(
-            self._editor_widget,
-            title=section_title,
-            icon_name=section_icon,
-            vertical_spacing=10,
-        )
-        self._prep_card(card)
-        return card, grid
-
-    def _add_le(self, grid: QGridLayout, row: int, col: int,
-                label: str, value: str, key: str, col_span: int = 1) -> QLineEdit:
-        le = QLineEdit()
-        le.setFixedHeight(30)
-        le.setFont(QFont("Consolas", 13))
-        le.setStyleSheet(ss_input())
-        le.setMinimumWidth(0)
-        le.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        text = str(value)
-        le.setText(text)
-        le.setCursorPosition(next((i for i, ch in enumerate(text) if ch.isprintable() and ord(ch) >= 32 and ch not in {"\u25a1", "\ufffd"}), 0))
-
-        container, cl, _label, _hint = make_editor_field_shell(label)
-        self._prep_field_widget(container)
-        cl.addWidget(le)
-
-        mapped_row, mapped_col, mapped_span = self._field_position(row, col, col_span)
-        grid.addWidget(container, mapped_row, mapped_col, 1, mapped_span)
-        grid.setColumnStretch(mapped_col, 1)
-        self._detail_widgets[key] = le
-        le.textChanged.connect(lambda: None if self._loading_detail else self._save_current_entry())
-        return le
-
-    def _add_combo(self, grid: QGridLayout, row: int, col: int,
-                   label: str, options: dict, current_val, key: str) -> QComboBox:
-        cb = QComboBox()
-        cb.setFixedHeight(30)
-        cb.setStyleSheet(ss_input())
-        cb.setMinimumWidth(0)
-        cb.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        cb.setMinimumContentsLength(1)
-        cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        for v, n in options.items():
-            cb.addItem(n, v)
-        for i in range(cb.count()):
-            if cb.itemData(i) == current_val:
-                cb.setCurrentIndex(i)
-                break
-
-        container, cl, _label, _hint = make_editor_field_shell(label)
-        self._prep_field_widget(container)
-        cl.addWidget(cb)
-
-        mapped_row, mapped_col, mapped_span = self._field_position(row, col)
-        grid.addWidget(container, mapped_row, mapped_col, 1, mapped_span)
-        grid.setColumnStretch(mapped_col, 1)
-        self._detail_widgets[key] = cb
-        cb.currentIndexChanged.connect(lambda: None if self._loading_detail else self._save_current_entry())
-        return cb
-
-    def _add_field_sequence(self, grid: QGridLayout, columns: int, fields):
-        for idx, field in enumerate(fields):
-            row, col = divmod(idx, 3)
-            kind = field[0]
-            if kind == "combo":
-                _kind, label, options, current_val, key = field
-                self._add_combo(grid, row, col, label, options, current_val, key)
-            else:
-                _kind, label, value, key = field
-                self._add_le(grid, row, col, label, value, key)
-
-    def _build_editor(self, e: dict):
-        self._clear_editor()
-        self._detail_widgets = {}
+    def _build_editor(self, entry):
+        from parsers.charviewer_parser import _STR_FIELDS, _NUM_FIELDS
         self._loading_detail = True
-        self._last_compact = self._is_compact_editor()
-        self._editor_columns = self._grid_columns(3)
+        old_tab = self._tabs.currentIndex() if self._tabs is not None else 0
+        self._clear_editor()
+        self._form_entry = copy.deepcopy(entry)
+        self._initial_text = {}
+        self._field_offsets = {key: off for off, key in _STR_FIELDS}
+        self._field_offsets.update({key: off for off, key, _ in _NUM_FIELDS})
+        self._root = data_root(self._filepath, load_settings().get('game_files_dir', ''))
+        self._index, self._asset_path = viewer_index(self._root, entry['viewer_id'])
+        self._validation_label = QLabel()
+        self._validation_label.setWordWrap(True)
+        self._validation_label.setStyleSheet(ss_dim_label())
+        self._validation_label.hide()
+        self._editor_layout.addWidget(self._validation_label)
+        self._tabs = configure_tabs(QTabWidget())
+        self._tabs.setStyleSheet(ss_tab_widget())
+        self._editor_layout.addWidget(self._tabs, 1)
 
-        # Identity
-        self._add_section(ui_text("skill_section_identity"), "fa6s.id-card")
-        card, g = self._add_card()
-        self._add_le(g, 0, 0, ui_text("ui_charviewer_char_viewer_id"),      e["char_viewer_id"],    "char_viewer_id")
-        self._add_le(g, 0, 1, ui_text("ui_charviewer_viewer_id"),           e["viewer_id"],         "viewer_id")
-        self._add_le(g, 0, 2, ui_text("ui_charviewer_custom_list_title"),   e["custom_list_title"], "custom_list_title")
-        self._add_le(g, 1, 0, ui_text("ui_charviewer_character_code"),      e["chara_code"],        "chara_code")
-        self._add_le(g, 1, 1, ui_text("ui_charviewer_model_code"),          e["model_code"],        "model_code")
-        self._add_editor_card(card)
+        identity = self._add_tab(ui_text('skill_section_identity'))
+        grid = self._card(identity, ui_text('cv_gallery_entry'), 'fa6s.id-card')
+        for key, label in (
+            ('char_viewer_id', 'ui_charviewer_char_viewer_id'),
+            ('chara_code', 'ui_charviewer_character_code'), ('model_code', 'ui_charviewer_model_code'),
+            ('viewer_id', 'ui_charviewer_viewer_id'), ('custom_list_title', 'ui_charviewer_custom_list_title'),
+        ):
+            options = None
+            if key in ('chara_code', 'model_code'):
+                options = []
+                for value, _ in field_choices(self._entries, key):
+                    name = self._t(f'char_{value}')
+                    options.append((value, f'{value} \u2014 {name}' if name != f'char_{value}' else value))
+            if key == 'viewer_id' and self._root:
+                options = sorted({p.stem for p in (self._root / 'spc_viewer').glob('*.xfbin')}
+                                 | {e['viewer_id'] for e in self._entries if e['viewer_id']})
+                options = [(v, v) for v in options]
+            self._field(grid, key, ui_text(label), options=options)
+        grid = self._card(identity, ui_text('cv_gallery_order'), 'fa6s.list')
+        self._field(grid, 'part', ui_text('ui_charviewer_part_3d_shop'), options=_part_names())
+        for key in ('menu1_index', 'menu2_index'):
+            self._field(grid, key, ui_text('cv_' + key), hint=ui_text('cv_' + key + '_help'))
+        identity.addStretch()
 
-        # Animations
-        self._add_section(ui_text("skill_filter_anm"), "fa6s.person-running")
-        card, g = self._add_card()
-        self._add_le(g, 0, 0, ui_text("ui_charviewer_face_animation"),   e["face_anim"],  "face_anim")
-        self._add_le(g, 0, 1, ui_text("ui_charviewer_idle_animation_1"), e["idle_anim1"], "idle_anim1")
-        self._add_le(g, 0, 2, ui_text("ui_charviewer_idle_animation_2"), e["idle_anim2"], "idle_anim2")
-        for pi in range(1, 6):
-            r = pi  # rows 1..5
-            self._add_le(g, r, 0, f"Pose {pi} Start", e[f"pose{pi}_st"], f"pose{pi}_st")
-            self._add_le(g, r, 1, f"Pose {pi} Loop",  e[f"pose{pi}_lp"], f"pose{pi}_lp")
-            self._add_le(g, r, 2, f"Pose {pi} End",   e[f"pose{pi}_ed"], f"pose{pi}_ed")
-        self._add_le(g, 6, 0, ui_text("ui_charviewer_object_1"),       e["object1"], "object1")
-        self._add_le(g, 6, 1, ui_text("ui_charviewer_object_2"),       e["object2"], "object2")
-        self._add_le(g, 6, 2, ui_text("ui_charviewer_object_3"),       e["object3"], "object3")
-        self._add_le(g, 7, 0, ui_text("ui_charviewer_anim_21"),        e["anim21"],            "anim21")
-        self._add_le(g, 7, 1, ui_text("ui_charviewer_char_id_ref"),    e["anim22_char_id"],    "anim22_char_id")
-        self._add_le(g, 7, 2, ui_text("ui_charviewer_char_tints_ref"), e["anim23_char_tints"], "anim23_char_tints")
-        self._add_le(g, 8, 0, ui_text("ui_charviewer_char_ids_ref"),   e["anim24_char_ids"],   "anim24_char_ids")
-        self._add_le(g, 8, 1, ui_text("ui_charviewer_model_ids_ref"),  e["anim25_model_ids"],  "anim25_model_ids")
-        self._add_le(g, 8, 2, ui_text("ui_charviewer_anim_26"),        e["anim26"],            "anim26")
-        self._add_le(g, 9, 0, ui_text("ui_charviewer_anim_27"),        e["anim27"],            "anim27")
-        self._add_editor_card(card)
+        poses = self._add_tab(ui_text('cv_poses'))
+        grid = self._card(poses, ui_text('cv_idle'), 'fa6s.person-running', ui_text('cv_pose_help'))
+        for key, label in (('face_anim', 'ui_charviewer_face_animation'),
+                           ('idle_anim1', 'ui_charviewer_idle_animation_1'), ('idle_anim2', 'ui_charviewer_idle_animation_2')):
+            self._field(grid, key, ui_text(label))
+        self._asset_label = QLabel()
+        self._asset_label.setWordWrap(True)
+        self._asset_label.setStyleSheet(ss_dim_label())
+        poses.addWidget(self._asset_label)
+        self._refresh_asset_label()
+        reload_resources = configure_button(QPushButton(ui_text('cv_reload_resources')))
+        reload_resources.clicked.connect(self._reload_resources)
+        poses.addWidget(reload_resources)
+        self._detail_widgets['viewer_id'].lineEdit().editingFinished.connect(self._reload_resources)
+        for i in range(1, 6):
+            grid = self._card(poses, ui_text('cv_pose', index=i), 'fa6s.person-running')
+            for phase in ('st', 'lp', 'ed'):
+                self._field(grid, f'pose{i}_{phase}', ui_text('cv_phase_' + phase))
+        poses.addStretch()
 
-        # Camera
-        self._add_section(ui_text("ui_charviewer_camera"), "fa6s.camera")
-        card, g = self._add_card()
-        self._add_le(g, 0, 0, ui_text("ui_charviewer_starting_zoom"),        f"{e['cam_zoom']:.6g}",      "cam_zoom")
-        self._add_le(g, 0, 1, ui_text("ui_charviewer_starting_y"),           f"{e['cam_y']:.6g}",         "cam_y")
-        self._add_le(g, 0, 2, ui_text("ui_charviewer_starting_x_unused"),  f"{e['cam_unk']:.6g}",       "cam_unk")
-        self._add_le(g, 1, 0, ui_text("ui_charviewer_anchor_y"),             f"{e['cam_anchor_y']:.6g}",  "cam_anchor_y")
-        self._add_le(g, 1, 1, ui_text("ui_charviewer_anchor_x"),             f"{e['cam_anchor_x']:.6g}",  "cam_anchor_x")
-        self._add_le(g, 1, 2, ui_text("ui_charviewer_rotate_y_lower_limit"), f"{e['cam_rot_y_min']:.6g}", "cam_rot_y_min")
-        self._add_le(g, 2, 0, ui_text("ui_charviewer_starting_z_rotation"),  f"{e['cam_rot_z']:.6g}",     "cam_rot_z")
-        self._add_le(g, 2, 1, ui_text("ui_charviewer_zoom_in_limit"),        f"{e['cam_zoom_in']:.6g}",   "cam_zoom_in")
-        self._add_le(g, 2, 2, ui_text("ui_charviewer_zoom_out_limit"),       f"{e['cam_zoom_out']:.6g}",  "cam_zoom_out")
-        self._add_editor_card(card)
+        camera = self._add_tab(ui_text('ui_charviewer_camera'))
+        grid = self._card(camera, ui_text('cv_camera_position'), 'fa6s.camera', ui_text('cv_camera_help'))
+        for key in ('cam_pos_z', 'cam_zoom', 'cam_y', 'cam_unk', 'cam_anchor_y', 'cam_anchor_x', 'cam_rot_y_min', 'cam_rot_z'):
+            self._field(grid, key, ui_text('cv_' + key), hint=ui_text('cv_camera_help'))
+        position_card, position_grid = make_editor_grid_card(title=ui_text('cv_camera_offset'),
+            icon_name='fa6s.camera', subtitle=ui_text('cv_camera_offset_help'))
+        self._position_plot = VectorComparison(ui_text('cv_depth_axis'), ui_text('cv_height_axis'),
+            ui_text('cv_original'), ui_text('cv_current'), ui_text('cv_offset_unavailable'))
+        position_grid.addWidget(self._position_plot, 0, 0)
+        camera.addWidget(position_card)
+        grid = self._card(camera, ui_text('cv_lens'), 'fa6s.camera', ui_text('cv_lens_help'))
+        for key in ('cam_zoom_in', 'cam_zoom_out'):
+            self._field(grid, key, ui_text('cv_' + key), hint=ui_text('cv_lens_help'))
+        lens_card, lens_grid = make_editor_grid_card(title=ui_text('cv_lens_probe'), icon_name='fa6s.camera')
+        camera.addWidget(lens_card)
+        self._probe = configure_input(QLineEdit('45'), monospace=True)
+        self._probe.setAccessibleName(ui_text('cv_requested_fov'))
+        self._probe.setToolTip(ui_text('cv_probe_help'))
+        shell, box, _, _ = make_editor_field_shell(ui_text('cv_requested_fov'), ui_text('cv_probe_help'))
+        box.addWidget(self._probe)
+        self._probe_slider = QSlider(Qt.Orientation.Horizontal)
+        self._probe_slider.setRange(0, 1000)
+        self._probe_slider.setAccessibleName(ui_text('cv_requested_fov'))
+        self._probe_slider.setStyleSheet(ss_slider())
+        self._probe_slider.setToolTip(ui_text('cv_probe_slider_help'))
+        box.addWidget(self._probe_slider)
+        lens_grid.addWidget(shell, 0, 0)
+        self._lens = AngleComparison(ui_text('cv_original'), ui_text('cv_current'), ui_text('cv_angle_unavailable'))
+        lens_grid.addWidget(self._lens, 1, 0)
+        restore = configure_button(QPushButton(ui_text('cv_restore_camera')))
+        restore.clicked.connect(self._restore_camera)
+        camera.addWidget(restore)
+        restore.hide()
+        camera.addStretch()
+        self._probe.textChanged.connect(self._refresh_lens)
+        self._probe_slider.valueChanged.connect(self._probe_slide)
 
-        # DLC / Shop
-        self._add_section(ui_text("ui_charviewer_dlc_shop"), "fa6s.store")
-        card, g = self._add_card()
-        self._add_le(g, 0, 0, ui_text("ui_charviewer_custom_card_id"),         e["custom_card"],    "custom_card")
-        self._add_le(g, 0, 1, ui_text("ui_charviewer_custom_icon_path"),       e["icon_path"],      "icon_path")
-        self._add_le(g, 0, 2, ui_text("ui_charviewer_medal_preview_image"),    e["medal_img"],      "medal_img")
-        self._add_le(g, 1, 0, ui_text("ui_charviewer_extra_costume_title_id"), e["extra_costume"],  "extra_costume")
-        self._add_le(g, 1, 1, ui_text("ui_charviewer_card_detail_id"),         e["card_detail"],    "card_detail")
-        self._add_le(g, 2, 0, ui_text("ui_charviewer_dlc_id"),                 str(e["dlc_id"]),    "dlc_id")
-        self._add_le(g, 2, 1, ui_text("ui_charviewer_patch"),                str(e["patch_id"]),  "patch_id")
-        self._add_le(g, 2, 2, ui_text("ui_charviewer_shop_price"),             str(e["shop_price"]), "shop_price")
-        self._add_combo(g, 3, 0, ui_text("ui_charviewer_unlock_condition"), _UNLOCK_NAMES,
-                        e["unlock_condition"], "unlock_condition")
-        self._add_editor_card(card)
+        shop = self._add_tab(ui_text('ui_charviewer_dlc_shop'))
+        grid = self._card(shop, ui_text('cv_availability'), 'fa6s.store', ui_text('cv_unlock_help'))
+        self._field(grid, 'dlc_id', ui_text('ui_charviewer_dlc_id'), options=_dlc_names(self._entries))
+        self._field(grid, 'unlock_condition', ui_text('ui_charviewer_unlock_condition'), options=_unlock_names(self._entries))
+        self._field(grid, 'shop_price', ui_text('ui_charviewer_shop_price'))
+        self._field(grid, 'patch_id', ui_text('ui_charviewer_patch'), options=[(v, str(v)) for v in sorted({e['patch_id'] for e in self._entries})])
+        grid = self._card(shop, ui_text('cv_gallery_art'), 'fa6s.image')
+        for key, label in (('custom_card', 'ui_charviewer_custom_card_id'), ('icon_path', 'ui_charviewer_custom_icon_path'),
+                           ('medal_img', 'ui_charviewer_medal_preview_image'), ('extra_costume', 'ui_charviewer_extra_costume_title_id'),
+                           ('card_detail', 'ui_charviewer_card_detail_id')):
+            self._field(grid, key, ui_text(label))
+        shop.addStretch()
 
-        # Advanced
-        self._add_section(ui_text("ui_charviewer_advanced"), "fa6s.gear")
-        card, g = self._add_card()
-        part_opts = {v: f"{v} – {n}" for v, n in _PART_NAMES.items()}
-        self._add_combo(g, 0, 0, ui_text("ui_charviewer_part_3d_shop"), part_opts, e["part"], "part")
-        self._add_le(g, 0, 1, ui_text("ui_charviewer_menu1_index_char"),   str(e["menu1_index"]), "menu1_index")
-        self._add_le(g, 0, 2, ui_text("ui_charviewer_menu2_index_3d_list"),  str(e["menu2_index"]), "menu2_index")
-        self._add_le(g, 1, 0, ui_text("ui_charviewer_unk_int32"),   str(e["unk"]),  "unk")
-        self._add_le(g, 1, 1, ui_text("ui_charviewer_unk2_uint64"), str(e["unk2"]), "unk2")
-        self._add_le(g, 1, 2, ui_text("ui_charviewer_unk3_uint64"), str(e["unk3"]), "unk3")
-        self._add_le(g, 2, 0, ui_text("ui_charviewer_unk4_uint32"), str(e["unk4"]), "unk4")
-        self._add_editor_card(card)
-
-        # Bottom padding
-        spacer = QWidget()
-        spacer.setFixedHeight(20)
-        spacer.setStyleSheet(ss_transparent())
-        self._editor_layout.addWidget(spacer)
-        self._editor_layout.addStretch()
-
+        references = self._add_tab(ui_text('cv_references'))
+        grid = self._card(references, ui_text('cv_linked_resources'), 'fa6s.link', ui_text('cv_list_help'))
+        for key in LIST_KEYS:
+            self._field(grid, key, ui_text('cv_field_' + key), hint=ui_text('cv_list_help'))
+        self._field(grid, 'resource_138', ui_text('cv_resource_138'), hint=ui_text('cv_resource_138_help'))
+        references.addStretch()
+        self._tabs.setCurrentIndex(min(old_tab, self._tabs.count() - 1))
         self._loading_detail = False
-
-    # Dynamic save
+        self._reflow()
+        self._refresh_lens()
+        QTimer.singleShot(0, self._reflow)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self._current_idx >= 0 and self._last_compact is not None:
-            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+        QTimer.singleShot(0, self._reflow)
 
-    def _maybe_rebuild_for_compact(self):
-        if self._current_idx < 0 or self._loading_detail:
-            return
-        compact = self._is_compact_editor()
-        if compact == self._last_compact:
-            return
-        self._apply_current_entry(mark_dirty=False)
-        self._build_editor(self._entries[self._current_idx])
+    def eventFilter(self, watched, event):
+        if watched is getattr(self, '_content', None) and event.type() == QEvent.Type.Resize:
+            QTimer.singleShot(0, self._reflow)
+        return super().eventFilter(watched, event)
 
-    def _save_current_entry(self):
+    def _reflow(self):
+        if self._tabs is None:
+            return
+        width = self._tabs.width()
+        columns = 1 if width < Size.COMPACT_BREAKPOINT else 2 if width < 1080 else 3
+        if columns == self._applied_columns:
+            return
+        self._applied_columns = columns
+        for grid, fields, hint in self._form_grids:
+            # Keep controls alive: focus, partial text and native undo survive.
+            if hint:
+                grid.addWidget(hint, 0, 0, 1, columns)
+            for i, shell in enumerate(fields):
+                row, col = divmod(i, columns)
+                grid.addWidget(shell, row + (1 if hint else 0), col)
+            for col in range(3):
+                grid.setColumnStretch(col, 1 if col < columns else 0)
+                grid.setColumnMinimumWidth(col, 0)
+
+    def _save_current_entry(self, *_):
         self._apply_current_entry(mark_dirty=True)
 
-    def _apply_current_entry(self, *, mark_dirty: bool):
-        if self._current_idx < 0 or self._loading_detail:
-            return
-        e = self._entries[self._current_idx]
-
-        def _txt(key, fallback="") -> str:
-            w = self._detail_widgets.get(key)
-            if isinstance(w, QLineEdit):
-                return w.text()
-            if isinstance(w, QComboBox):
-                return w.currentData()
-            return fallback
-
-        def _flt(key, fallback=0.0) -> float:
-            try:
-                return float(_txt(key, str(fallback)))
-            except (ValueError, TypeError):
-                return fallback
-
-        def _int(key, fallback=0) -> int:
-            try:
-                val = _txt(key, str(fallback))
-                return int(val)
-            except (ValueError, TypeError):
-                return fallback
-
-        # Identity
-        e["char_viewer_id"]    = _txt("char_viewer_id")
-        e["viewer_id"]         = _txt("viewer_id")
-        e["custom_list_title"] = _txt("custom_list_title")
-        e["chara_code"]        = _txt("chara_code")
-        e["model_code"]        = _txt("model_code")
-
-        # Animations
-        e["face_anim"]  = _txt("face_anim")
-        e["idle_anim1"] = _txt("idle_anim1")
-        e["idle_anim2"] = _txt("idle_anim2")
-        for pi in range(1, 6):
-            e[f"pose{pi}_st"] = _txt(f"pose{pi}_st")
-            e[f"pose{pi}_lp"] = _txt(f"pose{pi}_lp")
-            e[f"pose{pi}_ed"] = _txt(f"pose{pi}_ed")
-        e["object1"]           = _txt("object1")
-        e["object2"]           = _txt("object2")
-        e["object3"]           = _txt("object3")
-        e["anim21"]            = _txt("anim21")
-        e["anim22_char_id"]    = _txt("anim22_char_id")
-        e["anim23_char_tints"] = _txt("anim23_char_tints")
-        e["anim24_char_ids"]   = _txt("anim24_char_ids")
-        e["anim25_model_ids"]  = _txt("anim25_model_ids")
-        e["anim26"]            = _txt("anim26")
-        e["anim27"]            = _txt("anim27")
-
-        # Camera
-        e["cam_zoom"]      = _flt("cam_zoom")
-        e["cam_y"]         = _flt("cam_y")
-        e["cam_unk"]       = _flt("cam_unk")
-        e["cam_anchor_y"]  = _flt("cam_anchor_y")
-        e["cam_anchor_x"]  = _flt("cam_anchor_x")
-        e["cam_rot_y_min"] = _flt("cam_rot_y_min")
-        e["cam_rot_z"]     = _flt("cam_rot_z")
-        e["cam_zoom_in"]   = _flt("cam_zoom_in")
-        e["cam_zoom_out"]  = _flt("cam_zoom_out")
-
-        # DLC / Shop
-        e["custom_card"]      = _txt("custom_card")
-        e["icon_path"]        = _txt("icon_path")
-        e["medal_img"]        = _txt("medal_img")
-        e["extra_costume"]    = _txt("extra_costume")
-        e["card_detail"]      = _txt("card_detail")
-        e["dlc_id"]           = _int("dlc_id")
-        e["patch_id"]         = _int("patch_id")
-        e["shop_price"]       = _int("shop_price")
-        e["unlock_condition"] = _txt("unlock_condition")
-
-        # Advanced
-        e["part"]        = _txt("part")
-        e["menu1_index"] = _int("menu1_index")
-        e["menu2_index"] = _int("menu2_index")
-        e["unk"]         = _int("unk")
-        e["unk2"]        = _int("unk2")
-        e["unk3"]        = _int("unk3")
-        e["unk4"]        = _int("unk4")
-
+    def _apply_current_entry(self, *, mark_dirty):
+        if self._current_idx < 0 or self._loading_detail or not self._detail_widgets:
+            return True
+        values, invalid = {}, []
         if mark_dirty:
             self._mark_dirty()
+        for key, widget in self._detail_widgets.items():
+            text = self._text(widget)
+            try:
+                # Untouched non-finite values and float32 payloads stay exact.
+                values[key] = self._form_entry[key] if text == self._initial_text[key] else parse_field(key, text)
+                stylesheet = ss_input_validation(False)
+            except (ValueError, OverflowError, UnicodeError):
+                invalid.append(key)
+                stylesheet = ss_input_validation(True)
+            if widget.styleSheet() != stylesheet:
+                widget.setStyleSheet(stylesheet)
+        if self._validation_label is not None:
+            self._validation_label.setText(ui_text('cv_invalid', fields=', '.join(invalid)) if invalid else '')
+            self._validation_label.setVisible(bool(invalid))
+        if invalid:
+            self._refresh_lens(invalid=True)
+            return False
+        entry = self._entries[self._current_idx]
+        entry.update(values)
+        self._refresh_lens()
+        if mark_dirty:
+            for button, i in self._entry_buttons:
+                if i == self._current_idx:
+                    button.set_texts(self._character_name(entry) or entry['char_viewer_id'],
+                                     f'{entry["char_viewer_id"]} \u2014 {entry["viewer_id"]}', title_limit=27, subtitle_limit=30)
+        return True
 
-        # Refresh the button labels if viewer_id or chara_code changed
-        for btn, bi in self._entry_buttons:
-            if bi == self._current_idx:
-                labels = btn.findChildren(QLabel)
-                if len(labels) >= 2:
-                    vid_text = e["viewer_id"] or e["char_viewer_id"]
-                    labels[0].setText(_truncate(vid_text, 24))
-                    labels[0].setToolTip(vid_text)
-                    char_code = e["chara_code"]
-                    resolved_key = f"char_{char_code}"
-                    resolved = self._t(resolved_key)
-                    sub_text = (f"{char_code} • {resolved}"
-                                if resolved != resolved_key else char_code)
-                    labels[1].setText(_truncate(sub_text, 28))
-                    labels[1].setToolTip(sub_text)
-                break
+    def _refresh_asset_label(self):
+        available = bool(self._index)
+        self._asset_label.setText(ui_text('cv_assets_found' if available else 'cv_assets_missing', path=self._asset_path))
 
-    # File operations
-
-    def _on_open(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_charviewer_open_charviewerparam_bin_xfbin"),
-            game_files_dialog_dir(self._filepath or "", "CharViewerParam.bin.xfbin"),
-            "XFBIN Files (*.xfbin);;All Files (*)"
-        )
-        if not path:
+    def _reload_resources(self, *_):
+        if self._loading_detail or not self._detail_widgets:
             return
-        create_backup_on_open(path)
-        try:
-            raw, version, entries = parse_charviewer_xfbin(path)
-        except Exception as ex:
-            QMessageBox.critical(self, ui_text("ui_charviewer_load_error"), str(ex))
+        viewer = self._text(self._detail_widgets['viewer_id'])
+        self._index, self._asset_path = viewer_index(self._root, viewer)
+        rows = [e for e in self._entries if e['viewer_id'] == viewer]
+        for key in (*ANIMATION_KEYS, 'resource_138'):
+            widget = self._detail_widgets[key]
+            text = widget.value_text()
+            with QSignalBlocker(widget), QSignalBlocker(widget.lineEdit()):
+                widget.clear()
+                for value, caption in field_choices(rows, key, self._index):
+                    widget.addItem(caption, value)
+                index = widget.findData(text)
+                widget.setCurrentIndex(index)
+                if index < 0:
+                    widget.setEditText(text)
+        self._refresh_asset_label()
+
+    def _refresh_lens(self, *_, invalid=False):
+        if self._lens is None or self._loading_detail:
             return
-        self._filepath = path
-        self._raw      = raw
-        self._version  = version
-        self._entries  = entries
-        self._dirty    = False
-        self._current_idx = -1
-        set_file_label(self._lbl_file, path)
-        self._btn_save.setEnabled(True)
-        self._btn_add.setEnabled(True)
-        self._rebuild_list()
-        if self._visible_indices:
-            self._select_entry(self._visible_indices[0])
-        else:
-            self._show_placeholder(ui_text("ui_assist_no_entries_found"))
-
-    def _on_save(self):
-        if not self._filepath:
-            path, _ = QFileDialog.getSaveFileName(
-                self, ui_text("ui_charviewer_save_charviewerparam_bin_xfbin"),
-                ui_text("ui_charviewer_charviewerparam_bin_xfbin"),
-                "XFBIN Files (*.xfbin);;All Files (*)"
-            )
-            if not path:
-                return
-            self._filepath = path
-            set_file_label(self._lbl_file, path)
-        self._do_save(self._filepath)
-
-    def _do_save(self, path: str):
+        original = self._originals.get(id(self._entries[self._current_idx]), self._form_entry)
         try:
-            save_charviewer_xfbin(path, self._raw, self._version, self._entries)
-            self._raw   = bytearray(open(path, "rb").read())
-            self._dirty = False
-            set_file_label(self._lbl_file, path)
-            QMessageBox.information(self, ui_text("ui_assist_saved"),
-                                    ui_text("ui_charviewer_saved_value_entries_to_value", p0=len(self._entries), p1=path))
-        except Exception as ex:
-            QMessageBox.critical(self, ui_text("ui_assist_save_error"), str(ex))
+            fields = {key: parse_field(key, self._text(self._detail_widgets[key]))
+                      for key in ('cam_zoom', 'cam_unk', 'cam_pos_z', 'cam_y')}
+            self._position_plot.set_vectors(camera_offset(original), camera_offset(fields))
+        except (ValueError, OverflowError):
+            self._position_plot.set_vectors(None, None)
+        try:
+            requested = parse_field('cam_zoom_in', self._probe.text())
+            low = parse_field('cam_zoom_in', self._text(self._detail_widgets['cam_zoom_in']))
+            high = parse_field('cam_zoom_out', self._text(self._detail_widgets['cam_zoom_out']))
+            current = clamp_fov(requested, low, high)
+            before = clamp_fov(requested, original['cam_zoom_in'], original['cam_zoom_out'])
+            self._lens.set_angles(before, current)
+            self._probe.setStyleSheet(ss_input_validation(False))
+            self._probe_slider.setEnabled(low < high)
+            with QSignalBlocker(self._probe_slider):
+                self._probe_slider.setValue(round(max(0, min(1, (requested - low) / (high - low))) * 1000) if low < high else 0)
+        except (ValueError, OverflowError):
+            self._lens.set_angles(None, None)
+            self._probe.setStyleSheet(ss_input_validation(True))
+            self._probe_slider.setEnabled(False)
 
-    # Add / Duplicate / Delete
+    def _probe_slide(self, value):
+        try:
+            low = parse_field('cam_zoom_in', self._text(self._detail_widgets['cam_zoom_in']))
+            high = parse_field('cam_zoom_out', self._text(self._detail_widgets['cam_zoom_out']))
+            self._probe.setText(repr(low + (high - low) * value / 1000))
+        except (ValueError, OverflowError):
+            pass
+
+    def _restore_camera(self):
+        original = self._originals.get(id(self._entries[self._current_idx]))
+        if original is None:
+            return
+        if all(self._text(self._detail_widgets[key]) == repr(original[key]) for key in _FLOAT_KEYS):
+            return
+        self._loading_detail = True
+        for key in _FLOAT_KEYS:
+            self._detail_widgets[key].setText(repr(original[key]))
+        self._loading_detail = False
+        self._save_current_entry()
 
     def _mark_dirty(self):
         self._dirty = True
         if self._filepath:
             set_file_label(self._lbl_file, self._filepath, dirty=True)
 
-    def _on_add(self):
-        new_e = make_default_entry(len(self._entries))
-        self._entries.append(new_e)
-        self._mark_dirty()
+    def _refresh_filters(self, *_):
+        for combo, key, caption, names in (
+            (self._part_filter, 'part', 'ui_charviewer_part_3d_shop', _part_names()),
+            (self._dlc_filter, 'dlc_id', 'ui_charviewer_dlc_id', _dlc_names(self._entries)),
+        ):
+            selected = combo.currentData()
+            with QSignalBlocker(combo):
+                combo.clear()
+                combo.addItem(ui_text(caption), None)
+                for value in sorted({e[key] for e in self._entries}):
+                    combo.addItem(names.get(value, str(value)), value)
+                combo.setCurrentIndex(max(0, combo.findData(selected)))
+        reset = getattr(self._search_box, '_design_filter_reset', None)
+        if reset:
+            reset.refresh()
         self._rebuild_list()
-        self._select_entry(len(self._entries) - 1)
+
+    def _load_path(self, path):
+        if not self._apply_current_entry(mark_dirty=False):
+            return False
+        try:
+            raw, version, entries = parse_charviewer_xfbin(path)
+        except Exception as exc:
+            QMessageBox.critical(self, ui_text('ui_charviewer_load_error'), str(exc))
+            return False
+        self._filepath, self._raw, self._version, self._entries = str(path), raw, version, entries
+        self._originals = {id(e): copy.deepcopy(e) for e in entries}
+        self._dirty = False
+        self._current_idx = -1
+        self._detail_widgets = {}
+        set_file_label(self._lbl_file, str(path))
+        with QSignalBlocker(self._search_box), QSignalBlocker(self._part_filter), QSignalBlocker(self._dlc_filter):
+            self._search_box.clear()
+            self._part_filter.setCurrentIndex(0)
+            self._dlc_filter.setCurrentIndex(0)
+        self._refresh_filters()
+        self._btn_save.setEnabled(True)
+        self._btn_add.setEnabled(True)
+        self._btn_dup.setEnabled(bool(entries))
+        self._btn_del.setEnabled(bool(entries))
+        refresh_file_actions(self, loaded=True)
+        self._rebuild_list()
+        if entries:
+            self._select_entry(0)
+        else:
+            self._show_placeholder(ui_text('ui_assist_no_entries_found'))
+        return True
+
+    def _on_open(self):
+        if not self._apply_current_entry(mark_dirty=False):
+            return
+        path, _ = QFileDialog.getOpenFileName(self, ui_text('ui_charviewer_open_charviewerparam_bin_xfbin'),
+            game_files_dialog_dir(self._filepath or '', 'CharViewerParam.bin.xfbin'),
+            'XFBIN Files (*.xfbin);;All Files (*)')
+        if path:
+            create_backup_on_open(path)
+            self._load_path(path)
+
+    def _on_save(self):
+        if self._filepath:
+            return self._do_save(self._filepath)
+        return False
+
+    def _do_save(self, path):
+        if self._raw is None or not self._apply_current_entry(mark_dirty=False):
+            return False
+        try:
+            save_charviewer_xfbin(str(path), self._raw, self._version, self._entries)
+            raw, version, saved = parse_charviewer_xfbin(path)
+        except Exception as exc:
+            QMessageBox.critical(self, ui_text('ui_assist_save_error'), str(exc))
+            return False
+        # Keep object identity for the original comparison, while rebasing offsets
+        # after structural saves. Do not rebuild controls or erase text undo.
+        for entry, stored in zip(self._entries, saved):
+            entry['_offset'] = stored['_offset']
+            entry['_null_fields'] = stored['_null_fields']
+        self._raw, self._version = raw, version
+        self._dirty = False
+        commit_save_path(self, str(path))
+        set_file_label(self._lbl_file, str(path))
+        return True
+
+    def _unique_id(self, source, key):
+        used = {e[key] for e in self._entries}
+        suffix, candidate = 1, source
+        while candidate in used:
+            candidate = f'{source}_{suffix}'
+            suffix += 1
+        return candidate
+
+    def _reveal_entry(self, idx):
+        # Structural actions must reveal the created row even with active filters.
+        reset = getattr(self._search_box, '_design_filter_reset', None)
+        if reset:
+            reset.clear()
+        else:
+            self._search_box.clear()
+            self._part_filter.setCurrentIndex(0)
+            self._dlc_filter.setCurrentIndex(0)
+        self._refresh_filters()
+        self._select_entry(idx)
+
+    def _on_add(self):
+        if not self._apply_current_entry(mark_dirty=False) or self._raw is None:
+            return
+        entry = make_default_entry(len(self._entries))
+        entry['char_viewer_id'] = self._unique_id(entry['char_viewer_id'], 'char_viewer_id')
+        self._entries.append(entry)
+        self._originals[id(entry)] = copy.deepcopy(entry)
+        self._mark_dirty()
+        self._reveal_entry(len(self._entries) - 1)
 
     def _on_duplicate(self):
-        if self._current_idx < 0:
+        if self._current_idx < 0 or not self._apply_current_entry(mark_dirty=False):
             return
-        new_e = copy.deepcopy(self._entries[self._current_idx])
-        new_e["char_viewer_id"] = new_e["char_viewer_id"] + "_copy"
-        new_e["viewer_id"]      = new_e["viewer_id"] + "_copy"
-        insert_at = self._current_idx + 1
-        self._entries.insert(insert_at, new_e)
+        entry = copy.deepcopy(self._entries[self._current_idx])
+        entry.pop('_offset', None)
+        entry['char_viewer_id'] = self._unique_id(entry['char_viewer_id'] + '_copy', 'char_viewer_id')
+        # viewer_id is an actual asset name; duplication must keep the reference.
+        idx = self._current_idx + 1
+        self._entries.insert(idx, entry)
+        self._originals[id(entry)] = copy.deepcopy(entry)
         self._mark_dirty()
-        self._rebuild_list()
-        self._select_entry(insert_at)
+        self._reveal_entry(idx)
 
     def _on_delete(self):
-        if self._current_idx < 0:
+        if self._current_idx < 0 or not self._apply_current_entry(mark_dirty=False):
             return
-        e = self._entries[self._current_idx]
-        reply = QMessageBox.question(
-            self, ui_text("dlg_title_confirm_delete"),
-            ui_text("ui_charviewer_delete_entry_value", p0=e['char_viewer_id']),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        entry = self._entries[self._current_idx]
+        if QMessageBox.question(self, ui_text('dlg_title_confirm_delete'),
+                ui_text('ui_charviewer_delete_entry_value', p0=entry['char_viewer_id']),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
-        old_idx = self._current_idx
-        del self._entries[old_idx]
-        self._mark_dirty()
+        index = self._current_idx
+        self._originals.pop(id(entry), None)
+        del self._entries[index]
         self._current_idx = -1
+        self._detail_widgets = {}
+        self._mark_dirty()
         self._rebuild_list()
         if self._visible_indices:
-            target = min(old_idx, len(self._visible_indices) - 1)
-            self._select_entry(self._visible_indices[target])
+            self._select_entry(min(self._visible_indices, key=lambda i: abs(i - index)))
         else:
-            self._show_placeholder(ui_text("ui_dictionaryparam_select_an_entry_to_edit"))
             self._btn_dup.setEnabled(False)
             self._btn_del.setEnabled(False)
+            self._show_placeholder(ui_text('ui_dictionaryparam_select_an_entry_to_edit'))

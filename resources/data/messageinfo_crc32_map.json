@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-15T21:20:25.148744+00:00",
+  "updated_at": "2026-11-07T17:11:32.948034+00:00",
   "ids": {
     "0012CD3F": [
       "2krs01_provoke_18"
@@ -13723,6 +13723,9 @@
     ],
     "5772DFD7": [
       "4kwk01_btlcmd_skl_08"
+    ],
+    "577577E3": [
+      "option_menukey_decide_online"
     ],
     "57814BDD": [
       "7dio01_btlwin_08"
@@ -35413,6 +35416,9 @@
     ],
     "E83E0346": [
       "5prs01_command_13"
+    ],
+    "E855F156": [
+      "networkmode_114_PC"
     ],
     "E85657DC": [
       "4sgc01_provoke_15"

@@ -2,6 +2,22 @@
 
 from dataclasses import dataclass
 import os
+import re
+
+
+def export_filename(name, extension, used):
+    """Keep asset names inside the selected directory and avoid collisions."""
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name).strip(' .') or 'texture'
+    if name.split('.')[0].upper() in {'CON', 'PRN', 'AUX', 'NUL', *('COM' + str(n) for n in range(1, 10)),
+                                    *('LPT' + str(n) for n in range(1, 10))}:
+        name = '_' + name
+    name = name[:180]
+    result, number = name + extension, 1
+    while result.casefold() in used:
+        result = f'{name}_{number}{extension}'
+        number += 1
+    used.add(result.casefold())
+    return result
 
 
 IMPORTABLE_TEXTURE_EXTENSIONS = frozenset({

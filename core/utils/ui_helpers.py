@@ -1,3 +1,5 @@
+from core.design_tokens import TypeSize
+from core.design_tokens import ui_font
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QCursor, QFont, QPainter, QPixmap
 from PyQt6.QtWidgets import QLabel, QPushButton
@@ -89,7 +91,7 @@ def _make_label_background_transparent(label):
 
 def _add_card_section_title(layout, title):
     label = QLabel(str(title).upper())
-    label.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+    label.setFont(ui_font(TypeSize.TITLE, QFont.Weight.Bold))
     label.setStyleSheet(ss_panel_title())
     layout.addWidget(label)
     return label

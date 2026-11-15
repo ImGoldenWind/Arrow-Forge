@@ -2,603 +2,638 @@ from __future__ import annotations
 
 import copy
 import threading
+from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, QTimer, QSignalBlocker, pyqtSignal
 from PyQt6.QtWidgets import (
-    QFileDialog,
-    QFrame,
-    QGridLayout,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QPushButton,
-    QScrollArea,
-    QSizePolicy,
-    QVBoxLayout,
-    QWidget,
+    QWidget, QLabel, QPushButton, QLineEdit, QVBoxLayout, QHBoxLayout,
+    QGridLayout, QScrollArea, QFileDialog, QMessageBox, QSizePolicy,
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
 )
 
-from core.editor_file_state import set_file_label, set_file_label_empty
-from core.settings import create_backup_on_open, game_files_dialog_dir
+from core.design_tokens import LayoutRole, Size, TypeSize, ui_font
 from core.style_helpers import (
-    TOOLBAR_BTN_H,
-    TOOLBAR_H,
-    ss_accent_sep,
-    ss_bg_dark,
-    ss_bg_panel,
-    ss_btn,
-    ss_dim_label,
-    ss_error_label,
-    ss_file_label,
-    ss_input,
-    ss_main_label,
-    ss_scrollarea,
-    ss_scrollarea_transparent,
-    ss_search,
-    ss_sep,
-    ss_sidebar_btn,
-    ss_sidebar_frame,
-    ss_transparent,
-    make_editor_card, make_empty_state, make_editor_field_shell,
-    add_editor_card_title,
+    make_editor_card, add_editor_card_title, make_editor_field_shell,
+    make_empty_state, ss_transparent, ss_bg_dark, ss_dim_label,
+    ss_input_validation,
 )
+from core.ui.editor_widgets import (
+    EditorToolbar, EditorSidebar, EditorActionRow, EditorListRow,
+    EditorSeparator, EditorFilterCombo, configure_layout, configure_button,
+    configure_input, configure_search, configure_scrollarea,
+    configure_file_label, configure_table,
+)
+from core.ui.value_combo import EditorValueCombo
+from core.ui.vector_comparison import VectorComparison
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.editor_actions import install_file_actions, commit_save_path, refresh_file_actions, editor_path
+from core.editor_file_state import set_file_label
+from core.settings import create_backup_on_open, game_files_dialog_dir, load_settings
+from core.translations import ui_text, current_language
+from core.message_text import MessageText
+from core.hit_reactions import entry_name
+from core.gimmick_damage import (
+    FLAG_OFFSETS, word_text, parse_word, validate_identifier,
+    flag_indices, launch_velocity, row_issues, reference_candidates, signed,
+)
+from core.stage_tools import float32_text
 from parsers.gimmickdmgparam_parser import (
-    FIELD_SPECS,
-    float_to_word,
-    load_gimmickdmgparam_xfbin,
-    make_default_entry,
-    save_gimmickdmgparam_xfbin,
+    load_gimmickdmgparam_xfbin, save_gimmickdmgparam_xfbin, make_default_entry,
     word_to_float,
 )
+from parsers.damageprm_parser import parse_damageprm_xfbin
 
 
 def _clear_layout(layout):
-    if layout is None:
-        return
     while layout.count():
         item = layout.takeAt(0)
-        widget = item.widget()
-        child_layout = item.layout()
-        if widget is not None:
-            widget.hide()
-            widget.setParent(None)
-            widget.deleteLater()
-        elif child_layout is not None:
-            _clear_layout(child_layout)
+        if item.widget() is not None:
+            item.widget().hide()
+            item.widget().deleteLater()
+        elif item.layout() is not None:
+            _clear_layout(item.layout())
 
 
 class GimmickDmgParamEditor(QWidget):
-    _load_done_signal = pyqtSignal(str, object, object)
+    _load_done_signal = pyqtSignal(str, object, object, object)
     _load_error_signal = pyqtSignal(str)
 
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
-        self.t = t or (lambda key, **kwargs: key)
-        self.setStyleSheet(ss_transparent())
-
-        self._filepath = None
-        self._xfbin = None
-        self._item = None
-        self._snapshots = []
+        self.t = t or ui_text
+        self._filepath = self._xfbin = self._item = None
         self._current_idx = -1
+        self._dirty = self._busy = False
+        self._snapshots = []
+        self._reactions, self._reaction_path = {}, ''
+        self._stage_names = {}
         self._entry_buttons = []
-        self._header_fields = {}
-        self._record_fields = {}
-        self._dirty = False
-
+        self._record_fields, self._header_fields = {}, {}
+        self._initial_text = {}
+        self._grids = []
+        self._cards = []
         self._load_done_signal.connect(self._on_load_done)
         self._load_error_signal.connect(self._on_load_error)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-        self._build_ui(root)
-
-    def _build_ui(self, root):
-        top = QFrame(self)
-        top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(ss_bg_panel())
-        top_layout = QHBoxLayout(top)
-        top_layout.setContentsMargins(12, 8, 12, 8)
-        top_layout.setSpacing(6)
-
-        open_btn = QPushButton(self.t("btn_open_file"), top)
-        open_btn.setFixedHeight(TOOLBAR_BTN_H)
-        open_btn.setFont(QFont("Segoe UI", 10))
-        open_btn.setStyleSheet(ss_btn(accent=True))
-        open_btn.clicked.connect(self._load_file)
-        top_layout.addWidget(open_btn)
-
-        self._save_btn = QPushButton(self.t("btn_save_file"), top)
-        self._save_btn.setFixedHeight(TOOLBAR_BTN_H)
-        self._save_btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        self._fit_timer = QTimer(self)
+        self._fit_timer.setSingleShot(True)
+        self._fit_timer.timeout.connect(self._reflow)
+        self.setStyleSheet(ss_transparent())
+        root = configure_layout(QVBoxLayout(self), LayoutRole.ROOT)
+        toolbar = EditorToolbar(self)
+        self._open_btn = configure_button(QPushButton(self.t('btn_open_file')), accent=True)
+        self._open_btn.setProperty('designAction', 'open')
+        self._open_btn.clicked.connect(self._load_file)
+        self._save_btn = configure_button(QPushButton(self.t('btn_save_file')), accent=True)
+        self._save_btn.clicked.connect(lambda: self._save_file())
         self._save_btn.setEnabled(False)
-        self._save_btn.setStyleSheet(ss_btn(accent=True))
-        self._save_btn.clicked.connect(self._save_file)
-        top_layout.addWidget(self._save_btn)
-
-        self._file_label = QLabel(self.t("no_file_loaded"), top)
-        self._file_label.setFont(QFont("Consolas", 11))
-        self._file_label.setStyleSheet(ss_file_label())
-        top_layout.addWidget(self._file_label, 1)
-        root.addWidget(top)
-
-        sep = QFrame(self)
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
-        root.addWidget(sep)
-
-        main = QWidget(self)
-        main.setStyleSheet(ss_transparent())
-        main_layout = QHBoxLayout(main)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-
-        self._build_sidebar(main, main_layout)
-
-        vsep = QFrame(main)
-        vsep.setFixedWidth(1)
-        vsep.setStyleSheet(ss_sep())
-        main_layout.addWidget(vsep)
-
-        self._editor_scroll = QScrollArea(main)
-        self._editor_scroll.setWidgetResizable(True)
-        self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._editor_scroll.setStyleSheet(ss_scrollarea())
-        self._editor_widget = QWidget()
-        self._editor_widget.setStyleSheet(ss_bg_dark())
-        self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(12, 12, 12, 12)
-        self._editor_layout.setSpacing(10)
-        self._editor_scroll.setWidget(self._editor_widget)
-        main_layout.addWidget(self._editor_scroll, 1)
-
-        self._show_placeholder()
-        root.addWidget(main, 1)
-
-    def _build_sidebar(self, parent, main_layout):
-        side = QFrame(parent)
-        side.setFixedWidth(260)
-        side.setStyleSheet(ss_sidebar_frame())
-        side_layout = QVBoxLayout(side)
-        side_layout.setContentsMargins(8, 8, 8, 4)
-        side_layout.setSpacing(4)
-
-        self._search = QLineEdit(side)
-        self._search.setPlaceholderText(self.t("search_placeholder"))
-        self._search.setFixedHeight(32)
-        self._search.setFont(QFont("Segoe UI", 13))
-        self._search.setStyleSheet(ss_search())
+        self._file_label = configure_file_label(QLabel(self.t('no_file_loaded')))
+        for button in (self._open_btn, self._save_btn):
+            toolbar.content_layout.addWidget(button)
+        toolbar.content_layout.addWidget(self._file_label, 1)
+        root.addWidget(toolbar)
+        root.addWidget(EditorSeparator(accent=True))
+        body = QWidget()
+        layout = configure_layout(QHBoxLayout(body), LayoutRole.ROOT)
+        side = EditorSidebar(width=300)
+        self._search = configure_search(QLineEdit())
         self._search.textChanged.connect(self._filter_entries)
-        side_layout.addWidget(self._search)
-
-        actions = QWidget(side)
-        actions.setStyleSheet(ss_transparent())
-        actions_layout = QHBoxLayout(actions)
-        actions_layout.setContentsMargins(0, 2, 0, 4)
-        actions_layout.setSpacing(4)
-
-        self._add_btn = QPushButton(self.t("btn_new"), actions)
-        self._dup_btn = QPushButton(self.t("btn_duplicate"), actions)
-        self._del_btn = QPushButton(self.t("btn_delete"), actions)
-        for btn in (self._add_btn, self._dup_btn, self._del_btn):
-            btn.setFixedHeight(28)
-            btn.setEnabled(False)
-            btn.setFont(QFont("Segoe UI", 10))
-            actions_layout.addWidget(btn, 1)
-        self._add_btn.setStyleSheet(ss_btn())
-        self._dup_btn.setStyleSheet(ss_btn())
-        self._del_btn.setStyleSheet(ss_btn(danger=True))
-        self._add_btn.clicked.connect(self._add_entry)
-        self._dup_btn.clicked.connect(self._duplicate_entry)
-        self._del_btn.clicked.connect(self._delete_entry)
-        side_layout.addWidget(actions)
-
-        self._entry_scroll = QScrollArea(side)
-        self._entry_scroll.setWidgetResizable(True)
-        self._entry_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._entry_scroll.setStyleSheet(ss_scrollarea_transparent())
-        self._entry_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        side.content_layout.addWidget(self._search)
+        self._stage_filter = EditorFilterCombo()
+        self._stage_filter.addItem(self.t('ui_gimmickdmg_stage_id'), None)
+        self._stage_filter.currentIndexChanged.connect(self._filter_entries)
+        side.content_layout.addWidget(self._stage_filter)
+        actions = EditorActionRow()
+        self._add_btn = configure_button(QPushButton(self.t('btn_new')), height=Size.COMPACT_CONTROL)
+        self._dup_btn = configure_button(QPushButton(self.t('btn_duplicate')), height=Size.COMPACT_CONTROL)
+        self._del_btn = configure_button(QPushButton(self.t('btn_delete')), danger=True, height=Size.COMPACT_CONTROL)
+        for button, action, callback in (
+            (self._add_btn, 'new', self._add_entry),
+            (self._dup_btn, 'duplicate', self._duplicate_entry),
+            (self._del_btn, 'delete', self._delete_entry),
+        ):
+            button.setProperty('designAction', action)
+            button.clicked.connect(callback)
+            actions.content_layout.addWidget(button, 1)
+        side.content_layout.addWidget(actions)
+        self._entry_scroll = configure_scrollarea(QScrollArea(), transparent=True)
         self._entry_list_widget = QWidget()
-        self._entry_list_widget.setMinimumWidth(0)
-        self._entry_list_widget.setStyleSheet(ss_transparent())
-        self._entry_list_layout = QVBoxLayout(self._entry_list_widget)
-        self._entry_list_layout.setContentsMargins(0, 0, 0, 0)
-        self._entry_list_layout.setSpacing(0)
+        self._entry_list_layout = configure_layout(QVBoxLayout(self._entry_list_widget), LayoutRole.LIST)
         self._entry_list_layout.addStretch()
         self._entry_scroll.setWidget(self._entry_list_widget)
-        side_layout.addWidget(self._entry_scroll, 1)
-        main_layout.addWidget(side)
+        side.content_layout.addWidget(self._entry_scroll, 1)
+        layout.addWidget(side)
+        layout.addWidget(EditorSeparator(orientation=Qt.Orientation.Vertical))
+        self._editor_scroll = configure_scrollarea(QScrollArea())
+        self._editor_widget = QWidget()
+        self._editor_widget.setStyleSheet(ss_bg_dark())
+        self._editor_layout = configure_layout(QVBoxLayout(self._editor_widget), LayoutRole.PAGE)
+        self._editor_scroll.setWidget(self._editor_widget)
+        layout.addWidget(self._editor_scroll, 1)
+        root.addWidget(body, 1)
+        install_file_actions(self, self._save_btn, save_to=self._save_file)
+        install_editor_chrome(self)
+        self._set_controls_enabled()
+        self._show_placeholder()
 
     def _show_placeholder(self):
         _clear_layout(self._editor_layout)
-        self._header_fields = {}
         self._record_fields = {}
-        card = make_empty_state(
-            self._editor_widget,
-            title=self.t("no_file_loaded"),
-            text=self.t("ui_gimmickdmg_open_file_to_begin_editing"),
-            icon_name="fa6s.bomb",
-        )
+        self._grids, self._cards = [], []
+        card = make_empty_state(title=self.t('no_file_loaded'),
+                                text=self.t('ui_gimmickdmg_open_file_to_begin_editing'), icon_name='fa6s.bomb')
         self._editor_layout.addStretch(1)
         self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch(1)
 
-    def _load_file(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            self.t("ui_gimmickdmg_open_title"),
-            game_files_dialog_dir(target_patterns="gimmickDmgParam.bin.xfbin"),
-            self.t("ui_gimmickdmg_file_filter"),
-        )
+    def _load_file(self, path=None):
+        if self._busy:
+            return False
+        if not self._apply_editor_fields():
+            return False
+        if self._dirty and QMessageBox.question(self, self.t('unsaved_changes_title'),
+                                                self.t('gdm_discard')) != QMessageBox.StandardButton.Yes:
+            return False
+        direct = isinstance(path, (str, Path))
+        if not direct:
+            path, _ = QFileDialog.getOpenFileName(self, self.t('ui_gimmickdmg_open_title'),
+                game_files_dialog_dir(target_patterns='gimmickDmgParam.bin.xfbin'), self.t('ui_gimmickdmg_file_filter'))
         if not path:
-            return
-        create_backup_on_open(path)
-        set_file_label_empty(self._file_label, self.t("loading"))
-        self._set_controls_enabled(False)
-        self._show_placeholder()
+            return False
+        self._busy = True
+        self._set_controls_enabled()
+        game_dir = load_settings().get('game_files_dir', '')
+        language = current_language()
+
+        def read():
+            xfbin, item = load_gimmickdmgparam_xfbin(str(path))
+            refs = ({}, '')
+            for candidate in reference_candidates(path, 'damageprm.bin.xfbin', game_dir):
+                try:
+                    _, result = parse_damageprm_xfbin(candidate)
+                    refs = (self._reaction_map(result), str(candidate))
+                    break
+                except (OSError, ValueError, IndexError):
+                    continue
+            neighboring_data = Path(path).resolve().parent / 'data'
+            messages = MessageText(str(path), language,
+                                   str(neighboring_data) if neighboring_data.is_dir() else game_dir)
+            names = {stage: text for stage in {entry.stage_id for entry in item.entries if entry.stage_id}
+                     if (text := messages.text(stage)[0])}
+            create_backup_on_open(str(path))
+            return xfbin, item, (*refs, names)
+
+        if direct:
+            try:
+                xfbin, item, refs = read()
+            except Exception as exc:
+                self._on_load_error(str(exc))
+                return False
+            self._on_load_done(str(path), xfbin, item, refs)
+            return True
 
         def worker():
             try:
-                xfbin, item = load_gimmickdmgparam_xfbin(path)
+                xfbin, item, refs = read()
+                self._load_done_signal.emit(str(path), xfbin, item, refs)
             except Exception as exc:
                 self._load_error_signal.emit(str(exc))
-                return
-            self._load_done_signal.emit(path, xfbin, item)
-
         threading.Thread(target=worker, daemon=True).start()
+        return True
 
-    def _on_load_error(self, msg):
-        self._filepath = None
-        self._xfbin = None
-        self._item = None
-        self._current_idx = -1
-        self._snapshots = []
-        self._rebuild_entry_list()
-        self._show_placeholder()
-        self._set_controls_enabled(False)
-        set_file_label_empty(self._file_label, self.t("no_file_loaded"))
-        QMessageBox.critical(self, self.t("dlg_title_error"), msg)
+    @staticmethod
+    def _reaction_map(result):
+        # The game's named map resolves the last definition, like its loader.
+        return {entry['name']: entry for entry in result['entries']}
 
-    def _on_load_done(self, path, xfbin, item):
-        self._filepath = path
-        self._xfbin = xfbin
-        self._item = item
-        self._snapshots = [copy.deepcopy(entry) for entry in item.entries]
+    def _on_load_done(self, path, xfbin, item, references=None):
+        self._filepath, self._xfbin, self._item = path, xfbin, item
+        references = references or ({}, '')
+        self._reactions, self._reaction_path = references[:2]
+        self._stage_names = references[2] if len(references) > 2 else {}
+        self._snapshots = copy.deepcopy(item.entries)
         self._current_idx = 0 if item.entries else -1
-        self._dirty = False
-        self._save_btn.setEnabled(False)
-        set_file_label(self._file_label, path, dirty=False)
-        self._set_controls_enabled(True)
+        self._dirty = self._busy = False
+        with QSignalBlocker(self._search):
+            self._search.clear()
+        with QSignalBlocker(self._stage_filter):
+            self._stage_filter.setCurrentIndex(0)
+        self._update_stage_filter()
         self._rebuild_entry_list()
-        if self._current_idx >= 0:
-            self._build_editor()
-        else:
-            self._show_placeholder()
+        self._build_editor()
+        self._set_controls_enabled()
+        set_file_label(self._file_label, path, dirty=False)
 
-    def _set_controls_enabled(self, enabled):
-        for btn in (self._add_btn, self._dup_btn, self._del_btn):
-            btn.setEnabled(enabled and self._item is not None)
+    def _on_load_error(self, message):
+        self._busy = False
+        self._set_controls_enabled()
+        QMessageBox.critical(self, self.t('dlg_title_error'), message)
 
-    def _save_file(self):
-        if self._xfbin is None or self._item is None or not self._filepath:
-            return
-        self._apply_editor_fields()
+    def _set_controls_enabled(self, enabled=True):
+        loaded = self._item is not None and not self._busy and enabled
+        self._open_btn.setEnabled(not self._busy)
+        self._add_btn.setEnabled(loaded)
+        self._dup_btn.setEnabled(loaded and self._current_idx >= 0)
+        self._del_btn.setEnabled(loaded and self._current_idx >= 0)
+        self._save_btn.setEnabled(loaded and self._dirty)
+        self._editor_scroll.setEnabled(not self._busy)
+        self._entry_scroll.setEnabled(not self._busy)
+        refresh_file_actions(self, loaded=self._item is not None)
+
+    def _save_file(self, target_path=None):
+        path = target_path or editor_path(self)
+        if self._busy or self._item is None or not path or not self._apply_editor_fields():
+            return False
         try:
-            save_gimmickdmgparam_xfbin(self._xfbin, self._filepath, self._item)
+            save_gimmickdmgparam_xfbin(self._xfbin, str(path), self._item)
         except Exception as exc:
-            QMessageBox.critical(self, self.t("dlg_title_error"), self.t("msg_save_error", error=exc))
-            return
-        self._snapshots = [copy.deepcopy(entry) for entry in self._item.entries]
+            QMessageBox.critical(self, self.t('dlg_title_error'), self.t('msg_save_error', error=exc))
+            return False
+        self._snapshots = copy.deepcopy(self._item.entries)
+        if 0 <= self._current_idx < len(self._item.entries) and self._record_fields:
+            self._form_entry = copy.deepcopy(self._item.entries[self._current_idx])
+            self._initial_text = {key: self._text(edit) for key, edit in self._record_fields.items()}
         self._dirty = False
-        self._save_btn.setEnabled(False)
-        set_file_label(self._file_label, self._filepath, dirty=False)
+        commit_save_path(self, str(path))
+        set_file_label(self._file_label, str(path), dirty=False)
+        self._set_controls_enabled()
+        self._refresh_summary()
+        return True
 
-    def _make_entry_button(self, idx, entry):
-        btn = QPushButton(self._entry_list_widget)
-        btn.setFixedHeight(48)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet(ss_sidebar_btn(selected=(idx == self._current_idx)))
+    def _update_stage_filter(self):
+        options = tuple((stage, self._stage_caption(stage)) for stage in
+                        sorted({entry.stage_id for entry in self._item.entries if entry.stage_id})) if self._item else ()
+        if options == getattr(self, '_stage_options', None):
+            if hasattr(self._search, '_design_filter_reset'):
+                self._search._design_filter_reset.refresh()
+            return
+        self._stage_options = options
+        old = self._stage_filter.currentData()
+        self._stage_filter.blockSignals(True)
+        self._stage_filter.clear()
+        self._stage_filter.addItem(self.t('ui_gimmickdmg_stage_id'), None)
+        for stage, caption in options:
+            self._stage_filter.addItem(caption, stage)
+        self._stage_filter.setCurrentIndex(max(0, self._stage_filter.findData(old)))
+        self._stage_filter.blockSignals(False)
+        if hasattr(self._search, '_design_filter_reset'):
+            self._search._design_filter_reset.refresh()
 
-        inner = QWidget(btn)
-        inner.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        inner.setStyleSheet(ss_transparent())
-        layout = QVBoxLayout(inner)
-        layout.setContentsMargins(10, 4, 10, 4)
-        layout.setSpacing(1)
+    def _reaction_caption(self, identifier):
+        if identifier in self._reactions:
+            return entry_name(self._reactions[identifier], self.t)
+        return identifier
 
-        title = entry.stage_id or self.t("ui_gimmickdmg_blank_stage")
-        title_label = QLabel(title, inner)
-        title_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        title_label.setStyleSheet(ss_main_label())
-        title_label.setMinimumWidth(0)
-        layout.addWidget(title_label)
+    def _stage_caption(self, identifier):
+        return self._stage_names.get(identifier, identifier)
 
-        subtitle = entry.damage_id or self.t("ui_gimmickdmg_blank_damage")
-        sub_label = QLabel(self.t("ui_gimmickdmg_entry_subtitle", index=idx, damage=subtitle), inner)
-        sub_label.setFont(QFont("Consolas", 10))
-        sub_label.setStyleSheet(ss_dim_label())
-        sub_label.setMinimumWidth(0)
-        layout.addWidget(sub_label)
-
-        outer = QHBoxLayout(btn)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(inner)
-        btn.clicked.connect(lambda _checked=False, i=idx: self._select_entry(i))
-        return btn
-
-    def _rebuild_entry_list(self, filter_text=""):
+    def _rebuild_entry_list(self, filter_text=None):
         _clear_layout(self._entry_list_layout)
-        self._entry_list_layout.addStretch()
         self._entry_buttons = []
+        if self._item:
+            for idx, entry in enumerate(self._item.entries):
+                button = EditorListRow()
+                button.set_texts(self._stage_caption(entry.stage_id) or self.t('ui_gimmickdmg_blank_stage'),
+                                 self._reaction_caption(entry.damage_id) or self.t('ui_gimmickdmg_blank_damage'),
+                                 title_limit=26, subtitle_limit=32)
+                button.setToolTip(f'{entry.stage_id}\n{entry.damage_id}')
+                button.set_selected(idx == self._current_idx)
+                button.clicked.connect(lambda _=False, i=idx: self._select_entry(i))
+                self._entry_list_layout.addWidget(button)
+                self._entry_buttons.append((idx, button))
+        self._entry_list_layout.addStretch()
+        self._filter_entries()
+
+    def _filter_entries(self, *_):
         if self._item is None:
             return
-        needle = filter_text.strip().lower()
-        for idx, entry in enumerate(self._item.entries):
-            hay = f"{entry.stage_id} {entry.damage_id} {idx}".lower()
-            if needle and needle not in hay:
+        query = self._search.text().casefold().strip()
+        stage = self._stage_filter.currentData()
+        for idx, button in self._entry_buttons:
+            if idx >= len(self._item.entries):
+                button.hide()
                 continue
-            btn = self._make_entry_button(idx, entry)
-            self._entry_list_layout.insertWidget(self._entry_list_layout.count() - 1, btn)
-            self._entry_buttons.append((idx, btn))
-
-    def _filter_entries(self):
-        self._rebuild_entry_list(self._search.text())
+            entry = self._item.entries[idx]
+            hay = f'{entry.stage_id} {self._stage_caption(entry.stage_id)} {entry.damage_id} {self._reaction_caption(entry.damage_id)} {idx}'.casefold()
+            button.setVisible((not query or query in hay) and (stage is None or entry.stage_id == stage))
+            button.set_selected(idx == self._current_idx)
 
     def _select_entry(self, idx):
-        if self._item is None or idx < 0 or idx >= len(self._item.entries):
-            return
-        self._apply_editor_fields()
+        if self._busy or self._item is None or not 0 <= idx < len(self._item.entries):
+            return False
+        if not self._apply_editor_fields():
+            return False
         self._current_idx = idx
         self._build_editor()
         self._filter_entries()
+        return True
 
-    def _make_editor_card(self, margins=(16, 14, 16, 14), spacing=10):
-        return make_editor_card(self._editor_widget, margins=margins, spacing=spacing)
+    def _card(self, title, hint='', icon='fa6s.sliders'):
+        panel, layout = make_editor_card(self._editor_widget)
+        add_editor_card_title(layout, self.t(title), icon, self.t(hint) if hint else None)
+        self._editor_layout.addWidget(panel)
+        self._cards.append(panel)
+        return layout
 
-    def _add_title(self, layout, title_key, hint_key=None, icon_name="fa6s.screwdriver-wrench"):
-        add_editor_card_title(
-            layout,
-            self.t(title_key),
-            icon_name,
-            self.t(hint_key) if hint_key else None,
-        )
+    def _grid(self, layout, fields, maximum=3):
+        grid = configure_layout(QGridLayout(), LayoutRole.GRID)
+        layout.addLayout(grid)
+        self._grids.append((grid, fields, maximum))
 
-    def _make_field(self, label_text, value_text, on_change, *, width=None):
-        wrap, layout, _label, _hint = make_editor_field_shell(label_text, label_font_size=11)
-        wrap.setParent(self._editor_widget)
-        wrap.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        edit = QLineEdit(str(value_text), wrap)
-        edit.setFixedHeight(30)
-        if width:
-            edit.setFixedWidth(width)
-        edit.setFont(QFont("Consolas", 12))
-        edit.setStyleSheet(ss_input())
+    def _field(self, key, caption, value, hint='', choices=None, caption_text=None):
+        frame, layout, label, _ = make_editor_field_shell(caption_text if caption_text is not None else self.t(caption))
+        frame.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        if choices is not None:
+            edit = EditorValueCombo(choices, value)
+            signal = edit.currentTextChanged
+        else:
+            edit = configure_input(QLineEdit(str(value)), monospace=True)
+            signal = edit.textChanged
         edit.setMinimumWidth(0)
-        edit.setCursorPosition(0)
-        edit.textEdited.connect(on_change)
+        edit.setProperty('messageReference', False)
+        edit.setAccessibleName(label.text())
+        edit.setToolTip(self.t(hint) if hint else label.text())
+        edit._gdm_hint = edit.toolTip()
         layout.addWidget(edit)
-        return wrap, edit
+        self._record_fields[key] = edit
+        self._initial_text[key] = self._text(edit)
+        signal.connect(self._on_record_changed)
+        return frame
+
+    @staticmethod
+    def _text(edit):
+        return edit.value_text() if isinstance(edit, EditorValueCombo) else edit.text()
 
     def _build_editor(self):
-        if self._item is None:
+        if self._item is None or self._current_idx < 0:
             self._show_placeholder()
             return
         _clear_layout(self._editor_layout)
-        self._header_fields = {}
-        self._record_fields = {}
+        self._record_fields, self._initial_text = {}, {}
+        self._grids, self._cards = [], []
+        entry = self._item.entries[self._current_idx]
+        self._form_entry = copy.deepcopy(entry)
+        layout = self._card('gdm_identity', 'gdm_identity_hint', 'fa6s.link')
+        stages = sorted({e.stage_id for e in self._item.entries if e.stage_id})
+        reactions = sorted(set(self._reactions) | {e.damage_id for e in self._item.entries if e.damage_id})
+        self._grid(layout, [
+            self._field('stage_id', 'ui_gimmickdmg_stage_id', entry.stage_id,
+                        'gdm_stage_hint', [(s, f'{self._stage_names[s]} · {s}' if s in self._stage_names else s)
+                                           for s in stages]),
+            self._field('damage_id', 'gdm_reaction', entry.damage_id, 'gdm_reaction_hint',
+                        [(s, f'{self._reaction_caption(s)} · {s}') for s in reactions]),
+        ], 2)
+        self._status = self._note('')
+        layout.addWidget(self._status)
+        self._reference_label = self._note(self.t('gdm_reference_source', path=self._reaction_path)
+                                           if self._reaction_path else self.t('gdm_missing_reference'))
+        layout.addWidget(self._reference_label)
+        button = configure_button(QPushButton(self.t('gdm_choose_reactions')))
+        button.clicked.connect(self._choose_reactions)
+        layout.addWidget(button, 0, Qt.AlignmentFlag.AlignLeft)
 
-        self._build_layout_panel()
-        self._build_header_panel()
-        if 0 <= self._current_idx < len(self._item.entries):
-            self._build_record_panel(self._item.entries[self._current_idx])
+        layout = self._card('gdm_impact', 'gdm_impact_hint', 'fa6s.burst')
+        self._grid(layout, [self._number(entry, off, key, hint) for off, key, hint in (
+            (0x10, 'gdm_damage', 'gdm_damage_hint'),
+            (0x14, 'gdm_forward_scale', 'gdm_scale_hint'),
+            (0x18, 'gdm_up_scale', 'gdm_scale_hint'),
+        )])
+        self._comparison = configure_table(QTableWidget(3, 3))
+        self._comparison.setHorizontalHeaderLabels([self.t('gdm_quantity'), self.t('gdm_saved'), self.t('gdm_current')])
+        self._comparison.verticalHeader().hide()
+        self._comparison.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._comparison.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._comparison.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self._comparison.setFixedHeight(self._comparison.horizontalHeader().sizeHint().height()
+                                        + Size.TABLE_ROW * 3 + self._comparison.frameWidth() * 2)
+        layout.addWidget(self._comparison)
+        self._velocity_plot = VectorComparison(self.t('gdm_axis_forward'), self.t('gdm_axis_up'),
+            self.t('gdm_saved'), self.t('gdm_current'), self.t('gdm_no_velocity'))
+        self._velocity_plot.setToolTip(self.t('gdm_velocity_limit'))
+        layout.addWidget(self._velocity_plot)
+        layout.addWidget(self._note(self.t('gdm_velocity_limit')))
+
+        layout = self._card('gdm_secondary', 'gdm_secondary_hint', 'fa6s.wand-magic-sparkles')
+        fields = [self._field('value_20', 'gdm_effect_kind', word_text(entry.words[8], 0x20), 'gdm_effect_kind_hint',
+                    [('0', self.t('gdm_effect_off')), ('1', self.t('gdm_effect_kind_one'))])]
+        fields += [self._number(entry, off, 'gdm_effect_argument', 'gdm_effect_argument_hint', argument=n)
+                   for n, off in enumerate((0x24, 0x28, 0x2C, 0x30, 0x34), 1)]
+        self._grid(layout, fields)
+
+        layout = self._card('gdm_flags', 'gdm_flags_hint', 'fa6s.flag')
+        choices = [('-1', self.t('gdm_flag_unused'))] + [(str(n), self.t('gdm_flag_index', index=n)) for n in range(128)]
+        fields = [self._field(f'value_{off:02x}', 'gdm_flag_slot', word_text(entry.words[off // 4], off),
+                              'gdm_flag_slot_hint', choices) for off in FLAG_OFFSETS]
+        for n, field in enumerate(fields, 1):
+            text = self.t('gdm_flag_slot_number', index=n)
+            field.layout().itemAt(0).widget().setText(text)
+            self._record_fields[f'value_{FLAG_OFFSETS[n - 1]:02x}'].setAccessibleName(text)
+        self._grid(layout, fields)
+        self._flag_summary = self._note('')
+        layout.addWidget(self._flag_summary)
+        layout = self._card('gdm_additional', 'gdm_additional_hint')
+        self._grid(layout, [self._number(entry, off, key, hint) for off, key, hint in (
+            (0x1C, 'gdm_contact_value', 'gdm_contact_hint'),
+            (0x38, 'gdm_hit_value', 'gdm_hit_hint'),
+        )])
         self._editor_layout.addStretch()
+        self._refresh_summary()
+        self._reflow()
 
-    def _build_layout_panel(self):
-        panel, layout = self._make_editor_card()
-        self._add_title(layout, "ui_gimmickdmg_layout_title", "ui_gimmickdmg_layout_hint", "fa6s.layer-group")
-        self._editor_layout.addWidget(panel)
+    def _number(self, entry, off, caption, hint, **kwargs):
+        return self._field(f'value_{off:02x}', caption, word_text(entry.words[off // 4], off), hint,
+                           caption_text=self.t(caption, **kwargs))
 
-    def _build_header_panel(self):
-        panel, layout = self._make_editor_card()
-        self._add_title(layout, "ui_gimmickdmg_header_title", icon_name="fa6s.table-list")
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(10)
-        layout.addLayout(grid)
+    def _note(self, text):
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setMinimumWidth(0)
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        label.setFont(ui_font(TypeSize.HINT))
+        label.setStyleSheet(ss_dim_label())
+        return label
 
-        fields = [
-            ("chunk_name", self.t("ui_gimmickdmg_chunk_name"), self._item.chunk_name),
-            ("file_path", self.t("ui_gimmickdmg_file_path"), self._item.file_path),
-            ("magic", self.t("ui_gimmickdmg_header_magic"), self._item.magic),
-            ("count", self.t("ui_gimmickdmg_header_count"), len(self._item.entries)),
-            ("unknown_08", self.t("ui_gimmickdmg_header_unknown_08"), self._item.unknown_08),
-            ("reserved_0c", self.t("ui_gimmickdmg_header_reserved_0c"), self._item.reserved_0c),
-        ]
-        cols = 1 if self.width() < 900 else 3
-        for idx, (key, label, value) in enumerate(fields):
-            wrap, edit = self._make_field(label, value, self._on_header_changed)
-            if key == "count":
-                edit.setReadOnly(True)
-            self._header_fields[key] = edit
-            grid.addWidget(wrap, idx // cols, idx % cols)
-            grid.setColumnStretch(idx % cols, 1)
-        self._editor_layout.addWidget(panel)
-
-    def _build_record_panel(self, entry):
-        panel, layout = self._make_editor_card()
-        self._add_title(layout, "ui_gimmickdmg_record_title", "ui_gimmickdmg_record_hint", "fa6s.pen-to-square")
-
-        strings_grid = QGridLayout()
-        strings_grid.setContentsMargins(0, 0, 0, 0)
-        strings_grid.setHorizontalSpacing(16)
-        strings_grid.setVerticalSpacing(10)
-        layout.addLayout(strings_grid)
-
-        stage_wrap, stage_edit = self._make_field(
-            self.t("ui_gimmickdmg_stage_id"),
-            entry.stage_id,
-            self._on_record_changed,
-        )
-        damage_wrap, damage_edit = self._make_field(
-            self.t("ui_gimmickdmg_damage_id"),
-            entry.damage_id,
-            self._on_record_changed,
-        )
-        self._record_fields["stage_id"] = stage_edit
-        self._record_fields["damage_id"] = damage_edit
-        if self.width() < 900:
-            strings_grid.addWidget(stage_wrap, 0, 0)
-            strings_grid.addWidget(damage_wrap, 1, 0)
-            strings_grid.setColumnStretch(0, 1)
-        else:
-            strings_grid.addWidget(stage_wrap, 0, 0)
-            strings_grid.addWidget(damage_wrap, 0, 1)
-            strings_grid.setColumnStretch(0, 1)
-            strings_grid.setColumnStretch(1, 1)
-
-        warn = QLabel(self.t("ui_gimmickdmg_string_pointer_note"), panel)
-        warn.setWordWrap(True)
-        warn.setFont(QFont("Segoe UI", 10))
-        warn.setStyleSheet(ss_error_label())
-        layout.addWidget(warn)
-
-        raw_grid = QGridLayout()
-        raw_grid.setContentsMargins(0, 0, 0, 0)
-        raw_grid.setHorizontalSpacing(14)
-        raw_grid.setVerticalSpacing(10)
-        layout.addLayout(raw_grid)
-
-        cols = 1 if self.width() < 900 else 3
-        for idx, (key, offset, kind) in enumerate(FIELD_SPECS):
-            word_idx = offset // 4
-            raw = entry.words[word_idx]
-            value_text = self._format_field(raw, kind)
-            label = self.t(f"ui_gimmickdmg_field_{key}")
-            wrap, edit = self._make_field(label, value_text, self._on_record_changed)
-            self._record_fields[key] = edit
-            raw_grid.addWidget(wrap, idx // cols, idx % cols)
-            raw_grid.setColumnStretch(idx % cols, 1)
-
-        self._editor_layout.addWidget(panel)
-
-    @staticmethod
-    def _format_field(raw, kind):
-        if kind == "f32":
-            return f"{word_to_float(raw):.6g}"
-        if raw == 0xFFFFFFFF:
-            return "-1"
-        return str(raw)
-
-    def _parse_u32_text(self, text):
-        text = text.strip() or "0"
-        value = int(text, 0)
-        if value == -1:
-            return 0xFFFFFFFF
-        if not (0 <= value <= 0xFFFFFFFF):
-            raise ValueError
-        return value
-
-    def _on_header_changed(self):
-        self._apply_header_fields()
-        self._mark_dirty()
-
-    def _on_record_changed(self):
-        self._apply_record_fields()
-        self._filter_entries()
-        self._mark_dirty()
-
-    def _apply_editor_fields(self):
-        self._apply_header_fields()
-        self._apply_record_fields()
-
-    def _apply_header_fields(self):
-        if self._item is None or not self._header_fields:
-            return
-        self._item.chunk_name = self._header_fields["chunk_name"].text().strip()
-        self._item.file_path = self._header_fields["file_path"].text().strip()
-        for key in ("magic", "unknown_08", "reserved_0c"):
+    def _apply_editor_fields(self, focus_error=True):
+        if self._item is None or self._current_idx < 0 or not self._record_fields:
+            return True
+        entry = self._item.entries[self._current_idx]
+        pending = copy.deepcopy(self._form_entry)
+        invalid = []
+        for key, edit in self._record_fields.items():
+            text = self._text(edit)
             try:
-                setattr(self._item, key, self._parse_u32_text(self._header_fields[key].text()))
-            except ValueError:
-                pass
+                if text == self._initial_text[key]:
+                    value = None  # Preserve noncanonical float/NaN bits unchanged.
+                elif key in ('stage_id', 'damage_id'):
+                    value = validate_identifier(text)
+                else:
+                    off = int(key.removeprefix('value_'), 16)
+                    value = parse_word(text, off)
+                    if off in FLAG_OFFSETS and signed(value) >= 128:
+                        raise ValueError('gdm_invalid_flag')
+                if value is not None:
+                    if key in ('stage_id', 'damage_id'):
+                        setattr(pending, key, value)
+                        if not value:
+                            index = 0 if key == 'stage_id' else 2
+                            pending.words[index:index + 2] = [0, 0]
+                    else:
+                        pending.words[int(key.removeprefix('value_'), 16) // 4] = value
+                edit.setStyleSheet(ss_input_validation(False))
+                edit.setToolTip(edit._gdm_hint + ('\n' + text if isinstance(edit, EditorValueCombo) else ''))
+            except ValueError as exc:
+                edit.setStyleSheet(ss_input_validation(True))
+                edit.setToolTip(self.t(str(exc)))
+                invalid.append(edit)
+        if invalid:
+            if focus_error:
+                invalid[0].setFocus()
+            return False
+        if pending != entry:
+            self._item.entries[self._current_idx] = pending
+            self._mark_dirty()
+        return True
 
-    def _apply_record_fields(self):
-        if self._item is None or not (0 <= self._current_idx < len(self._item.entries)) or not self._record_fields:
+    def _on_record_changed(self, *_):
+        valid = self._apply_editor_fields(focus_error=False)
+        if not valid:
+            self._mark_dirty()
+            self._status.setText(self.t('gdm_pending_invalid'))
+            self._velocity_plot.set_vectors(None, None)
+            for row in range(3):
+                self._comparison.setItem(row, 2, QTableWidgetItem('—'))
+        else:
+            self._refresh_summary()
+            self._refresh_current_button()
+        self._fit_timer.start(0)
+
+    def _refresh_current_button(self):
+        entry = self._item.entries[self._current_idx]
+        self._update_stage_filter()
+        for idx, button in self._entry_buttons:
+            if idx == self._current_idx:
+                button.set_texts(self._stage_caption(entry.stage_id) or self.t('ui_gimmickdmg_blank_stage'),
+                    self._reaction_caption(entry.damage_id) or self.t('ui_gimmickdmg_blank_damage'),
+                    title_limit=26, subtitle_limit=32)
+                button.setToolTip(f'{entry.stage_id}\n{entry.damage_id}')
+        self._filter_entries()
+
+    def _refresh_summary(self):
+        if not self._record_fields or self._item is None:
             return
         entry = self._item.entries[self._current_idx]
-        entry.stage_id = self._record_fields["stage_id"].text().strip()
-        entry.damage_id = self._record_fields["damage_id"].text().strip()
-        for key, offset, kind in FIELD_SPECS:
-            edit = self._record_fields.get(key)
-            if edit is None:
-                continue
-            word_idx = offset // 4
-            try:
-                if kind == "f32":
-                    entry.words[word_idx] = float_to_word(float(edit.text().strip() or "0"))
-                else:
-                    entry.words[word_idx] = self._parse_u32_text(edit.text())
-            except ValueError:
-                edit.setText(self._format_field(entry.words[word_idx], kind))
-        if "count" in self._header_fields:
-            self._header_fields["count"].setText(str(len(self._item.entries)))
+        issues = row_issues(entry, self._item.entries, self._reactions)
+        self._status.setText('\n'.join(self.t(key) for key in issues) or self.t('gdm_links_ready'))
+        self._flag_summary.setText(self.t('gdm_flag_summary', flags=', '.join(map(str, flag_indices(entry))) or '—'))
+        saved = self._snapshots[self._current_idx] if self._current_idx < len(self._snapshots) else None
+        vectors = []
+        for column, row in ((1, saved), (2, entry)):
+            values = ['—'] * 3
+            vector = None
+            if row is not None:
+                values[0] = float32_text(word_to_float(row.words[4]))
+                reaction = self._reactions.get(row.damage_id)
+                if reaction:
+                    vector = launch_velocity(row, reaction)
+                    values[1:] = [float32_text(v) for v in vector]
+            vectors.append(vector)
+            for index, text in enumerate(values):
+                self._comparison.setItem(index, column, QTableWidgetItem(text))
+        self._velocity_plot.set_vectors(*vectors)
+        for index, key in enumerate(('gdm_damage', 'gdm_forward_contribution', 'gdm_up_contribution')):
+            self._comparison.setItem(index, 0, QTableWidgetItem(self.t(key)))
+
+    def _choose_reactions(self):
+        if not self._apply_editor_fields():
+            return False
+        path, _ = QFileDialog.getOpenFileName(self, self.t('gdm_choose_reactions'),
+                     game_files_dialog_dir(target_patterns='damageprm.bin.xfbin'), 'XFBIN (*.xfbin)')
+        if not path:
+            return False
+        try:
+            _, result = parse_damageprm_xfbin(path)
+        except Exception as exc:
+            QMessageBox.critical(self, self.t('dlg_title_error'), str(exc))
+            return False
+        self._reactions, self._reaction_path = self._reaction_map(result), path
+        self._build_editor()
+        self._rebuild_entry_list()
+        return True
+
+    def _reflow(self):
+        if not self._cards:
+            return
+        width = self._editor_scroll.viewport().width() - Size.PAGE_INSET * 2
+        for grid, fields, maximum in self._grids:
+            columns = min(maximum, 3 if width >= 850 else 2 if width >= 580 else 1)
+            while grid.count():
+                grid.takeAt(0)
+            for col in range(maximum):
+                grid.setColumnStretch(col, int(col < columns))
+                grid.setColumnMinimumWidth(col, 0)
+            for index, field in enumerate(fields):
+                grid.addWidget(field, index // columns, index % columns)
+        for card in self._cards:
+            layout = card.layout()
+            layout.invalidate()
+            height = layout.totalHeightForWidth(max(1, width))
+            if height > 0:
+                card.setFixedHeight(height)
+        self._editor_layout.invalidate()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_timer.start(0)
 
     def _add_entry(self):
-        if self._item is None:
-            return
-        self._apply_editor_fields()
-        entry = make_default_entry()
-        insert_at = self._current_idx + 1 if self._current_idx >= 0 else len(self._item.entries)
-        self._item.entries.insert(insert_at, entry)
-        self._snapshots.insert(insert_at, copy.deepcopy(entry))
-        self._current_idx = insert_at
-        self._rebuild_entry_list()
-        self._build_editor()
-        self._mark_dirty()
+        return self._insert_entry(False)
 
     def _duplicate_entry(self):
-        if self._item is None:
-            return
-        self._apply_editor_fields()
-        source = self._item.entries[self._current_idx] if 0 <= self._current_idx < len(self._item.entries) else None
+        return self._insert_entry(True)
+
+    def _insert_entry(self, duplicate):
+        if self._item is None or self._busy or not self._apply_editor_fields():
+            return False
+        source = self._item.entries[self._current_idx] if duplicate and self._current_idx >= 0 else None
         entry = make_default_entry(source)
-        insert_at = self._current_idx + 1 if self._current_idx >= 0 else len(self._item.entries)
-        self._item.entries.insert(insert_at, entry)
-        self._snapshots.insert(insert_at, copy.deepcopy(entry))
-        self._current_idx = insert_at
+        if not duplicate:
+            used = {e.stage_id for e in self._item.entries}
+            base, suffix = entry.stage_id, 1
+            while entry.stage_id in used:
+                entry.stage_id = f'{base}_{suffix}'
+                suffix += 1
+        index = self._current_idx + 1 if self._current_idx >= 0 else len(self._item.entries)
+        self._item.entries.insert(index, entry)
+        self._snapshots.insert(index, None)
+        self._current_idx = index
+        self._update_stage_filter()
         self._rebuild_entry_list()
         self._build_editor()
         self._mark_dirty()
+        self._set_controls_enabled()
+        return True
 
     def _delete_entry(self):
-        if self._item is None or not self._item.entries:
-            return
+        if self._busy or self._item is None or not self._apply_editor_fields() or self._current_idx < 0:
+            return False
         if len(self._item.entries) <= 1:
-            QMessageBox.warning(self, self.t("dlg_title_warning"), self.t("ui_gimmickdmg_cannot_delete_last_entry"))
-            return
-        idx = self._current_idx if 0 <= self._current_idx < len(self._item.entries) else len(self._item.entries) - 1
-        entry = self._item.entries[idx]
-        reply = QMessageBox.question(
-            self,
-            self.t("dlg_title_confirm_delete"),
-            self.t("ui_gimmickdmg_delete_entry_confirm", stage=entry.stage_id or str(idx)),
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-        self._item.entries.pop(idx)
-        if idx < len(self._snapshots):
-            self._snapshots.pop(idx)
-        self._current_idx = min(idx, len(self._item.entries) - 1)
+            QMessageBox.warning(self, self.t('dlg_title_warning'), self.t('ui_gimmickdmg_cannot_delete_last_entry'))
+            return False
+        entry = self._item.entries[self._current_idx]
+        if QMessageBox.question(self, self.t('dlg_title_confirm_delete'),
+            self.t('ui_gimmickdmg_delete_entry_confirm', stage=entry.stage_id)) != QMessageBox.StandardButton.Yes:
+            return False
+        self._item.entries.pop(self._current_idx)
+        self._snapshots.pop(self._current_idx)
+        self._current_idx = min(self._current_idx, len(self._item.entries) - 1)
+        self._update_stage_filter()
         self._rebuild_entry_list()
         self._build_editor()
         self._mark_dirty()
+        return True
 
     def _mark_dirty(self):
+        self._dirty = True
+        self._save_btn.setEnabled(not self._busy)
         if self._filepath:
-            self._dirty = True
-            self._save_btn.setEnabled(True)
             set_file_label(self._file_label, self._filepath, dirty=True)

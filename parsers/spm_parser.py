@@ -2,6 +2,8 @@
 
 import struct
 import copy
+import os
+import tempfile
 import xml.etree.ElementTree as ET
 
 
@@ -73,7 +75,7 @@ def parse_spm_xfbin(filepath):
     hdr_off, data_off, chunk_size = _find_binary_chunk(raw)
     payload = bytes(raw[data_off:data_off + chunk_size])
     prefix, xml_text = _extract_xml(payload)
-    root = ET.fromstring(xml_text)
+    root = ET.fromstring(xml_text, parser=ET.XMLParser(target=ET.TreeBuilder(insert_comments=True, insert_pis=True)))
 
     # nuccChunkBinary stores an inner BE uint32 data_size before the XML/BOM.
     # Keep supporting raw XML payloads, but update this field on save when present.
@@ -89,11 +91,15 @@ def parse_spm_xfbin(filepath):
         'hdr_off':  hdr_off,
         'data_off': data_off,
         'has_inner_size': has_inner_size,
+        '_tree_signature': ET.tostring(root, encoding='utf-8'),
     }
 
 
 def save_spm_xfbin(filepath, raw, result):
     """Write modified SPM XFBIN back to filepath."""
+    if result.get('_tree_signature') == ET.tostring(result['root'], encoding='utf-8'):
+        _atomic_write(filepath, bytes(raw))
+        return
     xml_str = _to_xml_str(result['root'])
     xml_bytes = xml_str.encode('utf-8')
 
@@ -120,8 +126,20 @@ def save_spm_xfbin(filepath, raw, result):
     struct.pack_into('>I', new_hdr, 0, len(new_data))
 
     buf = bytes(raw[:hdr_off]) + bytes(new_hdr) + bytes(payload) + bytes(raw[old_end:])
-    with open(filepath, 'wb') as f:
-        f.write(buf)
+    _atomic_write(filepath, buf)
+
+
+def _atomic_write(filepath, data):
+    descriptor, temporary = tempfile.mkstemp(prefix='.arrow-spm-', dir=os.path.dirname(os.path.abspath(filepath)))
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, filepath)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def get_moves(root):

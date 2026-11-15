@@ -1,3 +1,5 @@
+from core.design_tokens import TypeSize
+from core.design_tokens import ui_font
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QCursor, QFont
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel
@@ -30,7 +32,7 @@ class _SidebarBtn(QFrame):
         row.addWidget(self._icon_lbl)
 
         self._text_lbl = QLabel(text)
-        self._text_lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        self._text_lbl.setFont(ui_font(TypeSize.LABEL, QFont.Weight.Bold))
         self._text_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._text_lbl.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self._text_lbl.setAutoFillBackground(False)

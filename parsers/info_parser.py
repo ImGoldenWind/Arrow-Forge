@@ -1,196 +1,163 @@
+"""Lossless editing of the XML UI collision payload inside an XFBIN."""
+import copy
+from collections import Counter
+import os
 import struct
+import tempfile
 import xml.etree.ElementTree as ET
 
-# info.xfbin parser
-# File structure (XFBIN container):
-#   [XFBIN Header 28 bytes] [Chunk Table] [Chunk Data Area]
-# The binary chunk contains XML describing UI collision rectangles
-# for all game scenes (menus, character select, gallery, etc.).
-# XML structure:
-#   <_root>
-#     <info>
-#       <_array num="N">
-#         <set>
-#           <name>sceneName</name>
-#           <_array num="M">
-#             <collision>
-#               <type>0|2</type>
-#               <name>elementName</name>
-#               <x>int</x> <y>int</y> <w>int</w> <h>int</h>
-#               <rtoX>int</rtoX> <rtoY>int</rtoY>
-#               <lboX>int</lboX> <lboY>int</lboY>
-#             </collision>
-#           </_array>
-#         </set>
-#       </_array>
-#     </info>
-#   </_root>
-# Collision types:
-#   0 = standard clickable/touchable area
-#   2 = panel / selectable region
-# Key set: "ccSceneBattleSelectChar" — 61 FaceIcon collisions
-# correspond to the character select screen slots. Adding a new
-# character requires adding a FaceIcon collision here.
+from core.ui_collisions import parse_integer, xml_text_valid
 
 COLLISION_FIELDS = ['type', 'name', 'x', 'y', 'w', 'h', 'rtoX', 'rtoY', 'lboX', 'lboY']
-INT_FIELDS = {'type', 'x', 'y', 'w', 'h', 'rtoX', 'rtoY', 'lboX', 'lboY'}
+INT_FIELDS = set(COLLISION_FIELDS) - {'name'}
+
+
+def _snapshot(sets):
+    return [(s['name'], [{k: c.get(k, 0 if k in INT_FIELDS else '') for k in COLLISION_FIELDS}
+                         for c in s['collisions']]) for s in sets]
 
 
 def parse_info_xfbin(filepath):
-    """Parse an info.xfbin file.
-
-    Returns (raw_data, sets, meta):
-      - raw_data: bytearray of the entire file
-      - sets: list of dicts with 'name' and 'collisions' (list of collision dicts)
-      - meta: dict with offsets needed for saving
-    """
     with open(filepath, 'rb') as f:
         data = bytearray(f.read())
-
-    if data[:4] != b'NUCC':
-        raise ValueError("Not a valid XFBIN file (missing NUCC magic)")
-
-    chunk_table_size = struct.unpack('>I', data[16:20])[0]
-    chunk_data_start = 28 + chunk_table_size
-    if chunk_data_start % 4:
-        chunk_data_start += 4 - (chunk_data_start % 4)
-
-    # Scan chunks to find the binary chunk with XML
-    chunks = []
-    binary_chunk_idx = None
-    offset = chunk_data_start
-
-    while offset < len(data) - 11:
-        size = struct.unpack('>I', data[offset:offset + 4])[0]
-        header = bytes(data[offset:offset + 12])
-        chunk_data_bytes = bytes(data[offset + 12:offset + 12 + size])
-        chunks.append({'header': header, 'data': chunk_data_bytes, 'offset': offset})
-
-        if size > 16 and binary_chunk_idx is None:
-            binary_chunk_idx = len(chunks) - 1
-
-        offset += 12 + size
-        if offset % 4:
-            offset += 4 - (offset % 4)
-
-    if binary_chunk_idx is None:
-        raise ValueError("Could not find binary chunk in XFBIN")
-
-    # Extract XML from binary payload
-    bd = chunks[binary_chunk_idx]['data']
-    inner_size = struct.unpack('>I', bd[0:4])[0]
-    xml_bytes = bd[4:4 + inner_size]
-    xml_text = xml_bytes.decode('utf-8')
-
-    root = ET.fromstring(xml_text)
-    info_elem = root.find('info')
-    if info_elem is None:
-        raise ValueError("Missing <info> element in XML")
-
-    array_elem = info_elem.find('_array')
-    if array_elem is None:
-        raise ValueError("Missing <_array> element in XML")
-
+    if len(data) < 28 or data[:4] != b'NUCC':
+        raise ValueError('Invalid or truncated XFBIN header')
+    start = (28 + struct.unpack_from('>I', data, 16)[0] + 3) & ~3
+    if start > len(data):
+        raise ValueError('XFBIN chunk table exceeds file size')
+    chunks, found = [], None
+    offset = start
+    while offset + 12 <= len(data):
+        size = struct.unpack_from('>I', data, offset)[0]
+        end = offset + 12 + size
+        if end > len(data):
+            raise ValueError('Truncated XFBIN chunk')
+        payload = bytes(data[offset + 12:end])
+        chunk = {'header': bytes(data[offset:offset + 12]), 'data': payload,
+                 'offset': offset}
+        chunks.append(chunk)
+        if len(payload) >= 4:
+            n = struct.unpack_from('>I', payload)[0]
+            if 0 < n <= len(payload) - 4 and payload[4:4 + n].lstrip().startswith((b'<?xml', b'<_root', b'\xef\xbb\xbf')):
+                try:
+                    candidate = ET.fromstring(payload[4:4 + n], parser=ET.XMLParser(target=ET.TreeBuilder(insert_comments=True)))
+                except ET.ParseError:
+                    candidate = None
+                if candidate is not None and candidate.find('info/_array') is not None:
+                    if found is not None:
+                        raise ValueError('Multiple UI collision payloads are ambiguous')
+                    found = len(chunks) - 1, candidate, n
+        # NUCC envelopes follow their payload immediately, without alignment.
+        offset = end
+    if found is None:
+        raise ValueError('No UI collision XML payload found')
+    index, root, n = found
     sets = []
-    for set_elem in array_elem.findall('set'):
-        name_elem = set_elem.find('name')
-        set_name = name_elem.text if name_elem is not None else ''
-
+    for se in root.find('info/_array').findall('set'):
+        ca = se.find('_array')
         collisions = []
-        coll_array = set_elem.find('_array')
-        orig_array_num = None
-        if coll_array is not None:
-            orig_array_num = coll_array.get('num')
-            for coll_elem in coll_array.findall('collision'):
-                coll = {}
-                for field in COLLISION_FIELDS:
-                    elem = coll_elem.find(field)
-                    if elem is not None and elem.text is not None:
-                        coll[field] = int(elem.text) if field in INT_FIELDS else elem.text
-                    else:
-                        coll[field] = 0 if field in INT_FIELDS else ''
-                collisions.append(coll)
-
-        sets.append({
-            'name': set_name,
-            'collisions': collisions,
-            '_orig_array_num': orig_array_num,
-            '_orig_coll_count': len(collisions),
-        })
-
-    meta = {
-        'chunk_data_start': chunk_data_start,
-        'chunks': chunks,
-        'binary_chunk_idx': binary_chunk_idx,
-        'header_bytes': bytes(data[:chunk_data_start]),
-    }
-
+        for ce in ca.findall('collision') if ca is not None else []:
+            c = {'_xml': ET.tostring(ce, encoding='unicode')}
+            for key in COLLISION_FIELDS:
+                value = ce.findtext(key)
+                c[key] = parse_integer(value) if key in INT_FIELDS and value is not None else (value or '' if key == 'name' else 0)
+            collisions.append(c)
+        sets.append({'name': se.findtext('name') or '', 'collisions': collisions,
+                     '_xml': ET.tostring(se, encoding='unicode'),
+                     '_orig_array_num': ca.get('num') if ca is not None else None,
+                     '_orig_coll_count': len(collisions)})
+    meta = {'chunk_data_start': start, 'chunks': chunks, 'binary_chunk_idx': index,
+            'header_bytes': bytes(data[:start]), 'trailer': bytes(data[offset:]),
+            'root': root, 'original': _snapshot(sets), 'original_count': len(sets),
+            'binary_tail': chunks[index]['data'][4 + n:]}
     return data, sets, meta
 
 
-def _build_xml(sets):
-    """Rebuild the XML string from sets data."""
-    lines = ['<?xml version="1.0" encoding="utf-8"?>']
-    lines.append('<_root>')
-    lines.append('\t<info>')
-    lines.append(f'\t\t<_array num="{len(sets)}">')
+def _set_text(parent, key, value):
+    if not xml_text_valid(str(value)):
+        raise ValueError('Text contains characters XML cannot store')
+    child = parent.find(key)
+    if child is None:
+        child = ET.SubElement(parent, key)
+    # Preserve lexical spelling (e.g. 0001) when the numeric value is unchanged.
+    if key in INT_FIELDS:
+        value = parse_integer(str(value))
+        try:
+            if int(child.text) == value:
+                return
+        except (TypeError, ValueError):
+            pass
+    child.text = str(value)
 
+
+def _replace_children(parent, tag, children):
+    old = [c for c in parent if c.tag == tag]
+    insertion = list(parent).index(old[-1]) + 1 if old else len(parent)
+    for prior, replacement in zip(old, children):
+        index = list(parent).index(prior)
+        parent.remove(prior)
+        parent.insert(index, replacement)
+    for prior in old[len(children):]:
+        parent.remove(prior)
+    for replacement in children[len(old):]:
+        parent.insert(insertion, replacement)
+        insertion += 1
+
+
+def _build_xml(sets, meta=None):
+    root = copy.deepcopy(meta['root']) if meta else ET.fromstring('<_root><info><_array/></info></_root>')
+    array = root.find('info/_array')
+    if not meta or len(sets) != meta['original_count']:
+        array.set('num', str(len(sets)))
+    elements = []
     for s in sets:
-        lines.append('\t\t\t<set>')
-        lines.append(f'\t\t\t\t<name>{s["name"]}</name>')
-        collisions = s['collisions']
-        # If collision count changed (user added/removed), update num.
-        # If unchanged, preserve original num (handles pre-existing mismatches).
-        orig_num = s.get('_orig_array_num')
-        orig_count = s.get('_orig_coll_count')
-        if orig_num is not None and orig_count == len(collisions):
-            array_num = orig_num
-        else:
-            array_num = str(len(collisions))
-        lines.append(f'\t\t\t\t<_array num="{array_num}">')
-
-        for coll in collisions:
-            lines.append('\t\t\t\t\t<collision>')
-            for field in COLLISION_FIELDS:
-                val = coll.get(field, 0 if field in INT_FIELDS else '')
-                lines.append(f'\t\t\t\t\t\t<{field}>{val}</{field}>')
-            lines.append('\t\t\t\t\t</collision>')
-
-        lines.append('\t\t\t\t</_array>')
-        lines.append('\t\t\t</set>')
-
-    lines.append('\t\t</_array>')
-    lines.append('\t</info>')
-    lines.append('</_root>')
-    # Original files end with \r\n after closing tag
-    return '\r\n'.join(lines) + '\r\n'
+        se = ET.fromstring(s['_xml'], parser=ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))) if '_xml' in s else ET.Element('set')
+        _set_text(se, 'name', s['name'])
+        ca = se.find('_array')
+        if ca is None:
+            ca = ET.SubElement(se, '_array')
+        if s.get('_orig_coll_count') != len(s['collisions']):
+            ca.set('num', str(len(s['collisions'])))
+        records = []
+        for c in s['collisions']:
+            ce = ET.fromstring(c['_xml'], parser=ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))) if '_xml' in c else ET.Element('collision')
+            for key in COLLISION_FIELDS:
+                value = c.get(key, 0 if key in INT_FIELDS else '')
+                # Missing default fields are preserved rather than materialised.
+                if ce.find(key) is None and '_xml' in c and value == (0 if key in INT_FIELDS else ''):
+                    continue
+                _set_text(ce, key, value)
+            records.append(ce)
+        _replace_children(ca, 'collision', records)
+        elements.append(se)
+    _replace_children(array, 'set', elements)
+    return '<?xml version="1.0" encoding="utf-8"?>\r\n' + ET.tostring(root, encoding='unicode')
 
 
 def save_info_xfbin(filepath, data, sets, meta):
-    """Save sets back to an XFBIN file."""
-    xml_text = _build_xml(sets)
-    xml_bytes = xml_text.encode('utf-8')
-
-    # Build binary payload: [inner_size: u32 BE] [xml_bytes]
-    inner_size = len(xml_bytes)
-    payload = struct.pack('>I', inner_size) + xml_bytes
-
-    result = bytearray(meta['header_bytes'])
-
-    for i, chunk in enumerate(meta['chunks']):
-        if i == meta['binary_chunk_idx']:
-            new_header = bytearray(chunk['header'])
-            struct.pack_into('>I', new_header, 0, len(payload))
-            result += new_header
-            result += payload
-        else:
-            result += chunk['header']
-            result += chunk['data']
-        if len(result) % 4:
-            result += b'\x00' * (4 - (len(result) % 4))
-
-    with open(filepath, 'wb') as f:
-        f.write(result)
+    if _snapshot(sets) == meta['original']:
+        result = bytes(data)
+    else:
+        xml = _build_xml(sets, meta).encode('utf-8')
+        payload = struct.pack('>I', len(xml)) + xml + meta['binary_tail']
+        result = bytearray(meta['header_bytes'])
+        for i, chunk in enumerate(meta['chunks']):
+            if i == meta['binary_chunk_idx']:
+                header = bytearray(chunk['header'])
+                struct.pack_into('>I', header, 0, len(payload))
+                result += header + payload
+            else:
+                result += chunk['header'] + chunk['data']
+        result += meta['trailer']
+    folder = os.path.dirname(os.path.abspath(filepath))
+    fd, temporary = tempfile.mkstemp(prefix='.arrow-info-', dir=folder)
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(result)
+        os.replace(temporary, filepath)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def get_scene_description(scene_name):
@@ -274,6 +241,6 @@ def analyze_char_select(sets):
                 'row_count': len(y_values),
                 'y_values': y_values,
                 'rows': rows,
-                'typical_size': (face_icons[0]['w'], face_icons[0]['h']) if face_icons else (54, 46),
+                'typical_size': Counter((c['w'], c['h']) for c in face_icons).most_common(1)[0][0] if face_icons else (0, 0),
             }
     return None

@@ -1,32 +1,57 @@
+from core.design_tokens import (
+    Insets,
+    LayoutRole,
+    Size,
+    TypeSize,
+    ui_font,
+)
+from core.style_helpers import (
+    add_editor_card_title,
+    make_editor_card,
+    make_editor_field_shell,
+    make_empty_state,
+    ss_bg_dark,
+    ss_blocking_overlay,
+    ss_blocking_overlay_card,
+    ss_dim_label,
+    ss_progressbar,
+    ss_transparent,
+)
+from core.ui.editor_widgets import (
+    EditorActionRow,
+    EditorFilterCombo,
+    EditorSeparator,
+    EditorSidebar,
+    EditorToolbar,
+    configure_button,
+    configure_card,
+    configure_file_label,
+    configure_input,
+    configure_layout,
+    configure_scrollarea,
+    configure_search,
+)
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.editor_actions import commit_save_path, editor_path, install_file_actions, refresh_file_actions
 import os
 import io
-import wave
 import subprocess
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
+
+from core.audio_tools import AudioCache, scale_wav
+from core.ui.record_list import EditorRecordList, RecordListModel
 
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QLabel, QPushButton, QLineEdit, QScrollArea, QSlider,
+    QLabel, QPushButton, QLineEdit, QScrollArea,
     QFileDialog, QMessageBox, QProgressBar, QSizePolicy,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QPainter, QColor, QPen
+from PyQt6.QtCore import Qt, pyqtSignal, QSignalBlocker
 
-from core.themes import P
-from core.style_helpers import (
-    TOOLBAR_H, TOOLBAR_BTN_H,
-    add_editor_card_title, make_empty_state, make_editor_card, make_editor_field_shell,
-    ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
-    ss_btn, ss_accent_sep, ss_file_label, ss_input,
-    ss_scrollarea, ss_scrollarea_transparent, ss_search,
-    ss_sep, ss_sidebar_btn, ss_slider,
-    ss_blocking_overlay, ss_blocking_overlay_card, ss_progressbar,
-    ss_accent_label, ss_audio_format_badge, ss_dim_label, ss_main_label, ss_transparent,
-)
 from core.editor_file_state import set_file_label, set_file_label_empty
 from core.external_tools import find_vgaudio_cli, find_vgmstream_cli, is_tool_path, tool_command
-from core.skeleton import SkeletonListRow
 from core.settings import create_backup_on_open, load_settings, save_settings, game_files_dialog_dir
 from core.quiet_unlocks import request_and_cascade
 from parsers.awb_parser import (
@@ -34,7 +59,7 @@ from parsers.awb_parser import (
     add_entry, delete_entry, get_entry_label, _detect_format,
 )
 from parsers.acb_parser import load_companion_acb_labels, parse_acb_awb_labels
-from parsers.hca_decoder import parse_hca_info, decode_hca_to_wav, set_hca_volume
+from parsers.hca_decoder import parse_hca_info, decode_hca_to_wav
 from core.translations import ui_text
 
 
@@ -77,11 +102,8 @@ def _ensure_file_ext(path: str, ext: str) -> str:
 
 
 def _import_pyaudio():
-    try:
-        import pyaudiowpatch as pyaudio
-    except ImportError:
-        import pyaudio
-    return pyaudio
+    from core.audio_tools import import_pyaudio
+    return import_pyaudio()
 
 
 def _detect_audio_input_format(data: bytes, fallback_path: str = '') -> str:
@@ -138,7 +160,8 @@ def _run_vgaudio_conversion(
                     os.remove(out_path)
                 except OSError:
                     pass
-            last_result = subprocess.run(command, capture_output=True, timeout=60)
+            last_result = subprocess.run(command, capture_output=True, timeout=60,
+                                         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             if last_result.returncode == 0 and os.path.isfile(out_path):
                 break
         if last_result is None or last_result.returncode != 0 or not os.path.isfile(out_path):
@@ -162,7 +185,7 @@ def _run_tool_decode_to_wav(cli_path: str, audio_data: bytes, source_path: str =
             f.write(audio_data)
 
         if 'vgmstream' in os.path.basename(cli_path).lower():
-            cmd = [*tool_command(cli_path), '-o', out_path, in_path]
+            cmd = [*tool_command(cli_path), '-i', '-o', out_path, in_path]
         else:
             commands = (
                 [*tool_command(cli_path), '-i', in_path, '-o', out_path],
@@ -175,7 +198,8 @@ def _run_tool_decode_to_wav(cli_path: str, audio_data: bytes, source_path: str =
                         os.remove(out_path)
                     except OSError:
                         pass
-                last_result = subprocess.run(command, capture_output=True, timeout=60)
+                last_result = subprocess.run(command, capture_output=True, timeout=60,
+                                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
                 if last_result.returncode == 0 and os.path.isfile(out_path):
                     break
             if last_result is None or last_result.returncode != 0 or not os.path.isfile(out_path):
@@ -187,7 +211,8 @@ def _run_tool_decode_to_wav(cli_path: str, audio_data: bytes, source_path: str =
             with open(out_path, 'rb') as f:
                 return f.read()
 
-        result = subprocess.run(cmd, capture_output=True, timeout=60)
+        result = subprocess.run(cmd, capture_output=True, timeout=60,
+                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         if result.returncode != 0 or not os.path.isfile(out_path):
             stderr = result.stderr.decode(errors='replace').strip()
             stdout = result.stdout.decode(errors='replace').strip()
@@ -217,18 +242,23 @@ def _auto_detect_decode_cli() -> str:
     return _auto_detect_vgaudio_cli()
 
 
-def _decode_audio_to_wav(audio_data: bytes, source_format: str = '', source_path: str = '') -> bytes:
-    """Decode game or common audio bytes to WAV for user-facing exports."""
+def _decode_audio_to_wav(audio_data: bytes, source_format: str = '', source_path: str = '', subkey=0) -> bytes:
+    """Decode a single stream once; native CLI first, Python HCA fallback."""
     if audio_data[:4] == b'RIFF' and audio_data[8:12] == b'WAVE':
         return audio_data
-    if source_format == 'HCA' or audio_data[:3] in (b'HCA', bytes([0xC8, 0xC3, 0xC1])):
-        try:
-            return decode_hca_to_wav(audio_data)
-        except Exception:
-            pass
+    is_hca = source_format == 'HCA' or _detect_format(audio_data) == 'HCA'
+    if is_hca and subkey and parse_hca_info(audio_data)['cipher_type'] == 56:
+        raise ValueError(ui_text('awb_subkey_unsupported'))
+    cli = find_vgmstream_cli()
+    if cli:
+        wav = _run_tool_decode_to_wav(cli, audio_data, source_path)
+        # clHCA/vgmstream deliberately leaves RVA unapplied. Audition it explicitly.
+        return scale_wav(wav, parse_hca_info(audio_data)['rva_volume']) if is_hca else wav
+    if is_hca:
+        return decode_hca_to_wav(audio_data)
     cli = _auto_detect_decode_cli()
     if not cli:
-        raise RuntimeError(ui_text("sound_decode_tool_missing"))
+        raise RuntimeError(ui_text('sound_decode_tool_missing'))
     return _run_tool_decode_to_wav(cli, audio_data, source_path)
 
 
@@ -237,32 +267,16 @@ def _target_ext_for_entry(entry: dict) -> str:
 
 
 def _encode_to_hca_python(audio_data: bytes) -> bytes:
-    """Convert *audio_data* to HCA using soundfile + PyCriCodecs (no subprocess).
+    """Convert audio to PCM WAV with SoundFile, then encode with CriCodecs.
 
-    Decoding chain
-    1. If the data is already WAV (PCM), pass it directly to PyCriCodecs.
-    2. Otherwise decode with ``soundfile`` (supports FLAC, OGG/Vorbis, AIFF,
-       WAV, and many others via libsndfile).
-    3. If ``soundfile`` cannot read the format (e.g. MP3, AAC, WMA), fall back
-       to ``pydub`` which internally uses ffmpeg.
-
-    Raises
-    ImportError
-        When neither soundfile nor PyCriCodecs is installed.
-    ValueError
-        When the audio format cannot be decoded by any available library.
-    RuntimeError
-        When PyCriCodecs fails to encode the resulting WAV to HCA.
+    The callers retain the bundled VGAudioCLI fallback for unsupported inputs.
     """
     try:
         import soundfile as sf  # noqa: PLC0415
     except ImportError:
         sf = None
 
-    try:
-        from PyCriCodecsEx.hca import HCACodec  # noqa: PLC0415
-    except ImportError:
-        raise ImportError(ui_text("sound_pycricodecsex_missing"))
+    from cricodecs import hca, wav  # noqa: PLC0415
 
     # Decode to PCM WAV
     is_wav = audio_data[:4] == b'RIFF' and audio_data[8:12] == b'WAVE'
@@ -282,9 +296,9 @@ def _encode_to_hca_python(audio_data: bytes) -> bytes:
 
     # Encode WAV → HCA
     try:
-        return HCACodec(io.BytesIO(wav_data)).encode()
+        return hca.encode(wav.load(wav_data))
     except Exception as e:
-        raise RuntimeError(ui_text("sound_pycricodecs_encode_failed", error=e)) from e
+        raise RuntimeError(ui_text("sound_hca_encode_failed", error=e)) from e
 
 
 def _fmt_size(n):
@@ -329,65 +343,18 @@ def _truncate(text, limit):
     return text if len(text) <= limit else text[:max(1, limit - 3)] + "..."
 
 
-class WaveformWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(80)
-        self._lines = None
-        self._mid = 40
-        self._width = 200
-        self.setStyleSheet(ss_transparent())
-
-    def set_waveform(self, lines, mid, width):
-        self._lines = lines
-        self._mid = mid
-        self._width = width
-        self.update()
-
-    def clear(self):
-        self._lines = None
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        w = self.width()
-        h = self.height()
-        mid = h // 2
-
-        # Background
-        painter.fillRect(self.rect(), QColor(P["bg_card"]))
-
-        # Center line
-        painter.setPen(QPen(QColor(P["mid"]), 1))
-        painter.drawLine(0, mid, w, mid)
-
-        if self._lines is not None:
-            accent = QColor(P["accent"])
-            painter.setPen(QPen(accent, 1))
-            for x, y_top, y_bot in self._lines:
-                if x < w:
-                    painter.drawLine(x, y_top, x, y_bot)
-        else:
-            painter.setPen(QPen(QColor(P["text_dim"]), 1))
-            fm = painter.fontMetrics()
-            text = "..."
-            tx = (w - fm.horizontalAdvance(text)) // 2
-            painter.drawText(tx, mid + fm.ascent() // 2, text)
-
-        painter.end()
+from editors.sound_workspace import AudioWorkspace
 
 
-class SoundEditor(QWidget):
+class SoundEditor(AudioWorkspace, QWidget):
     # Signals for thread-safe UI updates
     _sig_load_done = pyqtSignal(str, object, list, dict)
     _sig_load_error = pyqtSignal(str)
     _sig_editor_ready = pyqtSignal(int, object)
-    _sig_decode_done = pyqtSignal(bytes, int)
-    _sig_decode_error = pyqtSignal(str)
-    _sig_play_progress = pyqtSignal(float, float)
-    _sig_playback_done = pyqtSignal()
-    _sig_waveform_ready = pyqtSignal(object)
+    _sig_play_progress = pyqtSignal(int, float, float)
+    _sig_playback_done = pyqtSignal(int, str)
+    _sig_preview_ready = pyqtSignal(object)
+    _sig_save_done = pyqtSignal(object)
     _sig_export_success = pyqtSignal(str)
     _sig_export_error = pyqtSignal(str)
     _sig_busy_progress = pyqtSignal(str, int, int)
@@ -404,36 +371,49 @@ class SoundEditor(QWidget):
         self._entries = []
         self._meta = None
         self._current_entry = None
-        self._entry_buttons = []
         self._entry_labels = {}
         self._filepath = None
         self._fields = {}
         self._dirty = False
         self._decode_busy = False
+        self._busy = False
+        self._closed = False
+        self._shutdown_event = threading.Event()
 
         # Audio playback state
-        self._wav_cache = {}       # idx -> wav bytes
+        self._wav_cache = AudioCache()       # idx -> wav bytes
+        self._original_raw = None
+        self._original_entries = []
+        self._preview_generation = 0
+        self._preview_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='awb-preview')
+        def shutdown_workers(*_, stopped=self._shutdown_event, pool=self._preview_pool):
+            stopped.set()
+            pool.shutdown(wait=False, cancel_futures=True)
+        self.destroyed.connect(shutdown_workers)
+        self._preview_future = self._metadata_future = None
+        self._preview_active = None
+        self._preview_wav = None
+        self._play_generation = 0
+        self._cursor_seconds = 0.
+        self._audition_loop = threading.Event()
+        self._original_mode = False
         self._playing = False
         self._play_thread = None
         self._stop_flag = threading.Event()
         self._pause_flag = threading.Event()
         self._seek_lock = threading.Lock()
-        self._seek_target_frame = None
-        self._seeking = False
         self._seek_total = 0.0
         self._seek_total_frames = 0
         self._seek_fps = 0
-        self._pa = None            # PyAudio instance (lazy)
 
         # Connect signals
+        self._sig_preview_ready.connect(self._preview_done)
+        self._sig_save_done.connect(self._on_save_done)
         self._sig_load_done.connect(self._on_load_done)
         self._sig_load_error.connect(self._on_load_error)
         self._sig_editor_ready.connect(self._build_editor)
-        self._sig_decode_done.connect(self._on_decode_done)
-        self._sig_decode_error.connect(self._on_decode_error)
         self._sig_play_progress.connect(self._update_play_progress)
         self._sig_playback_done.connect(self._on_playback_done)
-        self._sig_waveform_ready.connect(self._finish_draw_waveform)
         self._sig_export_success.connect(self._on_export_success)
         self._sig_export_error.connect(self._on_export_error)
         self._sig_busy_progress.connect(self._on_busy_progress)
@@ -442,153 +422,140 @@ class SoundEditor(QWidget):
         self._sig_convert_error.connect(self._on_convert_error)
 
         self._build_ui()
+        install_file_actions(self, self._save_btn, save_to=lambda path: self._save_file(target_path=path), asynchronous=True)
+        install_editor_chrome(self)
 
     def closeEvent(self, event):
+        self._closed = True
+        self._shutdown_event.set()
         self._stop_playback()
-        if self._pa:
-            try:
-                self._pa.terminate()
-            except Exception:
-                pass
+        self._preview_generation += 1
+        self._preview_pool.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(event)
 
     # UI construction
 
     def _build_ui(self):
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
+        configure_layout(root_layout, LayoutRole.ROOT)
         self.setStyleSheet(ss_bg_dark())
 
         # Top bar
-        top = QFrame()
-        top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(ss_bg_panel())
-        top_layout = QHBoxLayout(top)
-        top_layout.setContentsMargins(12, 8, 12, 8)
-        top_layout.setSpacing(4)
+        top = EditorToolbar()
+        self._toolbar = top
+        top_layout = top.content_layout
 
         open_btn = QPushButton(self.t("btn_open_file"))
-        open_btn.setFixedHeight(TOOLBAR_BTN_H)
-        open_btn.setFont(QFont("Segoe UI", 10))
-        open_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(open_btn, accent=True)
         open_btn.clicked.connect(self._load_file)
+        open_btn.setProperty("designAction", 'open')
         top_layout.addWidget(open_btn)
 
         self._save_btn = QPushButton(self.t("btn_save_file"))
-        self._save_btn.setFixedHeight(TOOLBAR_BTN_H)
-        self._save_btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self._save_btn.setEnabled(False)
-        self._save_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._save_btn, accent=True)
         self._save_btn.clicked.connect(self._save_file)
         top_layout.addWidget(self._save_btn)
 
         self._file_label = QLabel(self.t("no_file_loaded"))
         self._file_label.setMinimumWidth(0)
         self._file_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self._file_label.setFont(QFont("Consolas", 12))
-        self._file_label.setStyleSheet(ss_file_label())
+
+        configure_file_label(self._file_label)
         top_layout.addWidget(self._file_label, 1)
 
         root_layout.addWidget(top)
 
         # Separator
-        sep = QFrame()
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
+        sep = EditorSeparator(accent=True)
+
+
         root_layout.addWidget(sep)
 
         # Main area
         main = QWidget()
         main_layout = QHBoxLayout(main)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        configure_layout(main_layout, LayoutRole.ROOT)
 
         # Entry list sidebar
-        list_frame = QFrame()
-        list_frame.setFixedWidth(260)
-        list_frame.setStyleSheet(ss_sidebar_frame())
-        list_vlayout = QVBoxLayout(list_frame)
-        list_vlayout.setContentsMargins(8, 8, 8, 4)
-        list_vlayout.setSpacing(4)
+        list_frame = EditorSidebar()
+
+
+        list_vlayout = list_frame.content_layout
+
 
         # Search
         self._search_entry = QLineEdit()
-        self._search_entry.setPlaceholderText(self.t("search_placeholder"))
-        self._search_entry.setFixedHeight(32)
-        self._search_entry.setFont(QFont("Segoe UI", 13))
-        self._search_entry.setStyleSheet(ss_search())
+        configure_search(self._search_entry)
         self._search_entry.textChanged.connect(lambda: self._filter_list())
         list_vlayout.addWidget(self._search_entry)
 
         # Action buttons
-        actions_frame = QWidget()
-        actions_frame.setStyleSheet(ss_transparent())
-        actions_layout = QHBoxLayout(actions_frame)
-        actions_layout.setContentsMargins(0, 2, 0, 4)
-        actions_layout.setSpacing(4)
-        btn_font = QFont("Segoe UI", 10)
+        actions_frame = EditorActionRow()
+
+        actions_layout = actions_frame.content_layout
+
+
+        btn_font = ui_font(TypeSize.BODY)
 
         self._add_btn = QPushButton(self.t("btn_new"))
-        self._add_btn.setFixedHeight(28)
-        self._add_btn.setFont(btn_font)
         self._add_btn.setEnabled(False)
-        self._add_btn.setStyleSheet(ss_btn())
+        configure_button(self._add_btn, height=Size.COMPACT_CONTROL)
         self._add_btn.clicked.connect(self._add_new_entry)
+        self._add_btn.setProperty("designAction", 'new')
         actions_layout.addWidget(self._add_btn, 1)
 
         self._dup_btn = QPushButton(self.t("btn_dup_short"))
-        self._dup_btn.setFixedHeight(28)
-        self._dup_btn.setFont(btn_font)
         self._dup_btn.setEnabled(False)
-        self._dup_btn.setStyleSheet(ss_btn())
+        configure_button(self._dup_btn, height=Size.COMPACT_CONTROL)
         self._dup_btn.clicked.connect(self._duplicate_entry)
+        self._dup_btn.setProperty("designAction", 'duplicate')
         actions_layout.addWidget(self._dup_btn, 1)
 
         self._del_btn = QPushButton(self.t("btn_delete"))
-        self._del_btn.setFixedHeight(28)
-        self._del_btn.setFont(btn_font)
         self._del_btn.setEnabled(False)
-        self._del_btn.setStyleSheet(ss_btn(danger=True))
+        configure_button(self._del_btn, danger=True, height=Size.COMPACT_CONTROL)
         self._del_btn.clicked.connect(self._delete_entry)
+        self._del_btn.setProperty("designAction", 'delete')
         actions_layout.addWidget(self._del_btn, 1)
 
         list_vlayout.addWidget(actions_frame)
 
-        # Scrollable entry list
-        self._entry_scroll = QScrollArea()
-        self._entry_scroll.setWidgetResizable(True)
-        self._entry_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._entry_scroll.setStyleSheet(ss_scrollarea_transparent())
-        self._entry_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._entry_list_widget = QWidget()
-        self._entry_list_widget.setMinimumWidth(0)
-        self._entry_list_widget.setStyleSheet(ss_transparent())
-        self._entry_list_layout = QVBoxLayout(self._entry_list_widget)
-        self._entry_list_layout.setContentsMargins(0, 0, 0, 0)
-        self._entry_list_layout.setSpacing(1)
-        self._entry_list_layout.addStretch()
-        self._entry_scroll.setWidget(self._entry_list_widget)
+        self._format_filter = EditorFilterCombo()
+        self._format_filter.addItem(ui_text('awb_filter_format'), None)
+        for fmt in ('HCA', 'ADX', 'unknown'):
+            self._format_filter.addItem(ui_text('awb_unknown_format') if fmt == 'unknown' else fmt, fmt)
+        self._format_filter.currentIndexChanged.connect(self._filter_list)
+        list_vlayout.addWidget(self._format_filter)
+        self._state_filter = EditorFilterCombo()
+        self._state_filter.addItem(ui_text('awb_filter_state'), None)
+        for key in ('modified', 'empty'):
+            self._state_filter.addItem(ui_text('awb_filter_' + key), key)
+        self._state_filter.currentIndexChanged.connect(self._filter_list)
+        list_vlayout.addWidget(self._state_filter)
+        self._record_model = RecordListModel(self)
+        self._entry_scroll = EditorRecordList(self._record_model,
+            lambda index: self._record_model.data(index, Qt.ItemDataRole.UserRole)[1:])
+        self._entry_scroll.selectionModel().currentChanged.connect(self._list_selected)
         list_vlayout.addWidget(self._entry_scroll, 1)
 
         main_layout.addWidget(list_frame)
 
         # Vertical separator
-        vsep = QFrame()
-        vsep.setFixedWidth(1)
-        vsep.setStyleSheet(ss_sep())
+        vsep = EditorSeparator(orientation=Qt.Orientation.Vertical)
+
+
         main_layout.addWidget(vsep)
 
         # Editor panel (scrollable)
         self._editor_scroll = QScrollArea()
-        self._editor_scroll.setWidgetResizable(True)
-        self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._editor_scroll.setStyleSheet(ss_scrollarea())
+
+
+        configure_scrollarea(self._editor_scroll)
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(12, 12, 12, 12)
-        self._editor_layout.setSpacing(8)
+        configure_layout(self._editor_layout, LayoutRole.PAGE)
         self._editor_scroll.setWidget(self._editor_widget)
 
         self._show_placeholder()
@@ -616,7 +583,7 @@ class SoundEditor(QWidget):
         self._busy_overlay.hide()
 
         overlay_layout = QVBoxLayout(self._busy_overlay)
-        overlay_layout.setContentsMargins(0, 0, 0, 0)
+        overlay_layout.setContentsMargins(*Insets.NONE)
         overlay_layout.addStretch()
 
         card = QFrame()
@@ -625,17 +592,17 @@ class SoundEditor(QWidget):
         card.setStyleSheet(ss_blocking_overlay_card())
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(22, 18, 22, 18)
-        card_layout.setSpacing(10)
+        card_layout.setSpacing(Size.CARD_GAP)
 
         self._busy_title_lbl = QLabel(self.t("loading"))
-        self._busy_title_lbl.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        self._busy_title_lbl.setStyleSheet(ss_file_label())
+
+        configure_file_label(self._busy_title_lbl)
         self._busy_title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card_layout.addWidget(self._busy_title_lbl)
 
         self._busy_detail_lbl = QLabel("")
-        self._busy_detail_lbl.setFont(QFont("Segoe UI", 10))
-        self._busy_detail_lbl.setStyleSheet(ss_file_label())
+
+        configure_file_label(self._busy_detail_lbl)
         self._busy_detail_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card_layout.addWidget(self._busy_detail_lbl)
 
@@ -660,6 +627,11 @@ class SoundEditor(QWidget):
             self._busy_overlay.setGeometry(self.rect())
 
     def _set_busy(self, active: bool, title: str = '', detail: str = '', done: int = 0, total: int = 0):
+        self._busy = active
+        self._toolbar.setEnabled(not active)
+        self._editor_widget.setEnabled(not active)
+        self._entry_scroll.setEnabled(not active)
+        refresh_file_actions(self)
         if not hasattr(self, '_busy_overlay'):
             return
         if active:
@@ -701,20 +673,25 @@ class SoundEditor(QWidget):
     # File loading
 
     def _entry_label(self, entry) -> str:
-        return self._entry_labels.get(entry.get('id')) or get_entry_label(entry['id'])
+        return self._entry_labels.get(entry.get('id')) or ui_text('awb_track_label', id=entry['id'])
 
     def _load_file(self):
+        if not self._commit_volume():
+            return
         path, _ = QFileDialog.getOpenFileName(
             self, self.t("file_open_sound"),
             game_files_dialog_dir(target_patterns=("*.awb", "*.acb")), "AWB files (*.awb);;All files (*.*)")
         if not path:
             return
         create_backup_on_open(path)
+        self._preview_generation += 1
+        self._preview_active = None
         self._stop_playback()
         self._wav_cache.clear()
         set_file_label_empty(self._file_label, self.t("loading"))
         self._show_list_skeleton()
         self._show_editor_skeleton()
+        self._set_busy(True, self.t('loading'), os.path.basename(path))
 
         def worker():
             try:
@@ -736,30 +713,26 @@ class SoundEditor(QWidget):
         threading.Thread(target=worker, daemon=True).start()
 
     def _show_list_skeleton(self):
-        _clear_layout(self._entry_list_layout)
-        self._entry_buttons = []
-        for _ in range(10):
-            self._entry_list_layout.addWidget(SkeletonListRow())
-        self._entry_list_layout.addStretch()
+        self._record_model.reset_rows([])
 
     def _show_editor_skeleton(self):
         from core.skeleton import SkeletonBar
+        self._clear_audio_controls()
         _clear_layout(self._editor_layout)
 
-        hdr, hdr_layout = make_editor_card(self._editor_widget, margins=(16, 14, 16, 14), spacing=8)
+        hdr, hdr_layout = make_editor_card(self._editor_widget)
         hdr_layout.addWidget(SkeletonBar(height=36, corner_radius=5))
         self._editor_layout.addWidget(hdr)
 
         for _ in range(3):
-            sec, sec_layout = make_editor_card(self._editor_widget, margins=(16, 14, 16, 14), spacing=8)
+            sec, sec_layout = make_editor_card(self._editor_widget)
             g = QGridLayout()
-            g.setSpacing(8)
+            g.setSpacing(Size.GAP)
             for col in range(3):
                 f = QWidget()
                 f.setStyleSheet(ss_transparent())
                 f_layout = QVBoxLayout(f)
-                f_layout.setContentsMargins(0, 0, 0, 0)
-                f_layout.setSpacing(4)
+                configure_layout(f_layout, LayoutRole.FIELD)
                 f_layout.addWidget(SkeletonBar(height=11, corner_radius=3))
                 f_layout.addWidget(SkeletonBar(height=30, corner_radius=4))
                 g.addWidget(f, 0, col)
@@ -769,17 +742,31 @@ class SoundEditor(QWidget):
         self._editor_layout.addStretch()
 
     def _on_load_error(self, msg):
-        _clear_layout(self._entry_list_layout)
-        self._entry_list_layout.addStretch()
-        self._show_placeholder()
-        self._filepath = None
-        self._entry_labels = {}
-        self._dirty = False
-        set_file_label_empty(self._file_label, self.t("no_file_loaded"))
-        QMessageBox.critical(self, self.t("dlg_title_error"),
-                             self.t("msg_load_error", error=msg))
+        if self._closed:
+            return
+        self._set_busy(False)
+        # Keep the previous document available when another file cannot be opened.
+        self._populate_list()
+        if self._raw_data is None:
+            self._show_placeholder()
+            set_file_label_empty(self._file_label, self.t('no_file_loaded'))
+        else:
+            set_file_label(self._file_label, self._filepath, dirty=self._dirty)
+        QMessageBox.critical(self, self.t('dlg_title_error'), self.t('msg_load_error', error=msg))
 
     def _on_load_done(self, path, raw, entries, meta):
+        if self._closed:
+            return
+        self._set_busy(False)
+        self._stop_playback()
+        self._clear_audio_controls()
+        self._preview_generation += 1
+        self._wav_cache.clear()
+        self._preview_wav = None
+        self._original_raw = raw
+        self._original_entries = [dict(entry) for entry in entries]
+        for index, entry in enumerate(entries):
+            entry['_source_index'] = index
         self._raw_data = raw
         self._entries = entries
         self._meta = meta
@@ -811,7 +798,7 @@ class SoundEditor(QWidget):
             self._load_manual_acb_file()
 
     def _load_manual_acb_file(self):
-        if not self._filepath:
+        if not self._filepath or not self._commit_volume():
             return
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -850,169 +837,165 @@ class SoundEditor(QWidget):
 
     # Save
 
-    def _save_file(self):
-        if self._raw_data is None:
+    def _save_file(self, target_path=None):
+        if self._busy:
             return
-        if not self._filepath:
+        save_path = target_path or editor_path(self)
+        if self._raw_data is None or not save_path or not self._commit_volume():
+            self._file_actions.pending_path = None
+            self._file_actions.refresh()
             return
-        try:
-            path = self._filepath
-            new_raw, new_entries, new_meta = rebuild_awb(
-                self._entries, self._meta, self._raw_data)
-            saved_raw = save_awb(path, new_raw, new_meta)
-            if new_meta.get('encryption') == 'asbr_cpk':
-                for entry in new_entries:
-                    entry['encryption'] = 'asbr_cpk'
-                    entry['container_size'] = len(saved_raw)
-            self._raw_data = bytearray(saved_raw)
-            self._entries = new_entries
-            self._meta = new_meta
-            self._dirty = False
-            set_file_label(self._file_label, path)
-            self._wav_cache.clear()
-            request_and_cascade(self, "Geb")
-            QMessageBox.information(self, self.t("dlg_title_success"),
-                                    self.t("msg_save_success", path=os.path.basename(path)))
-        except Exception as e:
-            QMessageBox.critical(self, self.t("dlg_title_error"),
-                                 self.t("msg_save_error", error=str(e)))
-
-    # Entry list
-
-    def _populate_list(self):
-        _clear_layout(self._entry_list_layout)
-        self._entry_buttons = []
-
-        for i, entry in enumerate(self._entries):
-            label_text = self._entry_label(entry)
-
-            btn = QPushButton()
-            btn.setFixedHeight(44)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(ss_sidebar_btn(False))
-
-            # Inner layout for the button
-            btn_widget = QWidget(btn)
-            btn_layout = QHBoxLayout(btn_widget)
-            btn_layout.setContentsMargins(10, 3, 10, 3)
-            btn_layout.setSpacing(0)
-
-            text_col = QWidget()
-            text_col.setMinimumWidth(0)
-            text_layout = QVBoxLayout(text_col)
-            text_layout.setContentsMargins(0, 0, 0, 0)
-            text_layout.setSpacing(0)
-
-            name_lbl = QLabel(_truncate(label_text, 18))
-            name_lbl.setMinimumWidth(0)
-            name_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-            name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-            name_lbl.setStyleSheet(ss_main_label())
-            name_lbl.setToolTip(label_text)
-            name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            text_layout.addWidget(name_lbl)
-
-            meta_bits = []
-            if entry.get('size', 0) <= 0:
-                meta_bits.append(ui_text("sound_badge_empty"))
-            else:
-                meta_bits.append(_fmt_size(entry.get('size', 0)))
-            if _entry_needs_slow_seek(entry):
-                meta_bits.append(ui_text("sound_badge_slow_encrypted"))
-            meta_lbl = QLabel("  ".join(meta_bits))
-            meta_lbl.setMinimumWidth(0)
-            meta_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-            meta_lbl.setFont(QFont("Segoe UI", 9))
-            meta_lbl.setStyleSheet(ss_dim_label())
-            meta_lbl.setToolTip("  ".join(meta_bits))
-            meta_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            text_layout.addWidget(meta_lbl)
-
-            btn_layout.addWidget(text_col, 1)
-
-            fmt_lbl = QLabel(entry.get('format', 'unknown').upper())
-            fmt_lbl.setMinimumWidth(38)
-            fmt_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            fmt_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
-            fmt_lbl.setStyleSheet(ss_audio_format_badge(entry.get('format', 'unknown')))
-            fmt_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            btn_layout.addWidget(fmt_lbl)
-
-            btn_widget.setGeometry(0, 0, 260, 44)
-            btn_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-
-            idx = i
-            btn.clicked.connect(lambda checked, idx=idx: self._select_entry(idx))
-            btn.resizeEvent = lambda event, bw=btn_widget: bw.setGeometry(0, 0, event.size().width(), event.size().height())
-
-            self._entry_list_layout.addWidget(btn)
-            self._entry_buttons.append((btn, entry, i))
-
-        self._entry_list_layout.addStretch()
-
-        if self._entries:
-            first_audio = next(
-                (i for i, entry in enumerate(self._entries)
-                 if entry.get('size', 0) > 0 and entry.get('format') != 'unknown'),
-                0,
-            )
-            self._select_entry(first_audio)
-
-    def _filter_list(self):
-        query = self._search_entry.text().lower()
-        for btn, entry, idx in self._entry_buttons:
-            label = self._entry_label(entry).lower()
-            match = (query in label or query in str(entry['id'])
-                     or query in entry['format'].lower()
-                     or (query in ui_text("sound_badge_slow_encrypted").lower()
-                         and _entry_needs_slow_seek(entry)))
-            btn.setVisible(match)
-
-    def _select_entry(self, idx):
-        if idx < 0 or idx >= len(self._entries):
-            return
-        self._stop_playback()
-        self._current_entry = idx
-        for btn, entry, i in self._entry_buttons:
-            try:
-                if i == idx:
-                    btn.setStyleSheet(ss_sidebar_btn(True))
-                else:
-                    btn.setStyleSheet(ss_sidebar_btn(False))
-            except RuntimeError:
-                pass
-        self._show_editor_skeleton()
-
+        raw, entries, meta = self._raw_data, [dict(e) for e in self._entries], dict(self._meta)
+        changed = self._dirty
+        self._set_busy(True, self.t('btn_save_file'), os.path.basename(save_path))
         def worker():
-            entry = self._entries[idx]
-            if _entry_needs_slow_seek(entry) and idx not in self._wav_cache:
-                self._sig_editor_ready.emit(idx, None)
+            try:
+                if changed:
+                    new_raw, new_entries, new_meta = rebuild_awb(entries, meta, raw)
+                    saved = save_awb(save_path, new_raw, new_meta)
+                    for old, new in zip(entries, new_entries):
+                        if '_source_index' in old:
+                            new['_source_index'] = old['_source_index']
+                        if new_meta.get('encryption') == 'asbr_cpk':
+                            new['encryption'], new['container_size'] = 'asbr_cpk', len(saved)
+                else:
+                    saved = save_awb(save_path, raw, dict(meta, encryption=None))
+                    new_entries, new_meta = entries, meta
+                result = (save_path, saved, new_entries, new_meta, '')
+            except Exception as error:
+                result = (save_path, None, None, None, str(error))
+            try:
+                self._sig_save_done.emit(result)
+            except RuntimeError:
                 return
-            hca_bytes = self._get_entry_bytes(idx)
-            hca_info = None
-            if entry['format'] == 'HCA':
-                try:
-                    hca_info = parse_hca_info(hca_bytes)
-                except Exception:
-                    pass
-            self._sig_editor_ready.emit(idx, hca_info)
-
         threading.Thread(target=worker, daemon=True).start()
 
-    # Editor panel
+    def _on_save_done(self, result):
+        if self._closed:
+            return
+        path, raw, entries, meta, error = result
+        self._set_busy(False)
+        if error:
+            self._file_actions.pending_path = None
+            self._file_actions.refresh()
+            QMessageBox.critical(self, self.t('dlg_title_error'), self.t('msg_save_error', error=error))
+            return
+        self._raw_data, self._entries, self._meta = raw, entries, meta
+        commit_save_path(self, path)
+        self._dirty = False
+        set_file_label(self._file_label, path)
+        self._wav_cache.clear()
+        self._filter_list()
+        request_and_cascade(self, 'Geb')
+        QMessageBox.information(self, self.t('dlg_title_success'), self.t('msg_save_success', path=os.path.basename(path)))
+
+    def _populate_list(self):
+        self._filter_list()
+        if self._entries:
+            selected = self._current_entry
+            if selected is None or selected >= len(self._entries):
+                selected = next((i for i, e in enumerate(self._entries) if e.get('size', 0)), 0)
+            self._select_entry(selected)
+        else:
+            self._current_entry = None
+            self._show_placeholder()
+        self._dup_btn.setEnabled(bool(self._entries))
+        self._del_btn.setEnabled(bool(self._entries))
+
+    def _filter_list(self):
+        if not hasattr(self, '_record_model'):
+            return
+        query = self._search_entry.text().casefold().strip()
+        fmt, state = self._format_filter.currentData(), self._state_filter.currentData()
+        rows = []
+        for index, entry in enumerate(self._entries):
+            title = self._entry_label(entry)
+            modified = '_new_data' in entry
+            format_label = ui_text('awb_unknown_format') if entry['format'] == 'unknown' else entry['format']
+            subtitle = f"ID {entry['id']} · {format_label} · {_fmt_size(entry['size'])}"
+            if modified:
+                subtitle += ' · ' + ui_text('awb_filter_modified')
+            if ((fmt and entry['format'] != fmt) or
+                (state == 'modified' and not modified) or
+                (state == 'empty' and entry['size'] > 0)):
+                continue
+            if query and query not in (title + ' ' + subtitle).casefold():
+                continue
+            rows.append((index, title, subtitle, title + '\n' + subtitle))
+        with QSignalBlocker(self._entry_scroll.selectionModel()):
+            self._record_model.reset_rows(rows)
+            self._sync_list_selection()
+
+    def _sync_list_selection(self):
+        for row, record in enumerate(self._record_model.rows):
+            if record[0] == self._current_entry:
+                with QSignalBlocker(self._entry_scroll.selectionModel()):
+                    self._entry_scroll.setCurrentIndex(self._record_model.index(row, 0))
+                return
+        self._entry_scroll.selectionModel().clear()
+
+    def _list_selected(self, current, previous):
+        if current.isValid():
+            if not self._select_entry(self._record_model.rows[current.row()][0]):
+                self._sync_list_selection()
+
+    def _select_entry(self, idx):
+        if not 0 <= idx < len(self._entries) or not self._commit_volume():
+            return False
+        self._stop_playback()
+        self._preview_generation += 1
+        generation = self._preview_generation
+        self._preview_active = None
+        self._preview_wav = None
+        self._cursor_seconds = 0.
+        self._original_mode = False
+        self._current_entry = idx
+        self._sync_list_selection()
+        self._show_editor_skeleton()
+        entry, raw = dict(self._entries[idx]), self._raw_data
+        def worker():
+            info = None
+            detected = entry['format']
+            if not _entry_needs_slow_seek(entry):
+                try:
+                    data = entry.get('_new_data', entry.get('_prepared_data'))
+                    if data is None:
+                        data = extract_entry(raw, entry)
+                    detected = _detect_format(data)
+                    info = parse_hca_info(data) if detected == 'HCA' else None
+                except Exception:
+                    pass
+            if generation == self._preview_generation:
+                try:
+                    self._sig_editor_ready.emit(idx, (generation, info, None, detected))
+                except RuntimeError:
+                    return
+        if self._metadata_future is not None:
+            self._metadata_future.cancel()
+        self._metadata_future = self._preview_pool.submit(worker)
+        return True
 
     def _build_editor(self, idx, hca_info=None):
+        if isinstance(hca_info, tuple):
+            generation, hca_info, *prepared = hca_info
+            if generation != self._preview_generation:
+                return
+            if prepared and prepared[0] is not None:
+                self._entries[idx]['_prepared_data'] = prepared[0]
+                self._entries[idx]['format'] = _detect_format(prepared[0])
+            elif len(prepared) > 1:
+                self._entries[idx]['format'] = prepared[1]
         if self._current_entry != idx:
             return  # User already clicked another entry
         self._hide_decode_busy()
+        self._filter_list()
         _clear_layout(self._editor_layout)
         self._fields = {}
-
+        self._clear_audio_controls()
         entry = self._entries[idx]
 
         # Header
-        hdr = QFrame()
-        hdr, hdr_layout = make_editor_card(self._editor_widget, margins=(16, 14, 16, 14), spacing=10)
+        hdr, hdr_layout = make_editor_card(self._editor_widget)
         self._prep_card(hdr)
         title = self._entry_label(entry)
         add_editor_card_title(
@@ -1028,172 +1011,39 @@ class SoundEditor(QWidget):
             slow_frame = QWidget()
             slow_frame.setStyleSheet(ss_transparent())
             slow_layout = QHBoxLayout(slow_frame)
-            slow_layout.setContentsMargins(0, 0, 0, 0)
-            slow_layout.setSpacing(8)
+            configure_layout(slow_layout, LayoutRole.TITLE)
 
             slow_lbl = QLabel(ui_text("sound_slow_encrypted_detail"))
             slow_lbl.setWordWrap(True)
-            slow_lbl.setFont(QFont("Segoe UI", 11))
+            slow_lbl.setFont(ui_font(TypeSize.CODE))
             slow_lbl.setStyleSheet(ss_dim_label())
             slow_layout.addWidget(slow_lbl, 1)
 
             prepare_btn = QPushButton(ui_text("sound_btn_prepare_audio"))
-            prepare_btn.setFixedHeight(34)
-            prepare_btn.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-            prepare_btn.setStyleSheet(ss_btn(accent=True))
+            configure_button(prepare_btn, accent=True, height=Size.CONTROL)
             prepare_btn.clicked.connect(lambda: self._prepare_entry_info(idx))
             slow_layout.addWidget(prepare_btn)
             sec_slow.layout().addWidget(slow_frame)
 
-        # Audio Info
-        # Playback
-        if hca_info:
-            sec_play = self._make_section(self.t("sound_section_playback"))
-            play_frame = QWidget()
-            play_frame.setStyleSheet(ss_transparent())
-            play_layout = QHBoxLayout(play_frame)
-            play_layout.setContentsMargins(0, 0, 0, 0)
-            play_layout.setSpacing(8)
-
-            bf = QFont("Segoe UI", 13, QFont.Weight.Bold)
-            self._play_btn = QPushButton(self.t("sound_btn_play"))
-            self._play_btn.setFixedHeight(34)
-            self._play_btn.setFont(bf)
-            self._play_btn.setStyleSheet(ss_btn(accent=True))
-            self._play_btn.clicked.connect(lambda: self._play_audio(idx))
-            play_layout.addWidget(self._play_btn)
-
-            self._pause_btn = QPushButton(ui_text("ui_sound_pause"))
-            self._pause_btn.setFixedHeight(34)
-            self._pause_btn.setFont(bf)
-            self._pause_btn.setEnabled(False)
-            self._pause_btn.setStyleSheet(ss_btn())
-            self._pause_btn.clicked.connect(self._toggle_pause)
-            play_layout.addWidget(self._pause_btn)
-
-            self._stop_btn = QPushButton(self.t("sound_btn_stop"))
-            self._stop_btn.setFixedHeight(34)
-            self._stop_btn.setFont(bf)
-            self._stop_btn.setEnabled(False)
-            self._stop_btn.setStyleSheet(ss_btn(danger=True))
-            self._stop_btn.clicked.connect(self._stop_playback)
-            play_layout.addWidget(self._stop_btn)
-
-            self._play_status = QLabel("")
-            self._play_status.setFont(QFont("Consolas", 11))
-            self._play_status.setStyleSheet(ss_dim_label())
-            play_layout.addWidget(self._play_status)
-            play_layout.addStretch()
-
-            sec_play.layout().addWidget(play_frame)
-
-            seek_row = QWidget()
-            seek_row.setStyleSheet(ss_transparent())
-            seek_layout = QHBoxLayout(seek_row)
-            seek_layout.setContentsMargins(0, 0, 0, 0)
-            seek_layout.setSpacing(8)
-            self._seek_slider = QSlider(Qt.Orientation.Horizontal)
-            self._seek_slider.setRange(0, 1000)
-            self._seek_slider.setValue(0)
-            self._seek_slider.setEnabled(False)
-            self._seek_slider.setStyleSheet(ss_slider())
-            self._seek_slider.sliderPressed.connect(self._begin_seek)
-            self._seek_slider.sliderReleased.connect(self._finish_seek)
-            self._seek_slider.valueChanged.connect(self._preview_seek)
-            seek_layout.addWidget(self._seek_slider, 1)
-            sec_play.layout().addWidget(seek_row)
-
-            # Waveform
-            self._waveform_widget = WaveformWidget()
-            wf_container = QWidget()
-            wf_container.setStyleSheet(ss_transparent())
-            wf_layout = QHBoxLayout(wf_container)
-            wf_layout.setContentsMargins(0, 0, 0, 0)
-            wf_layout.addWidget(self._waveform_widget)
-            sec_play.layout().addWidget(wf_container)
-
-            # Draw waveform if cached
-            if idx in self._wav_cache:
-                self._draw_waveform(self._wav_cache[idx])
-
-        # Volume Control
-        if hca_info:
-            sec_vol = self._make_section(self.t("sound_section_volume"))
-            vol_frame = QWidget()
-            vol_frame.setStyleSheet(ss_transparent())
-            vol_layout = QVBoxLayout(vol_frame)
-            vol_layout.setContentsMargins(0, 0, 0, 0)
-            vol_layout.setSpacing(8)
-
-            cur_vol = hca_info.get('rva_volume', 1.0)
-
-            vol_label = QLabel(self.t("sound_volume_label"))
-            vol_label.setFont(QFont("Segoe UI", 12))
-            vol_label.setStyleSheet(ss_dim_label())
-            vol_layout.addWidget(vol_label)
-
-            slider_row = QWidget()
-            slider_row.setStyleSheet(ss_transparent())
-            slider_row_layout = QHBoxLayout(slider_row)
-            slider_row_layout.setContentsMargins(0, 4, 0, 0)
-            slider_row_layout.setSpacing(8)
-
-            self._vol_slider = QSlider(Qt.Orientation.Horizontal)
-            self._vol_slider.setRange(0, 200)
-            self._vol_slider.setValue(int(cur_vol * 100))
-            self._vol_slider.setStyleSheet(ss_slider())
-            self._vol_slider.valueChanged.connect(lambda v: self._on_volume_slider(v / 100.0))
-            self._vol_slider.sliderReleased.connect(lambda: self._apply_volume(idx, notify=False))
-            slider_row_layout.addWidget(self._vol_slider, 1)
-
-            self._vol_label = QLabel(ui_text("ui_sound_value", p0=cur_vol))
-            self._vol_label.setFont(QFont("Consolas", 14, QFont.Weight.Bold))
-            self._vol_label.setStyleSheet(ss_accent_label())
-            self._vol_label.setFixedWidth(60)
-            self._vol_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            slider_row_layout.addWidget(self._vol_label)
-
-            vol_layout.addWidget(slider_row)
-
-            sec_vol.layout().addWidget(vol_frame)
+        if entry.get('size', 0):
+            self._build_audio_workspace(idx, hca_info)
 
         # Actions
         sec_act = self._make_section(self.t("sound_section_actions"))
         act_frame = QWidget()
         act_frame.setStyleSheet(ss_transparent())
-        compact_actions = self.width() < 900
-        act_layout = QVBoxLayout(act_frame) if compact_actions else QHBoxLayout(act_frame)
-        act_layout.setContentsMargins(0, 0, 0, 0)
-        act_layout.setSpacing(8)
-
-        bf3 = QFont("Segoe UI", 13, QFont.Weight.Bold)
-
-        extract_btn = QPushButton(ui_text("ui_sound_extract_audio"))
-        extract_btn.setFixedHeight(34)
-        extract_btn.setMinimumWidth(0 if compact_actions else 150)
-        extract_btn.setFont(bf3)
-        extract_btn.setStyleSheet(ss_btn(accent=True))
-        extract_btn.clicked.connect(lambda: self._extract_single(idx))
-        act_layout.addWidget(extract_btn)
-
-        self._extract_btn = QPushButton(ui_text("ui_sound_extract_all"))
-        self._extract_btn.setFixedHeight(34)
-        self._extract_btn.setMinimumWidth(0 if compact_actions else 150)
-        self._extract_btn.setFont(bf3)
-        self._extract_btn.setStyleSheet(ss_btn())
-        self._extract_btn.clicked.connect(self._extract_all)
-        act_layout.addWidget(self._extract_btn)
-
-        replace_btn = QPushButton(ui_text("ui_sound_replace_audio"))
-        replace_btn.setFixedHeight(34)
-        replace_btn.setMinimumWidth(0 if compact_actions else 150)
-        replace_btn.setFont(bf3)
-        replace_btn.setStyleSheet(ss_btn())
-        replace_btn.clicked.connect(lambda: self._replace_single(idx))
-        act_layout.addWidget(replace_btn)
-
-        if not compact_actions:
-            act_layout.addStretch()
+        act_layout = configure_layout(QGridLayout(act_frame), LayoutRole.GRID)
+        actions = ((ui_text('ui_sound_extract_audio'), lambda: self._extract_single(idx)),
+                   (ui_text('ui_sound_replace_audio'), lambda: self._replace_single(idx)),
+                   (ui_text('ui_sound_extract_all'), self._extract_all),
+                   (ui_text('awb_export_encoded'), lambda: self._extract_encoded(idx)),
+                   (ui_text('sound_btn_load_acb'), self._load_manual_acb_file))
+        for position, (caption, callback) in enumerate(actions):
+            button = configure_button(QPushButton(caption))
+            button.clicked.connect(callback)
+            act_layout.addWidget(button, position // 2, position % 2)
+            if position == 2:
+                self._extract_btn = button
         sec_act.layout().addWidget(act_frame)
 
         # Container Info
@@ -1201,7 +1051,7 @@ class SoundEditor(QWidget):
         self._editor_layout.addStretch()
 
     def _make_section(self, title):
-        sec, sec_layout = make_editor_card(self._editor_widget, margins=(16, 14, 16, 14), spacing=10)
+        sec, sec_layout = make_editor_card(self._editor_widget)
         self._prep_card(sec)
         icon_name = "fa6s.sliders"
         if title == self.t("sound_section_playback"):
@@ -1214,22 +1064,18 @@ class SoundEditor(QWidget):
         self._editor_layout.addWidget(sec)
         return sec
 
-    def _prep_card(self, card: QWidget, *, max_width: int = 1120):
-        card.setMinimumWidth(0)
-        card.setMaximumWidth(max_width)
-        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+    def _prep_card(self, card: QWidget, *, max_width: int = 16777215):
+        configure_card(card, maximum_width=max_width, vertical_policy=QSizePolicy.Policy.Maximum)
 
     def _add_field(self, parent_grid, label, value, key, row=0, col=0, readonly=False):
-        frame, f_layout, _label, _hint = make_editor_field_shell(label, label_font_size=11, spacing=2)
+        frame, f_layout, _label, _hint = make_editor_field_shell(label)
         frame.setMinimumWidth(0)
         frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         ent = QLineEdit(value)
-        ent.setFixedHeight(30)
         ent.setMinimumWidth(0)
         ent.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        ent.setFont(QFont("Consolas", 12))
-        ent.setStyleSheet(ss_input())
+        configure_input(ent, monospace=True)
         ent.setCursorPosition(0)
         if readonly:
             ent.setReadOnly(True)
@@ -1251,22 +1097,21 @@ class SoundEditor(QWidget):
         return extract_entry(self._raw_data, entry)
 
     def _prepare_entry_info(self, idx):
-        if idx < 0 or idx >= len(self._entries):
-            return
-        entry = self._entries[idx]
-        self._show_decode_busy(ui_text("sound_slow_prepare_detail", id=entry.get('id', idx)))
-
+        generation = self._preview_generation
+        entry, raw = dict(self._entries[idx]), self._raw_data
+        self._show_decode_busy(ui_text('sound_slow_prepare_detail', id=entry['id']))
         def worker():
-            hca_info = None
             try:
-                hca_bytes = self._get_entry_bytes(idx)
-                entry['_prepared_data'] = hca_bytes
-                if entry.get('format') == 'HCA':
-                    hca_info = parse_hca_info(hca_bytes)
-            except Exception:
-                pass
-            self._sig_editor_ready.emit(idx, hca_info)
-
+                data = extract_entry(raw, entry)
+                info = parse_hca_info(data) if _detect_format(data) == 'HCA' else None
+                if generation == self._preview_generation:
+                    self._sig_editor_ready.emit(idx, (generation, info, data))
+            except Exception as error:
+                if generation == self._preview_generation:
+                    try:
+                        self._sig_preview_ready.emit((generation, idx, None, None, None, str(error)))
+                    except RuntimeError:
+                        return
         threading.Thread(target=worker, daemon=True).start()
 
     def _resolve_vgaudio_cli(self) -> str:
@@ -1306,326 +1151,12 @@ class SoundEditor(QWidget):
         cli = self._resolve_vgaudio_cli()
         return _run_vgaudio_conversion(cli, audio_data)
 
-    # Audio Playback
-
-    def _ensure_pyaudio(self):
-        if self._pa is None:
-            pyaudio = _import_pyaudio()
-            self._pa = pyaudio.PyAudio()
-        return self._pa
-
-    def _play_audio(self, idx):
-        """Decode HCA and play audio in a background thread."""
-        if self._playing:
-            self._stop_playback()
-
-        entry = self._entries[idx]
-        if entry['format'] != 'HCA':
-            return
-
-        if hasattr(self, '_play_status'):
-            self._play_status.setText(self.t("sound_status_decoding"))
-        if hasattr(self, '_play_btn'):
-            self._play_btn.setEnabled(False)
-        if idx not in self._wav_cache:
-            entry_label = self._entry_label(entry)
-            self._show_decode_busy(entry_label)
-
-        def worker():
-            try:
-                if idx in self._wav_cache:
-                    wav_data = self._wav_cache[idx]
-                else:
-                    hca_bytes = self._get_entry_bytes(idx)
-                    wav_data = decode_hca_to_wav(hca_bytes)
-                    self._wav_cache[idx] = wav_data
-
-                self._sig_decode_done.emit(wav_data, idx)
-            except Exception as e:
-                self._sig_decode_error.emit(str(e))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_decode_done(self, wav_data, idx):
-        self._hide_decode_busy()
-        if hasattr(self, '_waveform_widget'):
-            self._draw_waveform(wav_data)
-        self._start_playback(wav_data, idx)
-
-    def _on_decode_error(self, msg):
-        self._hide_decode_busy()
-        if hasattr(self, '_play_status'):
-            self._play_status.setText(self.t("sound_status_error"))
-        if hasattr(self, '_play_btn'):
-            self._play_btn.setEnabled(True)
-        QMessageBox.critical(self, self.t("dlg_title_error"), msg)
-
-    def _start_playback(self, wav_data, idx):
-        self._stop_flag.clear()
-        self._pause_flag.clear()
-        with self._seek_lock:
-            self._seek_target_frame = None
-        self._playing = True
-        if hasattr(self, '_play_btn'):
-            self._play_btn.setEnabled(False)
-        if hasattr(self, '_pause_btn'):
-            self._pause_btn.setEnabled(True)
-            self._pause_btn.setText(ui_text("ui_sound_pause"))
-        if hasattr(self, '_stop_btn'):
-            self._stop_btn.setEnabled(True)
-        if hasattr(self, '_seek_slider'):
-            self._seek_slider.setEnabled(True)
-            self._seek_slider.setValue(0)
-
-        def play_worker():
-            try:
-                pa = self._ensure_pyaudio()
-
-                wf = wave.open(io.BytesIO(wav_data), 'rb')
-                stream = pa.open(
-                    format=pa.get_format_from_width(wf.getsampwidth()),
-                    channels=wf.getnchannels(),
-                    rate=wf.getframerate(),
-                    output=True)
-
-                chunk = 2048
-                total_frames = wf.getnframes()
-                fps = wf.getframerate()
-                self._seek_total = total_frames / fps if fps else 0.0
-                self._seek_total_frames = total_frames
-                self._seek_fps = fps
-                played = 0
-                # Update UI at most ~10 times per second to avoid spamming main thread
-                update_every = max(1, fps // 10 // chunk)
-                update_counter = 0
-
-                while not self._stop_flag.is_set():
-                    while self._pause_flag.is_set() and not self._stop_flag.is_set():
-                        self._stop_flag.wait(0.05)
-                    with self._seek_lock:
-                        target = self._seek_target_frame
-                        self._seek_target_frame = None
-                    if target is not None:
-                        target = max(0, min(total_frames, target))
-                        wf.setpos(target)
-                        played = target
-                        update_counter = update_every
-                    data = wf.readframes(chunk)
-                    if not data:
-                        break
-                    stream.write(data)
-                    played = wf.tell()
-                    update_counter += 1
-                    if update_counter >= update_every:
-                        update_counter = 0
-                        elapsed = played / fps
-                        total = total_frames / fps
-                        self._sig_play_progress.emit(elapsed, total)
-
-                stream.stop_stream()
-                stream.close()
-                wf.close()
-            except Exception:
-                pass
-            finally:
-                self._playing = False
-                self._sig_playback_done.emit()
-
-        self._play_thread = threading.Thread(target=play_worker, daemon=True)
-        self._play_thread.start()
-
-    def _toggle_pause(self):
-        if not self._playing:
-            return
-        if self._pause_flag.is_set():
-            self._pause_flag.clear()
-            if hasattr(self, '_pause_btn'):
-                self._pause_btn.setText(ui_text("ui_sound_pause"))
-        else:
-            self._pause_flag.set()
-            if hasattr(self, '_pause_btn'):
-                self._pause_btn.setText(ui_text("ui_sound_resume"))
-
-    def _begin_seek(self):
-        self._seeking = True
-
-    def _preview_seek(self, value):
-        if not self._seeking or not hasattr(self, '_play_status') or not hasattr(self, '_seek_slider'):
-            return
-        total = self._seek_total
-        if total <= 0:
-            return
-        elapsed = total * value / max(1, self._seek_slider.maximum())
-        self._play_status.setText(ui_text("ui_sound_value_value_2", p0=_fmt_duration(elapsed), p1=_fmt_duration(total)))
-
-    def _finish_seek(self):
-        self._seeking = False
-        if not hasattr(self, '_seek_slider'):
-            return
-        if self._seek_fps <= 0 or self._seek_total_frames <= 0:
-            return
-        ratio = self._seek_slider.value() / max(1, self._seek_slider.maximum())
-        with self._seek_lock:
-            self._seek_target_frame = int(self._seek_total_frames * ratio)
-
-    def _update_play_progress(self, elapsed, total):
-        if hasattr(self, '_play_status'):
-            try:
-                self._play_status.setText(
-                    ui_text("ui_sound_value_value_2", p0=_fmt_duration(elapsed), p1=_fmt_duration(total)))
-            except RuntimeError:
-                pass
-        self._seek_total = total
-        if hasattr(self, '_seek_slider') and not self._seeking and total > 0:
-            try:
-                self._seek_slider.setValue(int((elapsed / total) * self._seek_slider.maximum()))
-            except RuntimeError:
-                pass
-
-    def _on_playback_done(self):
-        if hasattr(self, '_play_btn'):
-            try:
-                self._play_btn.setEnabled(True)
-            except RuntimeError:
-                pass
-        if hasattr(self, '_pause_btn'):
-            try:
-                self._pause_btn.setEnabled(False)
-                self._pause_btn.setText(ui_text("ui_sound_pause"))
-            except RuntimeError:
-                pass
-        if hasattr(self, '_stop_btn'):
-            try:
-                self._stop_btn.setEnabled(False)
-            except RuntimeError:
-                pass
-        if hasattr(self, '_play_status'):
-            try:
-                self._play_status.setText("")
-            except RuntimeError:
-                pass
-        if hasattr(self, '_seek_slider'):
-            try:
-                self._seek_slider.setEnabled(False)
-                self._seek_slider.setValue(0)
-            except RuntimeError:
-                pass
-
-    def _stop_playback(self):
-        self._stop_flag.set()
-        self._pause_flag.clear()
-        with self._seek_lock:
-            self._seek_target_frame = None
-        self._playing = False
-        if hasattr(self, '_play_btn'):
-            try:
-                self._play_btn.setEnabled(True)
-            except RuntimeError:
-                pass
-        if hasattr(self, '_pause_btn'):
-            try:
-                self._pause_btn.setEnabled(False)
-                self._pause_btn.setText(ui_text("ui_sound_pause"))
-            except RuntimeError:
-                pass
-        if hasattr(self, '_stop_btn'):
-            try:
-                self._stop_btn.setEnabled(False)
-            except RuntimeError:
-                pass
-        if hasattr(self, '_seek_slider'):
-            try:
-                self._seek_slider.setEnabled(False)
-            except RuntimeError:
-                pass
-
-    # Waveform
-
-    def _draw_waveform(self, wav_data):
-        if not hasattr(self, '_waveform_widget'):
-            return
-        widget = self._waveform_widget
-        widget.clear()
-
-        w = max(widget.width(), 200)
-        h = widget.height() or 80
-        mid = h // 2
-
-        def compute():
-            try:
-                wf = wave.open(io.BytesIO(wav_data), 'rb')
-                raw_pcm = wf.readframes(wf.getnframes())
-                wf.close()
-            except Exception:
-                return None
-            import struct as st
-            count = len(raw_pcm) // 2
-            if count == 0:
-                return None
-            samples = st.unpack(f'<{count}h', raw_pcm)
-            step = max(1, count // w)
-            lines = []
-            for i in range(0, min(count, w * step), step):
-                chunk = samples[i:i + step]
-                if not chunk:
-                    break
-                x = len(lines)
-                y_top = mid - int(max(chunk) / 32768 * mid)
-                y_bot = mid - int(min(chunk) / 32768 * mid)
-                lines.append((x, y_top, y_bot))
-            return lines, mid, w
-
-        def worker():
-            result = compute()
-            self._sig_waveform_ready.emit(result)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _finish_draw_waveform(self, result):
-        if not hasattr(self, '_waveform_widget'):
-            return
-        if result is None:
-            self._waveform_widget.clear()
-            return
-        lines, mid, w = result
-        self._waveform_widget.set_waveform(lines, mid, w)
-
-    # Volume Control
-
-    def _on_volume_slider(self, value):
-        if hasattr(self, '_vol_label'):
-            self._vol_label.setText(ui_text("ui_sound_value", p0=float(value)))
-
-    def _set_volume_preset(self, value):
-        if hasattr(self, '_vol_slider'):
-            self._vol_slider.setValue(int(value * 100))
-            self._on_volume_slider(value)
-
-    def _apply_volume(self, idx, notify=True):
-        """Apply the volume slider value to the HCA entry."""
-        if not hasattr(self, '_vol_slider'):
-            return
-        new_vol = self._vol_slider.value() / 100.0
-        entry = self._entries[idx]
-
-        try:
-            hca_bytes = self._get_entry_bytes(idx)
-            modified = set_hca_volume(hca_bytes, new_vol)
-            entry['_new_data'] = modified
-            entry['size'] = len(modified)
-            # Clear cached WAV so next play uses new volume
-            self._wav_cache.pop(idx, None)
-            self._mark_dirty()
-            if notify:
-                QMessageBox.information(self, self.t("dlg_title_success"),
-                                        self.t("sound_volume_applied", vol=f"{new_vol:.2f}"))
-        except Exception as e:
-            QMessageBox.critical(self, self.t("dlg_title_error"), str(e))
-
     # Export WAV
 
     def _export_wav(self, idx):
         """Export entry as decoded WAV file."""
+        if not self._commit_volume():
+            return
         entry = self._entries[idx]
 
         default_name = f"entry_{entry['id']:03d}.wav"
@@ -1640,7 +1171,7 @@ class SoundEditor(QWidget):
         def worker():
             try:
                 audio_bytes = self._get_entry_bytes(idx)
-                wav_data = _decode_audio_to_wav(audio_bytes, entry.get('format', ''))
+                wav_data = _decode_audio_to_wav(audio_bytes, entry.get('format', ''), subkey=self._meta.get('subkey', 0))
                 with open(path, 'wb') as f:
                     f.write(wav_data)
                 self._sig_export_success.emit(
@@ -1653,6 +1184,8 @@ class SoundEditor(QWidget):
     # Extract / Replace
 
     def _extract_single(self, idx):
+        if not self._commit_volume():
+            return
         entry = self._entries[idx]
         default_name = f"entry_{entry['id']:03d}.wav"
 
@@ -1667,7 +1200,7 @@ class SoundEditor(QWidget):
         def worker():
             try:
                 data = self._get_entry_bytes(idx)
-                wav_data = _decode_audio_to_wav(data, entry.get('format', ''))
+                wav_data = _decode_audio_to_wav(data, entry.get('format', ''), subkey=self._meta.get('subkey', 0))
                 with open(path, 'wb') as f:
                     f.write(wav_data)
                 self._sig_export_success.emit(
@@ -1679,6 +1212,8 @@ class SoundEditor(QWidget):
         threading.Thread(target=worker, daemon=True).start()
 
     def _extract_all(self):
+        if not self._commit_volume():
+            return
         folder = QFileDialog.getExistingDirectory(self, self.t("sound_extract_all_title"))
         if not folder:
             return
@@ -1706,7 +1241,7 @@ class SoundEditor(QWidget):
                         wav_data = self._wav_cache.get(i)
                         if wav_data is None:
                             data = self._get_entry_bytes(i)
-                            wav_data = _decode_audio_to_wav(data, entry.get('format', ''))
+                            wav_data = _decode_audio_to_wav(data, entry.get('format', ''), subkey=self._meta.get('subkey', 0))
                             self._wav_cache[i] = wav_data
                         with open(os.path.join(folder, fname), 'wb') as f:
                             f.write(wav_data)
@@ -1724,6 +1259,8 @@ class SoundEditor(QWidget):
 
     def _replace_single(self, idx):
         """Open a file dialog and replace the entry at *idx* with the chosen audio."""
+        if not self._commit_volume():
+            return
         path, _ = QFileDialog.getOpenFileName(
             self, self.t("sound_replace_title"), game_files_dialog_dir(), _AUDIO_OPEN_FILTER)
         if not path:
@@ -1755,7 +1292,7 @@ class SoundEditor(QWidget):
                 else:
                     raise ImportError(ui_text("sound_vgaudio_required_for_target", target=target_ext.upper().lstrip('.')))
             except ImportError as imp_err:
-                # PyCriCodecs/soundfile not installed — try VGAudioCli as a last resort.
+                # Python encoder unavailable; use the bundled VGAudioCLI fallback.
                 cli = _auto_detect_vgaudio_cli()
                 if not cli:
                     # Neither Python lib nor VGAudioCli available — tell user clearly.
@@ -1800,6 +1337,8 @@ class SoundEditor(QWidget):
 
     def _add_new_entry(self):
         """Open a file dialog, convert the chosen audio to HCA, and add it."""
+        if not self._commit_volume():
+            return
         if self._entries is None:
             return
         path, _ = QFileDialog.getOpenFileName(
@@ -1869,6 +1408,7 @@ class SoundEditor(QWidget):
 
     def _set_converting(self, active: bool) -> None:
         """Disable or re-enable mutating controls while a conversion runs."""
+        self._set_busy(active, ui_text('sound_status_decoding'))
         for name in ("_add_btn", "_dup_btn", "_del_btn", "_save_btn", "_extract_btn"):
             try:
                 btn = getattr(self, name)
@@ -1877,6 +1417,8 @@ class SoundEditor(QWidget):
                 pass
 
     def _duplicate_entry(self):
+        if not self._commit_volume():
+            return
         if self._current_entry is None or not self._entries:
             return
         try:
@@ -1892,6 +1434,8 @@ class SoundEditor(QWidget):
         self._mark_dirty()
 
     def _delete_entry(self):
+        if not self._commit_volume():
+            return
         if self._current_entry is None or not self._entries:
             return
         if len(self._entries) <= 1:

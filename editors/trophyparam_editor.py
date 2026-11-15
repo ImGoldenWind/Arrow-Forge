@@ -1,815 +1,485 @@
-import copy
+"""TrophyParam catalog and exact editing of two unknown values."""
 import os
 
-from PyQt6.QtCore import QRegularExpression, Qt, QTimer
-from PyQt6.QtGui import QFont, QRegularExpressionValidator
+from PyQt6.QtCore import QEvent, QRegularExpression, QSignalBlocker, Qt, QTimer
+from PyQt6.QtGui import QRegularExpressionValidator
 from PyQt6.QtWidgets import (
-    QFileDialog,
-    QFrame,
-    QGridLayout,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QPushButton,
-    QScrollArea,
-    QSizePolicy,
-    QVBoxLayout,
-    QWidget,
+    QComboBox, QFileDialog, QHBoxLayout,
+    QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
+    QVBoxLayout, QWidget,
 )
 
-from core.editor_file_state import set_file_label, set_file_label_empty
+from core.design_tokens import LayoutRole, Size, TypeSize, ui_font
+from core.editor_file_state import set_file_label
 from core.settings import create_backup_on_open, game_files_dialog_dir
 from core.style_helpers import (
-    TOOLBAR_BTN_H,
-    TOOLBAR_H,
-    make_empty_state,
-    make_editor_grid_card,
-    make_editor_field_shell,
-    ss_accent_sep,
-    ss_bg_dark,
-    ss_bg_panel,
-    ss_btn,
-    ss_dim_label,
-    ss_field_label,
-    ss_file_label,
-    ss_input,
-    ss_main_label,
-    ss_panel,
-    ss_placeholder,
-    ss_scrollarea,
-    ss_scrollarea_transparent,
-    ss_search,
-    ss_sep,
-    ss_sidebar_btn,
-    ss_sidebar_frame,
-    ss_transparent,
+    make_editor_field_shell, make_editor_grid_card, make_empty_state,
+    ss_bg_dark, ss_dim_label, ss_error_label, ss_input_validation,
 )
 from core.translations import ui_text
-from parsers.trophyparam_parser import (
-    make_default_entry,
-    parse_trophyparam_xfbin,
-    save_trophyparam_xfbin,
+from core.trophy_tools import FIELDS, UINT32_MAX, TrophySession, uint32
+from core.ui.editor_actions import commit_save_path, editor_path, install_file_actions, refresh_file_actions
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.editor_widgets import (
+    EditorActionRow, EditorFilterCombo, EditorSeparator, EditorSidebar, EditorToolbar,
+    configure_button, configure_card, configure_field, configure_file_label,
+    configure_input, configure_layout, configure_scrollarea, configure_search,
+    fit_scroll_page,
 )
-
-
-_UINT32_MAX = 0xFFFFFFFF
+from core.ui.number_input import IntegerStepper
+from core.ui.record_list import EditorRecordList
+from editors.trophyparam_model import TrophyFilterModel, TrophyTableModel
+from parsers.trophyparam_parser import make_default_entry, parse_trophyparam_xfbin, save_trophyparam_xfbin
 
 
 def _clear_layout(layout):
-    if layout is None:
-        return
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            widget = item.widget()
-            widget.hide()
-            widget.setParent(None)
-            widget.deleteLater()
+            item.widget().hide()
+            item.widget().deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
-
-
-def _truncate(text: str, limit: int) -> str:
-    text = str(text)
-    return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
 
 
 class TrophyParamEditor(QWidget):
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
-        self._t = t or (lambda key, **kw: key.format(**kw) if kw else key)
-        self._embedded = embedded
-
-        self._filepath: str | None = None
-        self._raw_data: bytearray | None = None
-        self._result: dict | None = None
-        self._entries: list[dict] = []
-        self._entry_buttons: list[tuple[QPushButton, int]] = []
-        self._current_idx: int | None = None
-        self._fields: dict[str, QLineEdit] = {}
-        self._entry_count_label: QLabel | None = None
-        self._first_ptr_label: QLabel | None = None
-        self._dirty = False
-        self._loading_detail = False
-        self._last_compact: bool | None = None
-        self._active_grid_columns = 3
-
-        self._uint_validator = QRegularExpressionValidator(QRegularExpression(r"\d{0,10}"), self)
-        self._hex_validator = QRegularExpressionValidator(QRegularExpression(r"[0-9A-Fa-f ]{0,4096}"), self)
-
+        self._t, self._embedded = t or ui_text, embedded
+        self._filepath = self._raw_data = self._result = self._session = None
+        self._entries, self._fields = [], {}
+        self._current_idx = None
+        self._dirty = self._loading_detail = False
+        self._last_compact = None
+        self._uint_validator = QRegularExpressionValidator(QRegularExpression(r'[0-9]{0,10}'), self)
         self._build_ui()
-
-    def _tr(self, key: str, fallback: str | None = None, **kwargs) -> str:
-        value = self._t(key, **kwargs) if kwargs else self._t(key)
-        return fallback if value == key and fallback is not None else value
+        install_file_actions(self, self._btn_save, save_to=lambda path: self._do_save(target_path=path))
+        install_editor_chrome(self)
 
     def _build_ui(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        root = configure_layout(QVBoxLayout(self), LayoutRole.ROOT)
         self.setStyleSheet(ss_bg_dark())
-
-        top = QFrame()
-        top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(ss_bg_panel())
-        top_layout = QHBoxLayout(top)
-        top_layout.setContentsMargins(12, 8, 12, 8)
-        top_layout.setSpacing(4)
-
-        self._btn_open = QPushButton(self._tr("btn_open_file", ui_text("btn_open_file")))
-        self._btn_open.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_open.setFont(QFont("Segoe UI", 10))
-        self._btn_open.setStyleSheet(ss_btn(accent=True))
+        top = EditorToolbar()
+        self._btn_open = configure_button(QPushButton(ui_text('btn_open_file')), accent=True)
+        self._btn_open.setProperty('designAction', 'open')
         self._btn_open.clicked.connect(self._do_open)
-        top_layout.addWidget(self._btn_open)
-
-        self._btn_save = QPushButton(self._tr("btn_save_file", ui_text("btn_save_file")))
-        self._btn_save.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_save.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        self._btn_save.setEnabled(False)
-        self._btn_save.setStyleSheet(ss_btn(accent=True))
+        self._btn_save = configure_button(QPushButton(ui_text('btn_save_file')), accent=True)
         self._btn_save.clicked.connect(self._do_save)
-        top_layout.addWidget(self._btn_save)
-
-        self._file_label = QLabel(self._tr("no_file_loaded", ui_text("no_file_loaded")))
-        self._file_label.setFont(QFont("Consolas", 12))
-        self._file_label.setStyleSheet(ss_file_label())
-        top_layout.addWidget(self._file_label)
-        top_layout.addStretch()
+        self._btn_save.setEnabled(False)
+        self._file_label = configure_file_label(QLabel(ui_text('no_file_loaded')))
+        for widget in (self._btn_open, self._btn_save, self._file_label):
+            top.content_layout.addWidget(widget)
+        top.content_layout.addStretch()
         root.addWidget(top)
+        root.addWidget(EditorSeparator(accent=True))
 
-        sep = QFrame()
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
-        root.addWidget(sep)
-
-        main = QWidget()
-        main.setStyleSheet(ss_bg_dark())
-        main_layout = QHBoxLayout(main)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-
-        sidebar = QFrame()
-        sidebar.setFixedWidth(290)
-        sidebar.setStyleSheet(ss_sidebar_frame())
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(8, 8, 8, 4)
-        sidebar_layout.setSpacing(4)
-
-        self._search = QLineEdit()
-        self._search.setPlaceholderText(self._tr("search_placeholder", ui_text("search_placeholder")))
-        self._search.setFixedHeight(32)
-        self._search.setFont(QFont("Segoe UI", 13))
-        self._search.setStyleSheet(ss_search())
+        main = configure_layout(QHBoxLayout(), LayoutRole.ROOT)
+        sidebar = EditorSidebar(width=290)
+        side = sidebar.content_layout
+        self._search = configure_search(QLineEdit())
+        self._search.setToolTip(ui_text('trophy_search_hint'))
         self._search.textChanged.connect(self._filter_list)
-        sidebar_layout.addWidget(self._search)
+        side.addWidget(self._search)
+        self._status_filter = EditorFilterCombo()
+        for key in ('all', 'modified', 'new', 'unchanged', 'duplicates'):
+            self._status_filter.addItem(ui_text('trophy_filter_' + key), key)
+        self._status_filter.currentIndexChanged.connect(self._filter_list)
+        side.addWidget(self._status_filter)
 
-        actions = QWidget()
-        actions.setStyleSheet(ss_transparent())
-        actions_layout = QHBoxLayout(actions)
-        actions_layout.setContentsMargins(0, 2, 0, 4)
-        actions_layout.setSpacing(4)
-        self._btn_add = self._make_action_button("btn_new", self._do_add)
-        self._btn_dup = self._make_action_button("btn_duplicate", self._do_dup)
-        self._btn_del = self._make_action_button("btn_delete", self._do_del, danger=True)
-        actions_layout.addWidget(self._btn_add, 1)
-        actions_layout.addWidget(self._btn_dup, 1)
-        actions_layout.addWidget(self._btn_del, 1)
-        sidebar_layout.addWidget(actions)
+        self._sort_combo = configure_input(QComboBox(), monospace=False)
+        self._sort_combo.setToolTip(ui_text('trophy_sort_hint'))
+        self._sort_combo.setAccessibleName(ui_text('trophy_sort_hint'))
+        for key, column, order in (('order', 0, Qt.SortOrder.AscendingOrder),
+                                   ('id', 1, Qt.SortOrder.AscendingOrder),
+                                   ('value_up', 2, Qt.SortOrder.AscendingOrder),
+                                   ('value_down', 2, Qt.SortOrder.DescendingOrder)):
+            self._sort_combo.addItem(ui_text('trophy_sort_' + key), (column, order))
+        self._sort_combo.currentIndexChanged.connect(self._sort_catalog)
+        side.addWidget(self._sort_combo)
 
-        self._entry_scroll = QScrollArea()
-        self._entry_scroll.setWidgetResizable(True)
-        self._entry_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._entry_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._entry_scroll.setStyleSheet(ss_scrollarea_transparent())
-        self._entry_list_widget = QWidget()
-        self._entry_list_widget.setMinimumWidth(0)
-        self._entry_list_widget.setStyleSheet(ss_transparent())
-        self._entry_list_layout = QVBoxLayout(self._entry_list_widget)
-        self._entry_list_layout.setContentsMargins(0, 0, 0, 0)
-        self._entry_list_layout.setSpacing(1)
-        self._entry_list_layout.addStretch()
-        self._entry_scroll.setWidget(self._entry_list_widget)
-        sidebar_layout.addWidget(self._entry_scroll, 1)
-        main_layout.addWidget(sidebar)
+        actions = EditorActionRow()
+        self._btn_add = self._action('btn_new', self._do_add, 'new')
+        self._btn_dup = self._action('btn_duplicate', self._do_dup, 'duplicate')
+        self._btn_del = self._action('btn_delete', self._do_del, 'delete', danger=True)
+        for button in (self._btn_add, self._btn_dup, self._btn_del):
+            actions.content_layout.addWidget(button, 1)
+        side.addWidget(actions)
 
-        divider = QFrame()
-        divider.setFixedWidth(1)
-        divider.setStyleSheet(ss_sep())
-        main_layout.addWidget(divider)
+        self._catalog_model = TrophyTableModel(self)
+        self._catalog_proxy = TrophyFilterModel(self)
+        self._catalog_proxy.setSourceModel(self._catalog_model)
+        self._catalog = EditorRecordList(self._catalog_proxy, self._describe_catalog_row)
+        self._catalog.setAccessibleName(ui_text('trophy_catalog_title'))
+        self._catalog_proxy.sort(0, Qt.SortOrder.AscendingOrder)
+        self._catalog.selectionModel().currentRowChanged.connect(self._on_catalog_selection)
+        side.addWidget(self._catalog, 1)
+        self._no_matches = self._label(ui_text('trophy_no_matches'))
+        self._no_matches.hide()
+        side.addWidget(self._no_matches)
+        main.addWidget(sidebar)
+        main.addWidget(EditorSeparator(orientation=Qt.Orientation.Vertical))
 
-        self._editor_scroll = QScrollArea()
-        self._editor_scroll.setWidgetResizable(True)
-        self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._editor_scroll = configure_scrollarea(QScrollArea())
         self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._editor_scroll.setStyleSheet(ss_scrollarea())
+        self._editor_scroll.viewport().installEventFilter(self)
         self._editor_widget = QWidget()
-        self._editor_widget.setStyleSheet(ss_bg_dark())
-        self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(12, 12, 12, 12)
-        self._editor_layout.setSpacing(8)
+        self._editor_layout = configure_layout(QVBoxLayout(self._editor_widget), LayoutRole.PAGE)
         self._editor_scroll.setWidget(self._editor_widget)
-        main_layout.addWidget(self._editor_scroll, 1)
-
-        self._show_placeholder(ui_text("ui_trophyparam_open_file_to_begin_editing"))
-        root.addWidget(main, 1)
+        main.addWidget(self._editor_scroll, 1)
+        root.addLayout(main, 1)
+        self._show_placeholder(ui_text('ui_trophyparam_open_file_to_begin_editing'))
         self._update_actions()
 
-    def _make_action_button(self, key: str, slot, danger: bool = False) -> QPushButton:
-        btn = QPushButton(self._tr(key, ui_text(key)))
-        btn.setFixedHeight(28)
-        btn.setFont(QFont("Segoe UI", 10))
-        btn.setEnabled(False)
-        btn.setStyleSheet(ss_btn(danger=danger))
-        btn.clicked.connect(slot)
-        return btn
+    def _action(self, key, callback, action=None, *, danger=False):
+        button = configure_button(QPushButton(ui_text(key)), danger=danger, height=Size.COMPACT_CONTROL)
+        if action:
+            button.setProperty('designAction', action)
+        button.clicked.connect(callback)
+        return button
 
-    def _show_placeholder(self, text: str):
-        _clear_layout(self._editor_layout)
+    def _sort_catalog(self, *_):
+        column, order = self._sort_combo.currentData()
+        blocker = QSignalBlocker(self._catalog.selectionModel())
+        self._catalog_proxy.sort(column, order)
+        self._sync_catalog_selection()
+        del blocker
+
+    def _describe_catalog_row(self, index):
+        source = self._catalog_proxy.mapToSource(index)
+        entry = self._entries[source.row()]
+        title = ui_text('ui_trophyparam_entry_title', index=source.row(), trophy_id=entry['trophy_id'])
+        subtitle = ui_text('ui_trophyparam_entry_subtitle', first=entry['trophy_id'], value=entry['requirement_value'])
+        status = self._session.status(entry)
+        if status != 'unchanged':
+            title = ('● ' if status == 'modified' else '+ ') + title
+        return title, subtitle, source.data(Qt.ItemDataRole.ToolTipRole)
+
+    def _label(self, text, *, error=False):
+        label = QLabel(text)
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        label.setWordWrap(True)
+        label.setMinimumWidth(0)
+        label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        label.setFont(ui_font(TypeSize.HINT))
+        label.setStyleSheet(ss_error_label() if error else ss_dim_label())
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        return label
+
+    def _ensure_session(self):
+        if self._result is not None and (self._session is None or self._session.result is not self._result):
+            self._session = TrophySession(self._result)
+            self._catalog_model.reset_session(self._session)
+
+    def _show_placeholder(self, text):
         self._fields = {}
-        self._entry_count_label = None
-        self._first_ptr_label = None
-        card = make_empty_state(
-            self._editor_widget,
-            title=ui_text("no_file_loaded"),
-            text=text,
-            icon_name="fa6s.folder-open",
-        )
+        self._last_compact = None
+        _clear_layout(self._editor_layout)
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
+        self._editor_layout.addWidget(make_empty_state(
+            self._editor_widget, title=ui_text('no_file_loaded') if self._raw_data is None else ui_text('ui_trophyparam_no_entries'),
+            text=text, icon_name='fa6s.trophy'), 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
     def _do_open(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            ui_text("ui_trophyparam_open_title"),
-            game_files_dialog_dir(target_patterns=("TrophyParam.bin.xfbin", "TrophyParam.xfbin")),
-            ui_text("ui_trophyparam_file_filter"),
-        )
+        path, _ = QFileDialog.getOpenFileName(self, ui_text('ui_trophyparam_open_title'),
+            game_files_dialog_dir(target_patterns=('TrophyParam.bin.xfbin', 'TrophyParam.xfbin')),
+            ui_text('ui_trophyparam_file_filter'))
         if path:
             self._load(path)
 
-    def _load(self, path: str):
-        create_backup_on_open(path)
+    def _load(self, path):
+        # Failed parsing and cancelled discard both retain the current document.
         try:
             raw, result = parse_trophyparam_xfbin(path)
         except Exception as exc:
-            self._filepath = None
-            self._raw_data = None
-            self._result = None
-            self._entries = []
-            self._current_idx = None
-            self._clear_entry_list()
-            set_file_label_empty(self._file_label, self._tr("no_file_loaded", ui_text("no_file_loaded")))
-            self._show_placeholder(ui_text("ui_trophyparam_open_file_to_begin_editing"))
-            QMessageBox.critical(self, ui_text("dlg_title_error"), ui_text("msg_load_error", error=exc))
-            return
-
-        self._filepath = path
-        self._raw_data = raw
-        self._result = result
-        self._entries = result["entries"]
-        self._current_idx = None
+            QMessageBox.critical(self, ui_text('dlg_title_error'), ui_text('msg_load_error', error=exc))
+            return False
+        if self._dirty and QMessageBox.question(self, ui_text('unsaved_changes_title'),
+                ui_text('trophy_discard'), QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return False
+        create_backup_on_open(path)
+        self._filepath, self._raw_data, self._result = str(path), raw, result
+        self._entries, self._current_idx = result['entries'], None
+        self._fields = {}
+        self._session = TrophySession(result)
         self._dirty = False
-        self._btn_save.setEnabled(False)
-        self._search.setText("")
-        set_file_label(self._file_label, path)
+        self._search.clear()
+        self._status_filter.setCurrentIndex(0)
         self._populate_list()
         if self._entries:
             self._select_entry(0)
         else:
-            self._show_placeholder(ui_text("ui_trophyparam_no_entries"))
+            self._show_placeholder(ui_text('trophy_empty_hint'))
         self._update_actions()
+        return True
 
-    def _do_save(self):
-        if not self._filepath or self._raw_data is None or self._result is None:
-            return
-        if not self._apply_current_entry(show_errors=True):
-            return
+    def _do_save(self, target_path=None):
+        path = target_path or editor_path(self)
+        if not path or self._result is None or not self._apply_current_entry(show_errors=True):
+            return False
         try:
-            save_trophyparam_xfbin(self._filepath, self._raw_data, self._result)
-            with open(self._filepath, "rb") as fh:
-                self._raw_data = bytearray(fh.read())
-            self._dirty = False
-            self._btn_save.setEnabled(False)
-            set_file_label(self._file_label, self._filepath)
-            QMessageBox.information(
-                self,
-                ui_text("dlg_title_success"),
-                ui_text("msg_save_success", path=os.path.basename(self._filepath)),
-            )
+            save_trophyparam_xfbin(path, self._raw_data, self._result)
         except Exception as exc:
-            QMessageBox.critical(self, ui_text("dlg_title_error"), ui_text("msg_save_error", error=exc))
-
-    def _clear_entry_list(self):
-        _clear_layout(self._entry_list_layout)
-        self._entry_list_layout.addStretch()
-        self._entry_buttons = []
+            QMessageBox.critical(self, ui_text('dlg_title_error'), ui_text('msg_save_error', error=exc))
+            return False
+        commit_save_path(self, path)
+        self._session.mark_saved()
+        self._dirty = False
+        self._update_actions()
+        QMessageBox.information(self, ui_text('dlg_title_success'), ui_text('msg_save_success', path=os.path.basename(path)))
+        return True
 
     def _populate_list(self):
-        self._clear_entry_list()
-        for idx, entry in enumerate(self._entries):
-            btn = self._make_entry_button(idx, entry)
-            self._entry_list_layout.insertWidget(self._entry_list_layout.count() - 1, btn)
-            self._entry_buttons.append((btn, idx))
+        self._ensure_session()
+        blocker = QSignalBlocker(self._catalog.selectionModel())
+        self._catalog_model.reset_session(self._session)
+        del blocker
         self._filter_list()
 
-    def _make_entry_button(self, idx: int, entry: dict) -> QPushButton:
-        btn = QPushButton()
-        btn.setFixedHeight(48)
-        btn.setMinimumWidth(0)
-        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet(ss_sidebar_btn(selected=idx == self._current_idx))
-
-        layout = QVBoxLayout(btn)
-        layout.setContentsMargins(10, 3, 10, 3)
-        layout.setSpacing(0)
-
-        title_text = self._entry_title(idx, entry)
-        subtitle_text = self._entry_subtitle(entry)
-
-        title = QLabel(_truncate(title_text, 24))
-        title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        title.setStyleSheet(ss_main_label())
-        title.setMinimumWidth(0)
-        title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        title.setToolTip(title_text)
-        title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        layout.addWidget(title)
-
-        subtitle = QLabel(_truncate(subtitle_text, 28))
-        subtitle.setFont(QFont("Consolas", 10))
-        subtitle.setStyleSheet(ss_dim_label())
-        subtitle.setMinimumWidth(0)
-        subtitle.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        subtitle.setToolTip(subtitle_text)
-        subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        layout.addWidget(subtitle)
-
-        btn.clicked.connect(lambda checked=False, i=idx: self._select_entry(i))
-        return btn
-
-    def _entry_title(self, idx: int, entry: dict) -> str:
-        return ui_text("ui_trophyparam_entry_title", index=idx, trophy_id=entry.get("trophy_id", 0))
-
-    def _entry_subtitle(self, entry: dict) -> str:
-        return ui_text("ui_trophyparam_entry_subtitle", value=entry.get("requirement_value", 0))
-
-    def _filter_list(self):
-        query = self._search.text().lower().strip()
-        for btn, idx in self._entry_buttons:
-            if idx >= len(self._entries):
-                btn.setVisible(False)
-                continue
-            entry = self._entries[idx]
-            haystack = " ".join([
-                str(idx),
-                str(entry.get("trophy_id", "")),
-                str(entry.get("requirement_value", "")),
-            ]).lower()
-            btn.setVisible(not query or query in haystack)
-
-    def _select_entry(self, idx: int):
-        if idx < 0 or idx >= len(self._entries):
+    def _filter_list(self, *_):
+        if not hasattr(self, '_catalog_proxy'):
             return
-        if not self._apply_current_entry(show_errors=True):
+        blocker = QSignalBlocker(self._catalog.selectionModel())
+        self._catalog_proxy.set_filters(self._search.text(), self._status_filter.currentData())
+        self._sync_catalog_selection()
+        del blocker
+        self._no_matches.setVisible(bool(self._entries) and self._catalog_proxy.rowCount() == 0)
+
+    def _sync_catalog_selection(self):
+        if self._current_idx is None:
+            self._catalog.clearSelection()
             return
-        self._current_idx = idx
-        for btn, button_idx in self._entry_buttons:
-            btn.setStyleSheet(ss_sidebar_btn(selected=button_idx == idx))
-        self._build_editor(idx)
+        index = self._catalog_proxy.mapFromSource(self._catalog_model.index(self._current_idx, 0))
+        if index.isValid():
+            self._catalog.setCurrentIndex(index)
+            self._catalog.scrollTo(index)
+        else:
+            self._catalog.clearSelection()
+            self._catalog.setCurrentIndex(self._catalog_proxy.index(-1, -1))
+
+    def _on_catalog_selection(self, current, previous):
+        if not current.isValid():
+            return
+        row = self._catalog_proxy.mapToSource(current).row()
+        if not self._select_entry(row):
+            blocker = QSignalBlocker(self._catalog.selectionModel())
+            self._sync_catalog_selection()
+            del blocker
+
+    def _select_entry(self, idx):
+        if not 0 <= idx < len(self._entries) or not self._apply_current_entry(show_errors=True):
+            return False
+        if idx != self._current_idx or not self._fields:
+            self._current_idx = idx
+            self._build_editor(idx)
+        blocker = QSignalBlocker(self._catalog.selectionModel())
+        self._sync_catalog_selection()
+        del blocker
         self._update_actions()
+        return True
 
-    def _refresh_entry_button(self, idx: int):
-        if idx < 0 or idx >= len(self._entries):
-            return
-        for btn, button_idx in self._entry_buttons:
-            if button_idx != idx:
-                continue
-            labels = btn.findChildren(QLabel)
-            if labels:
-                title_text = self._entry_title(idx, self._entries[idx])
-                labels[0].setText(_truncate(title_text, 24))
-                labels[0].setToolTip(title_text)
-            if len(labels) > 1:
-                subtitle_text = self._entry_subtitle(self._entries[idx])
-                labels[1].setText(_truncate(subtitle_text, 28))
-                labels[1].setToolTip(subtitle_text)
-            break
-        self._filter_list()
-
-    def _update_actions(self):
-        loaded = self._raw_data is not None
-        has_selection = self._current_idx is not None and 0 <= self._current_idx < len(self._entries)
-        self._btn_add.setEnabled(loaded)
-        self._btn_dup.setEnabled(loaded and has_selection)
-        self._btn_del.setEnabled(loaded and has_selection)
-        self._btn_save.setEnabled(loaded and self._dirty)
-        if self._entry_count_label is not None:
-            self._entry_count_label.setText(ui_text("ui_trophyparam_entry_count_value", count=len(self._entries)))
-        if self._first_ptr_label is not None:
-            self._first_ptr_label.setText(str(8 + len(self._read_prefix_bytes_quiet())))
-
-    def _build_editor(self, idx: int):
-        _clear_layout(self._editor_layout)
-        self._fields = {}
-        self._entry_count_label = None
-        self._first_ptr_label = None
+    def _build_editor(self, idx):
+        self._ensure_session()
         self._loading_detail = True
+        self._fields = {}
+        self._last_compact = None
+        _clear_layout(self._editor_layout)
         entry = self._entries[idx]
-        self._last_compact = self._is_compact_editor()
+        card, self._field_grid = make_editor_grid_card(self._editor_widget,
+            title=ui_text('ui_trophyparam_entry_title', index=idx, trophy_id=entry['trophy_id']),
+            icon_name='fa6s.trophy')
+        self._title_label = next(label for label in card.findChildren(QLabel)
+            if label.text() == ui_text('ui_trophyparam_entry_title', index=idx, trophy_id=entry['trophy_id']))
+        configure_card(card, vertical_policy=QSizePolicy.Policy.Minimum)
+        self._field_frames = []
+        self._comparisons = {}
+        for column, key in enumerate(FIELDS):
+            frame, layout, _, _ = make_editor_field_shell(ui_text('ui_trophyparam_' + key))
+            edit = configure_input(QLineEdit(str(entry[key])), monospace=True)
+            edit.setValidator(self._uint_validator)
+            edit.setMaxLength(10)
+            edit.setAccessibleName(ui_text('ui_trophyparam_' + key))
+            edit.setToolTip(ui_text('ui_trophyparam_' + key + '_hint') + '\n\n' + ui_text('trophy_storage_hint'))
+            edit.setProperty('messageReference', False)
+            layout.addWidget(IntegerStepper(edit, 0, UINT32_MAX))
+            comparison = self._label('')
+            layout.addWidget(comparison)
+            comparison.hide()
+            configure_field(frame, edit, vertical_policy=QSizePolicy.Policy.Minimum)
+            self._fields[key], self._comparisons[key] = edit, comparison
+            self._field_frames.append(frame)
+            self._field_grid.addWidget(frame, 0, column)
+            edit.textChanged.connect(self._on_field_text_changed)
+        self._editor_layout.addWidget(card)
 
-        header, header_layout = make_editor_grid_card(
-            self._editor_widget,
-            title=self._entry_title(idx, entry),
-            icon_name="fa6s.trophy",
-            subtitle=self._entry_subtitle(entry),
-            grid_margins=(0, 0, 0, 0),
-            vertical_spacing=8,
-        )
-        self._prep_card(header)
-        self._active_grid_columns = 2
-
-        self._add_uint_field(
-            header_layout,
-            0,
-            0,
-            "trophy_id",
-            ui_text("ui_trophyparam_trophy_id"),
-            entry.get("trophy_id", 0),
-            ui_text("ui_trophyparam_trophy_id_hint"),
-            big=True,
-        )
-        self._add_uint_field(
-            header_layout,
-            0,
-            1,
-            "requirement_value",
-            ui_text("ui_trophyparam_requirement_value"),
-            entry.get("requirement_value", 0),
-            ui_text("ui_trophyparam_requirement_value_hint"),
-            big=True,
-        )
-        for col in range(self._grid_columns(2)):
-            header_layout.setColumnStretch(col, 1)
-        self._editor_layout.addWidget(header)
-
-        self._add_section(ui_text("ui_trophyparam_file_header"))
-        raw_card = self._make_card()
-        raw_grid = self._card_grid(raw_card)
-        self._active_grid_columns = 3
-        version = 0 if self._result is None else self._result.get("version", 0)
-        self._add_uint_field(
-            raw_grid,
-            0,
-            0,
-            "version",
-            ui_text("ui_trophyparam_version"),
-            version,
-            ui_text("ui_trophyparam_version_hint"),
-        )
-        self._add_value_label(
-            raw_grid,
-            0,
-            1,
-            ui_text("ui_trophyparam_entry_count"),
-            ui_text("ui_trophyparam_entry_count_value", count=len(self._entries)),
-            "entry_count",
-        )
-        self._add_value_label(
-            raw_grid,
-            0,
-            2,
-            ui_text("ui_trophyparam_first_ptr"),
-            str(8 + len(self._result.get("prefix_bytes", b"") if self._result else b"")),
-            "first_ptr",
-        )
-        self._add_hex_field(
-            raw_grid,
-            1,
-            0,
-            "prefix_bytes",
-            ui_text("ui_trophyparam_prefix_hex"),
-            self._bytes_hex(self._result.get("prefix_bytes", b"") if self._result else b""),
-            ui_text("ui_trophyparam_prefix_hint"),
-        )
-        self._add_hex_field(
-            raw_grid,
-            1,
-            1,
-            "tail_bytes",
-            ui_text("ui_trophyparam_tail_hex"),
-            self._bytes_hex(self._result.get("tail_bytes", b"") if self._result else b""),
-            ui_text("ui_trophyparam_tail_hint"),
-        )
-        for col in range(self._grid_columns(3)):
-            raw_grid.setColumnStretch(col, 1)
-        self._editor_layout.addWidget(raw_card)
-
-        self._add_section(ui_text("ui_trophyparam_inference_title"))
-        info_card = self._make_card()
-        info_grid = self._card_grid(info_card)
-        info = QLabel(ui_text("ui_trophyparam_inference_hint"))
-        info.setWordWrap(True)
-        info.setFont(QFont("Segoe UI", 11))
-        info.setStyleSheet(ss_dim_label())
-        info.setMinimumWidth(0)
-        info.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        info_grid.addWidget(info, 0, 0)
-        info_grid.setColumnStretch(0, 1)
-        self._editor_layout.addWidget(info_card)
-
-        spacer = QWidget()
-        spacer.setFixedHeight(20)
-        spacer.setStyleSheet(ss_transparent())
-        self._editor_layout.addWidget(spacer)
+        self._validation_label = self._label('', error=True)
+        self._btn_restore = self._action('trophy_restore', self._restore_entry)
+        self._btn_restore.hide()
+        self._btn_restore.setToolTip(ui_text('trophy_restore_hint') + '\n\n' + ui_text('trophy_comparison_hint'))
+        self._duplicate_label = self._label(ui_text('trophy_duplicate_hint'))
+        card.layout().addWidget(self._validation_label)
+        card.layout().addWidget(self._btn_restore, 0, Qt.AlignmentFlag.AlignLeft)
+        card.layout().addWidget(self._duplicate_label)
         self._editor_layout.addStretch()
         self._loading_detail = False
+        self._reflow()
+        self._refresh_detail()
 
-    def _add_section(self, title: str):
-        self._pending_section_title = title
-
-    def _make_card(self) -> QFrame:
-        section_title = getattr(self, "_pending_section_title", None)
-        self._pending_section_title = None
-        card, grid = make_editor_grid_card(
-            self._editor_widget,
-            title=section_title,
-            icon_name="fa6s.trophy",
-            vertical_spacing=10,
-        )
-        self._prep_card(card)
-        card._editor_grid = grid
-        return card
-
-    def _card_grid(self, card: QFrame) -> QGridLayout:
-        return card._editor_grid
-
-    def _field_shell(self, label: str, hint: str = "") -> tuple[QWidget, QVBoxLayout]:
-        frame, layout, _label, _hint = make_editor_field_shell(label, hint)
-        return frame, layout
-
-    def _is_compact_editor(self) -> bool:
-        if not hasattr(self, "_editor_scroll"):
-            return False
+    def _is_compact_editor(self):
         return self._editor_scroll.viewport().width() < 780
 
-    def _grid_columns(self, max_columns: int) -> int:
-        width = self._editor_scroll.viewport().width()
-        if width < 780:
-            return 1
-        if width < 960:
-            return min(2, max_columns)
-        return max_columns
-
-    def _field_position(self, row: int, col: int, max_columns: int) -> tuple[int, int]:
-        columns = self._grid_columns(max_columns)
-        logical_index = row * max_columns + col
-        return divmod(logical_index, columns)
-
-    def _prep_card(self, card: QFrame):
-        card.setMinimumWidth(0)
-        card.setMaximumWidth(980)
-        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        return card
-
-    def _prep_field_widget(self, frame: QWidget, editor: QWidget):
-        frame.setMinimumWidth(0)
-        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        editor.setMinimumWidth(0)
-        editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-
-    def _add_value_label(self, grid, row, col, label, value, key):
-        frame, layout = self._field_shell(label)
-        value_label = QLabel(str(value))
-        value_label.setFixedHeight(30)
-        value_label.setFont(QFont("Consolas", 13))
-        value_label.setStyleSheet(ss_main_label())
-        value_label.setMinimumWidth(0)
-        value_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        layout.addWidget(value_label)
-        self._prep_field_widget(frame, value_label)
-        mapped_row, mapped_col = self._field_position(row, col, getattr(self, "_active_grid_columns", 3))
-        grid.addWidget(frame, mapped_row, mapped_col)
-        grid.setColumnStretch(mapped_col, 1)
-        if key == "entry_count":
-            self._entry_count_label = value_label
-        elif key == "first_ptr":
-            self._first_ptr_label = value_label
-
-    def _add_uint_field(self, grid, row, col, key, label, value, hint="", big=False):
-        frame, layout = self._field_shell(label, hint)
-        edit = QLineEdit()
-        edit.setValidator(self._uint_validator)
-        edit.setMaxLength(10)
-        edit.setFixedHeight(36 if big else 30)
-        edit.setFont(QFont("Consolas", 16 if big else 13))
-        edit.setStyleSheet(ss_input())
-        edit.setMinimumWidth(0)
-        edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        edit.setText(str(int(value)))
-        edit.setCursorPosition(0)
-        edit.textChanged.connect(lambda _text, k=key: self._on_field_text_changed(k))
-        edit.editingFinished.connect(lambda k=key: self._on_uint_finished(k))
-        layout.addWidget(edit)
-        self._prep_field_widget(frame, edit)
-        mapped_row, mapped_col = self._field_position(row, col, getattr(self, "_active_grid_columns", 3))
-        grid.addWidget(frame, mapped_row, mapped_col)
-        grid.setColumnStretch(mapped_col, 1)
-        self._fields[key] = edit
-
-    def _add_hex_field(self, grid, row, col, key, label, value, hint=""):
-        frame, layout = self._field_shell(label, hint)
-        edit = QLineEdit()
-        edit.setValidator(self._hex_validator)
-        edit.setFixedHeight(30)
-        edit.setFont(QFont("Consolas", 13))
-        edit.setStyleSheet(ss_input())
-        edit.setMinimumWidth(0)
-        edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        edit.setText(value)
-        edit.setCursorPosition(0)
-        edit.textChanged.connect(lambda _text, k=key: self._on_field_text_changed(k))
-        edit.editingFinished.connect(lambda k=key: self._on_hex_finished(k))
-        layout.addWidget(edit)
-        self._prep_field_widget(frame, edit)
-        mapped_row, mapped_col = self._field_position(row, col, getattr(self, "_active_grid_columns", 3))
-        grid.addWidget(frame, mapped_row, mapped_col)
-        grid.setColumnStretch(mapped_col, 1)
-        self._fields[key] = edit
+    def eventFilter(self, watched, event):
+        if watched is self._editor_scroll.viewport() and event.type() == QEvent.Type.Resize:
+            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+        return super().eventFilter(watched, event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self._current_idx is not None and self._last_compact is not None:
-            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+        QTimer.singleShot(0, self._maybe_rebuild_for_compact)
 
     def _maybe_rebuild_for_compact(self):
-        if self._current_idx is None or self._loading_detail:
-            return
+        if self._fields and not self._loading_detail:
+            self._reflow()
+
+    def _reflow(self):
         compact = self._is_compact_editor()
-        if compact == self._last_compact:
-            return
-        self._build_editor(self._current_idx)
+        if compact != self._last_compact:
+            for column in range(2):
+                self._field_grid.setColumnStretch(column, 0)
+            for frame in self._field_frames:
+                self._field_grid.removeWidget(frame)
+            for index, frame in enumerate(self._field_frames):
+                row, column = (index, 0) if compact else (0, index)
+                self._field_grid.addWidget(frame, row, column)
+                self._field_grid.setColumnStretch(column, 1)
+            self._last_compact = compact
+        fit_scroll_page(self._editor_scroll)
 
-    def _on_field_text_changed(self, key: str):
-        if self._loading_detail:
-            return
-        self._mark_dirty()
-        if key in ("trophy_id", "requirement_value") and self._current_idx is not None:
-            value = self._read_uint(key, show_errors=False)
-            if value is not None:
-                self._entries[self._current_idx][key] = value
-                self._refresh_entry_button(self._current_idx)
-        elif key == "prefix_bytes":
-            self._update_actions()
-
-    def _on_uint_finished(self, key: str):
-        if self._loading_detail:
-            return
-        if self._apply_uint_field(key, show_errors=True):
-            if key in ("trophy_id", "requirement_value") and self._current_idx is not None:
-                self._refresh_entry_button(self._current_idx)
-
-    def _on_hex_finished(self, key: str):
-        if self._loading_detail or self._result is None:
-            return
-        value = self._read_hex_field(key, show_errors=True)
-        if value is None:
-            return
-        self._result[key] = value
-        self._update_actions()
-
-    def _read_uint(self, key: str, show_errors: bool = False) -> int | None:
+    def _read_uint(self, key, show_errors=False):
         widget = self._fields.get(key)
         if widget is None:
             return None
-        text = widget.text().strip()
         try:
-            value = int(text or "0")
+            return uint32(widget.text())
         except ValueError:
-            value = _UINT32_MAX + 1
-        if value < 0 or value > _UINT32_MAX:
             if show_errors:
-                QMessageBox.warning(
-                    self,
-                    ui_text("dlg_title_warning"),
-                    ui_text("ui_trophyparam_invalid_integer", value=text, min=0, max=_UINT32_MAX),
-                )
+                QMessageBox.warning(self, ui_text('dlg_title_warning'), ui_text('ui_trophyparam_invalid_integer',
+                    value=widget.text(), min=0, max=UINT32_MAX))
             return None
-        return value
 
-    def _apply_uint_field(self, key: str, show_errors: bool = False) -> bool:
-        value = self._read_uint(key, show_errors=show_errors)
-        if value is None:
+    def _apply_current_entry(self, show_errors=False):
+        if self._current_idx is None or not self._fields:
+            return True
+        values = {key: self._read_uint(key, show_errors) for key in FIELDS}
+        if any(value is None for value in values.values()):
             return False
-        if key == "version":
-            if self._result is not None:
-                self._result["version"] = value
-            return True
-        if self._current_idx is None or self._current_idx >= len(self._entries):
-            return True
-        self._entries[self._current_idx][key] = value
+        self._entries[self._current_idx].update(values)
         return True
 
-    def _read_hex_field(self, key: str, show_errors: bool = False) -> bytes | None:
-        widget = self._fields.get(key)
-        if widget is None:
-            return b""
-        text = widget.text().strip().replace(" ", "")
-        if not text:
-            return b""
-        try:
-            return bytes.fromhex(text)
-        except ValueError:
-            if show_errors:
-                QMessageBox.warning(self, ui_text("dlg_title_warning"), ui_text("ui_trophyparam_invalid_hex"))
-            return None
+    def _on_field_text_changed(self, *_):
+        if self._loading_detail:
+            return
+        # Commit both words together; incomplete input never silently becomes zero.
+        if self._apply_current_entry():
+            blocker = QSignalBlocker(self._catalog.selectionModel())
+            self._catalog_model.refresh(self._current_idx)
+            self._filter_list()
+            del blocker
+        self._mark_dirty()
+        self._refresh_detail()
 
-    def _read_prefix_bytes_quiet(self) -> bytes:
-        value = self._read_hex_field("prefix_bytes", show_errors=False)
-        if value is None and self._result is not None:
-            return bytes(self._result.get("prefix_bytes", b""))
-        return value or b""
-
-    def _apply_current_entry(self, show_errors: bool = False) -> bool:
-        if self._result is not None:
-            version = self._read_uint("version", show_errors=show_errors) if "version" in self._fields else None
-            if "version" in self._fields:
-                if version is None:
-                    return False
-                self._result["version"] = version
-
-            for key in ("prefix_bytes", "tail_bytes"):
-                if key not in self._fields:
-                    continue
-                value = self._read_hex_field(key, show_errors=show_errors)
-                if value is None:
-                    return False
-                self._result[key] = value
-
-        if self._current_idx is None:
-            return True
-        for key in ("trophy_id", "requirement_value"):
-            if not self._apply_uint_field(key, show_errors=show_errors):
-                return False
-        self._refresh_entry_button(self._current_idx)
-        return True
-
-    def _bytes_hex(self, value: bytes) -> str:
-        return " ".join(f"{byte:02X}" for byte in bytes(value or b""))
+    def _refresh_detail(self):
+        entry = self._entries[self._current_idx]
+        self._title_label.setText(ui_text('ui_trophyparam_entry_title', index=self._current_idx, trophy_id=entry['trophy_id']))
+        original = self._session.original(entry)
+        invalid = []
+        for key in FIELDS:
+            current = self._read_uint(key)
+            self._fields[key].setStyleSheet(ss_input_validation(invalid=current is None))
+            if current is None:
+                invalid.append(ui_text('ui_trophyparam_' + key))
+            if original is None:
+                text = ui_text('trophy_no_original')
+            elif current is None:
+                text = ui_text('trophy_original_only', original=original[key])
+            else:
+                text = ui_text('trophy_field_comparison', original=original[key], current=current,
+                               delta=f'{current - original[key]:+d}')
+            self._comparisons[key].setText(text)
+            self._comparisons[key].setToolTip(text)
+        self._validation_label.setText(ui_text('trophy_invalid_hint', fields=', '.join(invalid)) if invalid else '')
+        self._validation_label.setVisible(bool(invalid))
+        self._btn_restore.setEnabled(original is not None and (bool(invalid) or self._session.status(entry) != 'unchanged'))
+        self._duplicate_label.setVisible(entry['trophy_id'] in self._catalog_model.duplicates)
+        fit_scroll_page(self._editor_scroll)
 
     def _mark_dirty(self):
-        if not self._dirty:
-            self._dirty = True
-            if self._filepath:
-                set_file_label(self._file_label, self._filepath, dirty=True)
+        self._ensure_session()
+        pending = any(self._read_uint(key) is None for key in self._fields)
+        self._dirty = bool(self._session and (self._session.dirty() or pending))
         self._update_actions()
 
-    def _do_add(self):
-        if self._raw_data is None:
-            return
-        if not self._apply_current_entry(show_errors=True):
-            return
-        self._entries.append(make_default_entry(trophy_id=len(self._entries)))
-        self._current_idx = None
-        self._mark_dirty()
-        self._populate_list()
-        self._select_entry(len(self._entries) - 1)
+    def _update_actions(self):
+        loaded = self._raw_data is not None
+        selected = self._current_idx is not None and 0 <= self._current_idx < len(self._entries)
+        valid = all(self._read_uint(key) is not None for key in self._fields)
+        self._btn_add.setEnabled(loaded)
+        self._btn_dup.setEnabled(loaded and selected)
+        self._btn_del.setEnabled(loaded and selected)
+        self._btn_save.setEnabled(loaded and self._dirty and valid)
+        refresh_file_actions(self, loaded=loaded)
+        state = (self._filepath, self._dirty)
+        if self._filepath and state != getattr(self, '_displayed_file_state', None):
+            set_file_label(self._file_label, self._filepath, dirty=self._dirty)
+            self._displayed_file_state = state
 
-    def _do_dup(self):
-        if self._raw_data is None or self._current_idx is None:
+    def _restore_entry(self):
+        original = self._session.original(self._entries[self._current_idx])
+        if original is None:
             return
-        if not self._apply_current_entry(show_errors=True):
-            return
-        self._entries.insert(self._current_idx + 1, make_default_entry(copy.deepcopy(self._entries[self._current_idx])))
-        new_idx = self._current_idx + 1
-        self._current_idx = None
-        self._mark_dirty()
-        self._populate_list()
-        self._select_entry(new_idx)
+        for key in FIELDS:
+            blocker = QSignalBlocker(self._fields[key])
+            self._fields[key].setText(str(original[key]))
+            del blocker
+        self._on_field_text_changed()
+        for stepper in self.findChildren(IntegerStepper):
+            stepper.refresh()
 
-    def _do_del(self):
-        if self._raw_data is None or self._current_idx is None:
-            return
-        entry = self._entries[self._current_idx]
-        reply = QMessageBox.question(
-            self,
-            ui_text("dlg_title_confirm_delete"),
-            ui_text("msg_confirm_delete_item", name=self._entry_title(self._current_idx, entry)),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        old_idx = self._current_idx
-        self._entries.pop(old_idx)
+    def _finish_structure(self, index):
         self._current_idx = None
+        self._fields = {}
         self._mark_dirty()
         self._populate_list()
         if self._entries:
-            self._select_entry(min(old_idx, len(self._entries) - 1))
+            self._select_entry(index)
         else:
-            self._show_placeholder(ui_text("ui_trophyparam_no_entries"))
-            self._update_actions()
+            self._show_placeholder(ui_text('trophy_empty_hint'))
+        self._update_actions()
+
+    def _do_add(self):
+        if self._raw_data is None or not self._apply_current_entry(show_errors=True):
+            return
+        self._ensure_session()
+        self._entries.append(make_default_entry(trophy_id=self._session.next_id()))
+        self._finish_structure(len(self._entries) - 1)
+
+    def _do_dup(self):
+        if self._current_idx is None or not self._apply_current_entry(show_errors=True):
+            return
+        index = self._current_idx + 1
+        self._entries.insert(index, make_default_entry(self._entries[self._current_idx]))
+        self._finish_structure(index)
+
+    def _do_del(self):
+        if self._current_idx is None or not self._apply_current_entry(show_errors=True):
+            return
+        index = self._current_idx
+        entry = self._entries[index]
+        name = ui_text('ui_trophyparam_entry_title', index=index, trophy_id=entry['trophy_id'])
+        if QMessageBox.question(self, ui_text('dlg_title_confirm_delete'), ui_text('msg_confirm_delete_item', name=name),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        self._entries.pop(index)
+        self._finish_structure(min(index, len(self._entries) - 1))

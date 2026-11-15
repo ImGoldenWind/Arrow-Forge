@@ -1,5 +1,43 @@
 from __future__ import annotations
 
+from core.design_tokens import (
+    Insets,
+    LayoutRole,
+    Size,
+    TypeSize,
+    ui_font,
+)
+from core.style_helpers import (
+    add_editor_card_title,
+    make_editor_card,
+    ss_badge_missing,
+    ss_bg_dark,
+    ss_bg_panel,
+    ss_dialog,
+    ss_dim_label,
+    ss_field_label,
+    ss_inspector_group,
+    ss_main_label,
+    ss_panel_title,
+    ss_placeholder,
+    ss_sidebar_treewidget,
+    ss_tab_widget,
+    ss_transparent,
+    ss_viewport_panel,
+)
+from core.ui.editor_widgets import (
+    EditorSeparator,
+    EditorSidebar,
+    EditorToolbar,
+    configure_button,
+    configure_input,
+    configure_layout,
+    configure_scrollarea,
+    configure_search,
+)
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.editor_actions import commit_save_path, editor_path, install_file_actions
+from editors.model_viewer_forms import ModelInspector as _InspectorPanel
 from dataclasses import dataclass
 import fnmatch
 import math
@@ -9,7 +47,7 @@ import time
 
 import numpy as np
 from PIL import Image
-from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QSize, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QSize, QTimer, QThreadPool, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import (
@@ -22,17 +60,6 @@ from PyQt6.QtWidgets import (
 from core.editor_file_state import set_file_label, set_file_label_empty
 from core.icons import _themed_icon
 from core.settings import create_backup_on_open, game_files_dialog_dir, load_settings
-from core.style_helpers import (
-    TOOLBAR_BTN_H, TOOLBAR_H, ss_accent_sep, ss_badge_missing, ss_bg_dark,
-    ss_bg_panel, ss_btn, ss_dim_label, ss_field_label,
-    ss_dialog,
-    ss_inspector_group, ss_inspector_input,
-    ss_input, ss_main_label, ss_panel_title, ss_placeholder,
-    ss_scrollarea_transparent, ss_search, ss_sep, ss_sidebar_frame,
-    ss_sidebar_treewidget,
-    ss_tab_widget, ss_toggle_btn, ss_transparent,
-    ss_viewport_panel, make_editor_card, add_editor_card_title,
-)
 from core.themes import P
 from core.translations import ui_text
 from parsers.model_xfbin_parser import (
@@ -60,8 +87,19 @@ class ModelViewerEditor(QWidget):
         super().__init__(parent)
         self.t = t or ui_text
         self.embedded = embedded
+        self.disable_file_compare = True
         self._doc: ModelXfbinDocument | None = None
         self._scene: RenderScene | None = None
+        self._original_scene = None
+        self._load_generation = 0
+        self._load_job = None
+        self._pending_load = None
+        self._load_keep_camera = False
+        self._busy = False
+        self._rebuild_timer = QTimer(self)
+        self._rebuild_timer.setSingleShot(True)
+        self._rebuild_timer.setInterval(100)
+        self._rebuild_timer.timeout.connect(lambda: self._rebuild_scene(keep_camera=True))
         self._selected = None
         self._dirty = False
         self._building_inspector = False
@@ -71,64 +109,55 @@ class ModelViewerEditor(QWidget):
         self._current_palette_index = -1
         self._compact_layout = None
         self._animation_clips: list[AnimationClip] = []
-        self._animation_cache: dict[tuple[str, ...], list[AnimationClip]] = {}
         self._animation_playhead = 0.0
         self._last_animation_tick = 0.0
         self._animation_timer = QTimer(self)
         self._animation_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        # One evaluation per display frame; the wall-clock playhead below keeps
+        # the clip at 60 FPS without evaluating CPU skinning twice per refresh.
         self._animation_timer.setInterval(16)
         self._animation_timer.timeout.connect(self._advance_animation)
         self.setStyleSheet(ss_bg_dark())
         self._build_ui()
+        install_file_actions(self, self._save_btn, save_to=lambda path: self._save_file(target_path=path))
+        install_editor_chrome(self)
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        configure_layout(root, LayoutRole.ROOT)
 
-        toolbar = QFrame()
-        toolbar.setFixedHeight(TOOLBAR_H)
-        toolbar.setStyleSheet(ss_bg_panel())
-        toolbar_lay = QHBoxLayout(toolbar)
-        toolbar_lay.setContentsMargins(10, 6, 10, 6)
-        toolbar_lay.setSpacing(6)
+        toolbar = EditorToolbar()
+
+
+        toolbar_lay = toolbar.content_layout
+
+
         self._toolbar_buttons = []
 
         self._open_btn = self._tool_btn("ui_model_viewer_open_model", accent=True)
         self._open_btn.clicked.connect(self._open_model_dialog)
+        self._open_btn.setProperty("designAction", 'open')
         toolbar_lay.addWidget(self._open_btn)
-
-        self._add_tex_btn = self._tool_btn("ui_model_viewer_add_textures")
-        self._add_tex_btn.clicked.connect(self._add_texture_dialog)
-        self._add_tex_btn.setEnabled(False)
-        toolbar_lay.addWidget(self._add_tex_btn)
 
         self._save_btn = self._tool_btn("ui_model_viewer_save", accent=True)
         self._save_btn.clicked.connect(self._save_file)
         self._save_btn.setEnabled(False)
         toolbar_lay.addWidget(self._save_btn)
 
-        self._snapshot_btn = self._tool_btn("ui_model_viewer_snapshot")
-        self._snapshot_btn.clicked.connect(self._export_snapshot)
-        self._snapshot_btn.setEnabled(False)
-        toolbar_lay.addWidget(self._snapshot_btn)
-
-        self._reset_camera_btn = self._tool_btn("ui_model_viewer_reset_camera")
-        self._reset_camera_btn.clicked.connect(self._reset_camera)
-        self._reset_camera_btn.setEnabled(False)
-        toolbar_lay.addWidget(self._reset_camera_btn)
-
-        toolbar_lay.addStretch()
+        self._add_tex_btn = self._tool_btn("ui_model_viewer_add_textures")
+        self._add_tex_btn.clicked.connect(self._add_texture_dialog)
+        self._add_tex_btn.setProperty("designAction", 'new')
+        self._add_tex_btn.setEnabled(False)
+        toolbar_lay.addWidget(self._add_tex_btn)
 
         self._model_lbl = QLabel(self.t("ui_model_viewer_model_variant"))
         self._model_lbl.setStyleSheet(ss_dim_label())
         toolbar_lay.addWidget(self._model_lbl)
         self._model_combo = QComboBox()
-        self._model_combo.setFixedHeight(32)
         self._model_combo.setMinimumWidth(150)
         self._model_combo.setMaximumWidth(220)
         self._model_combo.setEnabled(False)
-        self._model_combo.setStyleSheet(ss_input())
+        configure_input(self._model_combo)
         self._model_combo.currentIndexChanged.connect(self._on_model_variant_changed)
         toolbar_lay.addWidget(self._model_combo)
 
@@ -136,37 +165,50 @@ class ModelViewerEditor(QWidget):
         self._palette_lbl.setStyleSheet(ss_dim_label())
         toolbar_lay.addWidget(self._palette_lbl)
         self._palette_combo = QComboBox()
-        self._palette_combo.setFixedHeight(32)
         self._palette_combo.setMinimumWidth(110)
         self._palette_combo.setMaximumWidth(150)
         self._palette_combo.setEnabled(False)
-        self._palette_combo.setStyleSheet(ss_input())
+        configure_input(self._palette_combo)
         self._palette_combo.currentIndexChanged.connect(self._on_palette_changed)
         toolbar_lay.addWidget(self._palette_combo)
 
+        toolbar_lay.addStretch()
+
+        self._compare_btn = QPushButton(self.t("model_show_original"))
+        configure_button(self._compare_btn, toggle=True)
+        self._compare_btn.setCheckable(True)
+        self._compare_btn.setEnabled(False)
+        self._compare_btn.setToolTip(self.t("model_original_hint"))
+        self._compare_btn.toggled.connect(self._show_comparison)
+        toolbar_lay.addWidget(self._compare_btn)
+
+        self._snapshot_btn = self._tool_btn("ui_model_viewer_snapshot")
+        self._snapshot_btn.clicked.connect(self._export_snapshot)
+        self._snapshot_btn.setEnabled(False)
+        toolbar_lay.addWidget(self._snapshot_btn)
+
         self._file_lbl = QLabel()
-        self._file_lbl.setFont(QFont("Segoe UI", 10))
+        self._file_lbl.setFont(ui_font(TypeSize.BODY))
         set_file_label_empty(self._file_lbl, self.t("no_file_loaded"))
         self._file_lbl.hide()
         root.addWidget(toolbar)
 
-        sep = QFrame()
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
+        sep = EditorSeparator(accent=True)
+
+
         root.addWidget(sep)
 
         main = QHBoxLayout()
-        main.setContentsMargins(0, 0, 0, 0)
-        main.setSpacing(0)
+        configure_layout(main, LayoutRole.ROOT)
         root.addLayout(main, 1)
 
         self._sidebar = _ModelSidebar(self)
         self._sidebar.selection_changed.connect(self._on_sidebar_selection)
         main.addWidget(self._sidebar, 0)
 
-        left_divider = QFrame()
-        left_divider.setFixedWidth(1)
-        left_divider.setStyleSheet(ss_sep())
+        left_divider = EditorSeparator(orientation=Qt.Orientation.Vertical)
+
+
         main.addWidget(left_divider)
 
         center = QWidget()
@@ -174,11 +216,21 @@ class ModelViewerEditor(QWidget):
         center.setStyleSheet(ss_bg_dark())
         center_lay = QVBoxLayout(center)
         center_lay.setContentsMargins(0, 0, 0, 8)
-        center_lay.setSpacing(8)
+        center_lay.setSpacing(Size.GAP)
 
         self._viewport_frame = _ViewportPanel()
-        self._viewport = _ModelOpenGLViewport()
+        from editors.model_viewer_viewport import ModelViewport
+        self._viewport = ModelViewport()
+        self._viewport.rendering_issue.connect(self._rendering_issue)
+        self._viewport.object_picked.connect(self._select_object)
+        self._viewport.bone_picked.connect(self._select_bone)
+        self._viewport.setToolTip(self.t('model_navigation_hint'))
         self._viewport_frame.set_viewport(self._viewport)
+
+        self._reset_camera_btn = self._tool_btn("ui_model_viewer_reset_camera")
+        self._reset_camera_btn.clicked.connect(self._reset_camera)
+        self._reset_camera_btn.setEnabled(False)
+        self._viewport_frame.set_reset_button(self._reset_camera_btn)
 
         self._view_controls = _ViewportControls()
         self._toggle_textured = self._view_controls.add_toggle(self.t("ui_model_viewer_textured"), True, "fa6s.image")
@@ -187,6 +239,7 @@ class ModelViewerEditor(QWidget):
         self._toggle_bounds = self._view_controls.add_toggle(self.t("ui_model_viewer_bounds"), True, "fa6s.cube")
         self._toggle_grid = self._view_controls.add_toggle(self.t("ui_model_viewer_grid"), True, "fa6s.table-cells")
         self._toggle_cull = self._view_controls.add_toggle(self.t("ui_model_viewer_culling"), False, "fa6s.eye-slash")
+        self._toggle_cull.setToolTip(self.t('model_force_culling_hint'))
         for btn in (
             self._toggle_textured, self._toggle_wire, self._toggle_bones,
             self._toggle_bounds, self._toggle_grid, self._toggle_cull,
@@ -207,67 +260,99 @@ class ModelViewerEditor(QWidget):
         self._animation_bar.hide()
         center_lay.addWidget(self._animation_bar)
 
-        self._empty_hint_card, empty_hint_lay = make_editor_card(center, margins=(14, 12, 14, 12), spacing=8)
-        add_editor_card_title(
-            empty_hint_lay,
-            self.t("ui_model_viewer_no_model_loaded"),
-            "fa6s.cube",
-            self.t("ui_model_viewer_open_a_model_to_begin"),
-            icon_size=18,
-        )
+        self._empty_hint_card, empty_hint_lay = make_editor_card(center)
+        add_editor_card_title(empty_hint_lay, self.t('ui_model_viewer_no_model_loaded'), 'fa6s.cube', self.t('ui_model_viewer_open_a_model_to_begin'))
         center_lay.addWidget(self._empty_hint_card)
 
         self._status_lbl = QLabel(self.t("ui_model_viewer_open_a_model_to_begin"))
-        self._status_lbl.setFont(QFont("Segoe UI", 9))
+        self._status_lbl.setFont(ui_font(TypeSize.HINT))
         self._status_lbl.setStyleSheet(ss_dim_label())
         self._status_lbl.hide()
         center_lay.addWidget(self._status_lbl)
         main.addWidget(center, 1)
 
-        right_divider = QFrame()
-        right_divider.setFixedWidth(1)
-        right_divider.setStyleSheet(ss_sep())
+        right_divider = EditorSeparator(orientation=Qt.Orientation.Vertical)
+
+
         main.addWidget(right_divider)
 
         self._inspector = _InspectorPanel(self)
         self._inspector.value_changed.connect(self._on_value_changed)
+        self._inspector.draft_changed.connect(self._mark_dirty)
+        self._inspector.object_requested.connect(self._select_object)
         main.addWidget(self._inspector, 0)
         self._apply_responsive_layout()
 
     def _build_animation_bar(self, parent):
         bar = QFrame(parent)
         bar.setStyleSheet(ss_bg_panel())
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(10, 6, 10, 6)
-        layout.setSpacing(7)
+        outer = configure_layout(QVBoxLayout(bar), LayoutRole.PAGE)
+        lighting = configure_layout(QHBoxLayout(), LayoutRole.FIELD)
+        outer.addLayout(lighting)
+        self._lighting_combo = configure_input(QComboBox())
+        self._lighting_combo.setMinimumContentsLength(3)
+        self._lighting_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self._lighting_combo.addItem(self.t('model_neutral_light'), None)
+        self._lighting_combo.setToolTip(self.t('model_lighting_hint'))
+        self._lighting_combo.currentIndexChanged.connect(self._update_lighting)
+        lighting.addWidget(self._lighting_combo, 1)
+        self._lighting_mode = configure_input(QComboBox())
+        self._lighting_mode.setMinimumContentsLength(2)
+        self._lighting_mode.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        for key, value in (('stage_preview_light_normal', (0., 1)), ('stage_preview_light_alternate', (1., 1)), ('stage_preview_light_group2', (0., 2))):
+            self._lighting_mode.addItem(self.t(key), value)
+        self._lighting_mode.currentIndexChanged.connect(self._update_lighting)
+        self._lighting_mode.setToolTip(self.t('stage_preview_lighting'))
+        lighting.addWidget(self._lighting_mode, 1)
+        light_open = configure_button(QPushButton())
+        light_open.setIcon(_themed_icon('fa6s.lightbulb', color=P.get('button_text', P['text_main']), size=14))
+        light_open.setFixedWidth(34)
+        light_open.setToolTip(self.t('model_open_lighting'))
+        light_open.clicked.connect(self._open_lighting)
+        lighting.addWidget(light_open)
+        layout = configure_layout(QHBoxLayout(), LayoutRole.FIELD)
+        outer.addLayout(layout)
         label = QLabel(self.t("ui_model_viewer_animation"))
         label.setStyleSheet(ss_dim_label())
-        layout.addWidget(label)
         self._animation_combo = QComboBox()
-        self._animation_combo.setMinimumWidth(180)
-        self._animation_combo.setMaximumWidth(360)
-        self._animation_combo.setStyleSheet(ss_input())
+        self._animation_combo.setToolTip(self.t("ui_model_viewer_animation"))
+        self._animation_combo.setMinimumWidth(80)
+        self._animation_combo.setEditable(True)
+        self._animation_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        configure_input(self._animation_combo)
         self._animation_combo.currentIndexChanged.connect(self._on_animation_changed)
-        layout.addWidget(self._animation_combo)
+        layout.addWidget(self._animation_combo, 1)
         self._animation_open_btn = QPushButton()
         self._animation_open_btn.setIcon(_themed_icon("fa6s.folder-open", color=P.get("button_text", P["text_main"]), size=14))
         self._animation_open_btn.setToolTip(self.t("ui_model_viewer_open_animation"))
         self._animation_open_btn.setFixedSize(34, 30)
-        self._animation_open_btn.setStyleSheet(ss_btn())
+        configure_button(self._animation_open_btn)
         self._animation_open_btn.clicked.connect(self._open_animation_dialog)
         layout.addWidget(self._animation_open_btn)
+        layout = configure_layout(QHBoxLayout(), LayoutRole.FIELD)
+        outer.addLayout(layout)
         self._animation_play_btn = QPushButton()
         self._animation_play_btn.setCheckable(True)
         self._animation_play_btn.setIcon(_themed_icon("fa6s.play", color=P.get("button_text", P["text_main"]), size=14))
         self._animation_play_btn.setToolTip(self.t("ui_model_viewer_play_animation"))
         self._animation_play_btn.setFixedSize(34, 30)
-        self._animation_play_btn.setStyleSheet(ss_toggle_btn())
+        configure_button(self._animation_play_btn, toggle=True)
         self._animation_play_btn.toggled.connect(self._toggle_animation_playback)
         layout.addWidget(self._animation_play_btn)
         self._animation_loop = QCheckBox(self.t("ui_model_viewer_loop_animation"))
         self._animation_loop.setToolTip(self.t("ui_model_viewer_loop_animation_tooltip"))
         layout.addWidget(self._animation_loop)
+        layout.addStretch()
+        self._animation_frame = configure_input(QSpinBox())
+        self._animation_frame.setKeyboardTracking(False)
+        self._animation_frame.setMaximumWidth(100)
+        self._animation_frame.valueChanged.connect(self._on_animation_frame_changed)
+        layout.addWidget(self._animation_frame)
+        layout = configure_layout(QHBoxLayout(), LayoutRole.FIELD)
+        outer.addLayout(layout)
         self._animation_slider = QSlider(Qt.Orientation.Horizontal)
+        from core.style_helpers import ss_slider
+        self._animation_slider.setStyleSheet(ss_slider())
         self._animation_slider.setRange(0, 0)
         self._animation_slider.valueChanged.connect(self._on_animation_frame_changed)
         layout.addWidget(self._animation_slider, 1)
@@ -281,8 +366,6 @@ class ModelViewerEditor(QWidget):
     def _tool_btn(self, key: str, accent: bool = False) -> QPushButton:
         text = self.t(key)
         btn = QPushButton(text)
-        btn.setFixedHeight(TOOLBAR_BTN_H)
-        btn.setFont(QFont("Segoe UI", 10))
         icon_name = {
             "ui_model_viewer_open_model": "fa6s.folder-open",
             "ui_model_viewer_add_textures": "fa6s.images",
@@ -295,7 +378,7 @@ class ModelViewerEditor(QWidget):
         btn.setToolTip(text)
         btn.setMinimumWidth(0)
         btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        btn.setStyleSheet(ss_btn(accent=accent))
+        configure_button(btn, accent=accent)
         btn._model_viewer_text = text
         self._toolbar_buttons.append(btn)
         return btn
@@ -326,6 +409,10 @@ class ModelViewerEditor(QWidget):
         super().resizeEvent(event)
         self._apply_responsive_layout()
 
+    def hideEvent(self, event):
+        self._stop_animation()
+        super().hideEvent(event)
+
     def _open_model_dialog(self):
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -353,24 +440,103 @@ class ModelViewerEditor(QWidget):
     def _load_current_variant(self, keep_camera: bool = False):
         if not (0 <= self._current_variant_index < len(self._model_variants)):
             return
+        self._stop_animation()
+        self._rebuild_timer.stop()
         variant = self._model_variants[self._current_variant_index]
-        try:
-            create_backup_on_open(variant.path)
-            _, texture_paths = self._current_variant_paths()
-            self._set_controls_enabled(False)
-            self._doc = load_model_xfbin(variant.path, texture_paths, palette_alias_index=0)
-            self._dirty = False
-            self._selected = None
-            self._load_animations_for_variant(variant)
-            self._rebuild_scene(keep_camera=keep_camera)
-            self._sidebar.load(self._doc)
-            self._inspector.set_context(self._doc, None)
-            self._update_file_state()
-            self._set_controls_enabled(True)
-            self._set_status(self._summary_text())
-        except Exception as exc:
+        _, texture_paths = self._current_variant_paths()
+        self._load_generation += 1
+        self._pending_load = (self._load_generation, variant.path, texture_paths,
+                              self._animation_paths_for_variant(variant), keep_camera)
+        self._set_status(self.t('model_loading'))
+        self._busy = True
+        self._set_controls_enabled(False)
+        self._sidebar.setEnabled(False)
+        self._inspector.setEnabled(False)
+        self._start_pending_load()
+
+    def _start_pending_load(self):
+        if self._load_job is not None or self._pending_load is None:
+            return
+        from editors.model_viewer_loader import ModelLoadJob
+        generation, path, textures, animations, keep_camera = self._pending_load
+        self._pending_load = None
+        create_backup_on_open(path)
+        job = ModelLoadJob(generation, path, textures, animations)
+        self._load_keep_camera = keep_camera
+        job.signals.finished.connect(self._load_finished)
+        self._load_job = job
+        QThreadPool.globalInstance().start(job)
+
+    def _load_finished(self, generation, result, error):
+        self._load_job = None
+        if generation != self._load_generation:
+            self._start_pending_load()
+            return
+        self._busy = False
+        self._sidebar.setEnabled(True)
+        self._inspector.setEnabled(True)
+        if error:
             self._set_controls_enabled(self._doc is not None)
-            QMessageBox.critical(self, self.t("dlg_title_error"), str(exc))
+            self._set_status(self.t('model_load_failed', error=self.t(error)))
+            # The preceding document and its scene remain usable.
+            if self._doc:
+                self._model_variants = self._discover_model_variants(self._doc.path)
+                self._current_variant_index = self._variant_index_for_path(self._doc.path)
+                self._populate_model_controls()
+            return
+        self._doc, self._scene, clips, warning = result
+        self._original_scene = self._scene
+        self._dirty = False
+        self._selected = None
+        self._compare_btn.setChecked(False)
+        self._set_animation_clips(clips)
+        self._populate_lighting(getattr(self._doc, 'preview_lighting', []))
+        self._viewport.set_scene(self._scene, reset_camera=not self._load_keep_camera)
+        self._empty_hint_card.hide()
+        self._sidebar.load(self._doc)
+        self._inspector.set_context(self._doc, None)
+        self._update_file_state()
+        self._set_controls_enabled(True)
+        self._sync_view_toggles()
+        self._set_status(self.t('ui_model_viewer_animation_load_failed', p0=warning) if warning else self._summary_text())
+        if not self._load_keep_camera:
+            QTimer.singleShot(0, self._viewport.reset_camera)
+
+    def _rendering_issue(self, error):
+        self._set_status(self.t('model_render_failed'))
+        self._status_lbl.setToolTip(error)
+        self._stop_animation()
+
+    def _populate_lighting(self, choices):
+        previous = self._lighting_combo.currentText()
+        self._lighting_combo.blockSignals(True)
+        self._lighting_combo.clear()
+        self._lighting_combo.addItem(self.t('model_neutral_light'), None)
+        for code, params, path in choices:
+            self._lighting_combo.addItem(code, params)
+            self._lighting_combo.setItemData(self._lighting_combo.count()-1, path, Qt.ItemDataRole.ToolTipRole)
+        index = self._lighting_combo.findText(previous)
+        # Prefer an actual authored environment when one is available.
+        self._lighting_combo.setCurrentIndex(index if index > 0 else (1 if choices else 0))
+        self._lighting_combo.blockSignals(False)
+        self._update_lighting()
+
+    def _update_lighting(self, _index=0):
+        self._viewport.set_stage_parameters(self._lighting_combo.currentData())
+        self._viewport.set_lighting_reference(*self._lighting_mode.currentData())
+        self._lighting_mode.setEnabled(self._lighting_combo.currentData() is not None)
+
+    def _open_lighting(self):
+        path, _ = QFileDialog.getOpenFileName(self, self.t('model_open_lighting'), self._model_open_dir(), 'StageInfo (*.xfbin)')
+        if path:
+            try:
+                from core.model_viewer_tools import model_lighting
+                choices = model_lighting(path)
+                if not choices:
+                    raise ValueError(self.t('model_no_lighting'))
+                self._populate_lighting(choices)
+            except Exception as error:
+                self._set_status(self.t('model_load_failed', error=str(error)))
 
     def _discover_model_variants(self, selected_path: str) -> list[_CharacterModelVariant]:
         selected_info = self._model_file_info(selected_path)
@@ -578,6 +744,10 @@ class ModelViewerEditor(QWidget):
         model_dir = os.path.dirname(model_path)
         prefix = lowered.split("bod", 1)[0] if "bod" in lowered else os.path.splitext(lowered)[0]
         candidates: list[str] = []
+        from core.stage_tools import data_root
+        root = data_root(model_path)
+        if root is not None:
+            candidates.append(str(root / 'spc' / '0cmn01bod1.xfbin'))
         if "bod" in lowered:
             candidates.append(os.path.join(model_dir, base.replace("bod", "col", 1)))
             candidates.append(os.path.join(model_dir, base.replace("bod1", "col0", 1)))
@@ -709,16 +879,18 @@ class ModelViewerEditor(QWidget):
         except Exception as exc:
             QMessageBox.critical(self, self.t("dlg_title_error"), str(exc))
 
-    def _save_file(self):
-        if not self._doc:
+    def _save_file(self, target_path=None):
+        save_path = target_path or editor_path(self)
+        if not self._doc or self._busy or not self._inspector.commit():
             return
         try:
-            save_model_xfbin(self._doc)
+            save_model_xfbin(self._doc, save_path)
+            commit_save_path(self, save_path)
             self._dirty = False
             self._update_file_state()
-            self._set_status(self.t("ui_model_viewer_saved"))
+            self._set_status(self.t('ui_model_viewer_saved'))
         except Exception as exc:
-            QMessageBox.critical(self, self.t("dlg_title_error"), str(exc))
+            QMessageBox.critical(self, self.t('dlg_title_error'), self.t(str(exc)))
 
     def _export_snapshot(self):
         if not self._doc:
@@ -731,7 +903,9 @@ class ModelViewerEditor(QWidget):
         )
         if not path:
             return
-        self._viewport.grabFramebuffer().save(path)
+        if not self._viewport.grabFramebuffer().save(path):
+            self._set_status(self.t("model_snapshot_failed"))
+            return
         self._set_status(self.t("ui_model_viewer_snapshot_saved", p0=os.path.basename(path)))
 
     def _reset_camera(self):
@@ -748,15 +922,35 @@ class ModelViewerEditor(QWidget):
         )
 
     def _on_sidebar_selection(self, obj):
+        if obj is self._selected:
+            return
+        if not self._inspector.commit():
+            self._sidebar.select_object(self._selected)
+            return
         self._selected = obj
         self._inspector.set_context(self._doc, obj)
         self._viewport.set_selected(obj)
+
+    def _select_object(self, obj):
+        self._sidebar.select_object(obj)
+
+    def _select_bone(self, name):
+        if self._doc:
+            coord = next((coord for coord in self._doc.coord_chunks if coord.node.name == name), None)
+            if coord is not None:
+                self._select_object(coord)
+
+    def _show_comparison(self, checked=False, reset_camera=False):
+        scene = self._original_scene if self._compare_btn.isChecked() else self._scene
+        if scene is not None:
+            apply_animation(scene, self._current_animation(), self._animation_playhead, skin_meshes=True)
+            self._viewport.set_scene(scene, reset_camera=reset_camera)
 
     def _on_value_changed(self):
         if self._building_inspector:
             return
         self._mark_dirty()
-        self._rebuild_scene(keep_camera=True)
+        self._rebuild_timer.start()
         self._sidebar.refresh_labels()
 
     def _mark_dirty(self):
@@ -772,16 +966,12 @@ class ModelViewerEditor(QWidget):
     def _rebuild_scene(self, keep_camera: bool = False):
         if not self._doc:
             return
-        self._scene = build_render_scene(self._doc)
-        clip = self._current_animation()
-        if clip:
-            apply_animation(
-                self._scene,
-                clip,
-                self._animation_playhead,
-                skin_meshes=not self._viewport.uses_gpu_skinning(),
-            )
-        self._viewport.set_scene(self._scene, reset_camera=not keep_camera)
+        try:
+            self._scene = build_render_scene(self._doc)
+        except (ValueError, IndexError, np.linalg.LinAlgError) as error:
+            self._set_status(self.t('model_preview_failed', error=str(error)))
+            return
+        self._show_comparison(reset_camera=not keep_camera)
         self._empty_hint_card.hide()
         self._sync_view_toggles()
 
@@ -795,7 +985,9 @@ class ModelViewerEditor(QWidget):
         self._add_tex_btn.setEnabled(enabled)
         self._save_btn.setEnabled(enabled)
         self._snapshot_btn.setEnabled(enabled)
+        self._compare_btn.setEnabled(enabled)
         self._reset_camera_btn.setEnabled(enabled)
+        self._animation_bar.setEnabled(enabled)
         variant = self._model_variants[self._current_variant_index] if 0 <= self._current_variant_index < len(self._model_variants) else None
         self._model_combo.setEnabled(enabled and len(self._model_variants) > 1)
         self._palette_combo.setEnabled(enabled and bool(variant and len(variant.palette_paths) > 1))
@@ -837,18 +1029,6 @@ class ModelViewerEditor(QWidget):
         canonical = f"{match.group('base')}0{match.group('slot')}"
         canonical_model = os.path.join(os.path.dirname(variant.path), f"{canonical}bod1.xfbin")
         return canonical if os.path.isfile(canonical_model) else variant.code
-
-    def _load_animations_for_variant(self, variant: _CharacterModelVariant):
-        self._stop_animation()
-        paths = self._animation_paths_for_variant(variant)
-        key = tuple(os.path.abspath(path).lower() for path in paths)
-        try:
-            if key not in self._animation_cache:
-                self._animation_cache[key] = load_animation_clips(paths)
-            self._set_animation_clips(self._animation_cache[key])
-        except Exception as exc:
-            self._set_animation_clips([])
-            self._set_status(self.t("ui_model_viewer_animation_load_failed", p0=str(exc)))
 
     def _set_animation_clips(self, clips: list[AnimationClip]):
         previous_name = self._current_animation().name if self._current_animation() else ""
@@ -893,6 +1073,10 @@ class ModelViewerEditor(QWidget):
         maximum = clip.frame_count if clip else 0
         self._animation_slider.blockSignals(True)
         self._animation_slider.setRange(0, maximum)
+        self._animation_frame.blockSignals(True)
+        self._animation_frame.setRange(0, maximum)
+        self._animation_frame.setValue(0)
+        self._animation_frame.blockSignals(False)
         self._animation_slider.setValue(0)
         self._animation_slider.blockSignals(False)
         self._animation_frame_lbl.setText(f"0 / {maximum}")
@@ -908,17 +1092,17 @@ class ModelViewerEditor(QWidget):
         self._on_animation_frame_changed(0)
 
     def _on_animation_frame_changed(self, frame: int):
-        self._animation_playhead = float(frame)
-        self._render_animation_frame(self._animation_playhead)
+        self._set_animation_playhead(float(frame))
 
     def _render_animation_frame(self, frame: float):
         clip = self._current_animation()
         maximum = clip.frame_count if clip else 0
         frame_text = f"{frame:.1f}" if abs(frame - round(frame)) > 0.01 else str(int(round(frame)))
         self._animation_frame_lbl.setText(f"{frame_text} / {maximum}")
-        if self._scene:
+        scene = self._original_scene if self._compare_btn.isChecked() else self._scene
+        if scene:
             apply_animation(
-                self._scene,
+                scene,
                 clip,
                 frame,
                 skin_meshes=not self._viewport.uses_gpu_skinning(),
@@ -970,6 +1154,9 @@ class ModelViewerEditor(QWidget):
         self._animation_slider.blockSignals(True)
         self._animation_slider.setValue(int(round(self._animation_playhead)))
         self._animation_slider.blockSignals(False)
+        self._animation_frame.blockSignals(True)
+        self._animation_frame.setValue(int(round(self._animation_playhead)))
+        self._animation_frame.blockSignals(False)
         self._render_animation_frame(self._animation_playhead)
 
     def _is_palette_path_for_code(self, path: str, code: str) -> bool:
@@ -991,7 +1178,7 @@ class ModelViewerEditor(QWidget):
             p3=missing,
         )
 
-class _ModelSidebar(QFrame):
+class _ModelSidebar(EditorSidebar):
     selection_changed = pyqtSignal(object)
 
     def __init__(self, parent=None):
@@ -999,20 +1186,16 @@ class _ModelSidebar(QFrame):
         self._doc = None
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self.set_panel_width(260)
-        self.setStyleSheet(ss_sidebar_frame())
-        root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 4)
-        root.setSpacing(4)
+        root = self.content_layout
+        configure_layout(root, LayoutRole.SIDEBAR)
 
         search_row = QWidget()
         search_row.setStyleSheet(ss_transparent())
         search_lay = QHBoxLayout(search_row)
-        search_lay.setContentsMargins(0, 0, 0, 0)
+        search_lay.setContentsMargins(*Insets.NONE)
         search_lay.setSpacing(6)
         self._search = QLineEdit()
-        self._search.setPlaceholderText(ui_text("search_placeholder"))
-        self._search.setFixedHeight(30)
-        self._search.setStyleSheet(ss_search())
+        configure_search(self._search)
         self._search.textChanged.connect(self._filter)
         search_lay.addWidget(self._search, 1)
         root.addWidget(search_row)
@@ -1049,6 +1232,17 @@ class _ModelSidebar(QFrame):
 
     def refresh_labels(self):
         self._filter()
+
+    def select_object(self, obj):
+        for i in range(self._tree.topLevelItemCount()):
+            group = self._tree.topLevelItem(i)
+            for j in range(group.childCount()):
+                child = group.child(j)
+                if child.data(0, Qt.ItemDataRole.UserRole) is obj:
+                    group.setExpanded(True)
+                    self._tree.setCurrentItem(child)
+                    self._tree.scrollToItem(child)
+                    return
 
     def _add_group(self, key: str, objects):
         root = QTreeWidgetItem([ui_text(key)])
@@ -1103,355 +1297,6 @@ class _ModelSidebar(QFrame):
             group.setHidden(visible_children == 0 and bool(query))
 
 
-class _InspectorPanel(QFrame):
-    value_changed = pyqtSignal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._doc = None
-        self._obj = None
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-        self.set_panel_width(320)
-        self.setStyleSheet(ss_sidebar_frame())
-        root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 4)
-        root.setSpacing(0)
-
-        header = QFrame()
-        header.setStyleSheet(ss_transparent())
-        header_lay = QHBoxLayout(header)
-        header_lay.setContentsMargins(4, 0, 4, 0)
-        header_lay.setSpacing(6)
-        title = QLabel(ui_text("ui_model_viewer_inspector"))
-        title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        title.setStyleSheet(ss_panel_title())
-        header_lay.addWidget(title)
-        header_lay.addStretch()
-        root.addWidget(header)
-
-        self._tabs = QTabWidget()
-        self._tabs.setStyleSheet(ss_tab_widget())
-        root.addWidget(self._tabs, 1)
-
-    def set_panel_width(self, width: int):
-        width = max(250, width)
-        self.setMinimumWidth(width)
-        self.setMaximumWidth(width)
-
-    def set_context(self, doc, obj):
-        self._doc = doc
-        self._obj = obj
-        self._tabs.clear()
-        if doc is None:
-            self._tabs.addTab(self._placeholder(ui_text("ui_model_viewer_no_model_loaded")), ui_text("ui_model_viewer_raw"))
-            return
-        self._tabs.addTab(self._transform_tab(obj), ui_text("ui_model_viewer_transform"))
-        self._tabs.addTab(self._material_tab(obj), ui_text("ui_model_viewer_material"))
-        self._tabs.addTab(self._model_tab(obj), ui_text("ui_model_viewer_model"))
-        self._tabs.addTab(self._dynamics_tab(obj), ui_text("ui_model_viewer_dynamics"))
-        self._tabs.addTab(self._raw_tab(obj), ui_text("ui_model_viewer_raw"))
-        self._tabs.setCurrentIndex(self._preferred_tab_index(obj))
-
-    def _preferred_tab_index(self, obj) -> int:
-        if isinstance(obj, NuccChunkMaterial):
-            return 1
-        if isinstance(obj, NuccChunkModel):
-            return 2
-        if isinstance(obj, NuccChunkDynamics):
-            return 3
-        if isinstance(obj, NuccChunkCoord):
-            return 0
-        if getattr(obj, "material_chunk", None) is not None:
-            return 1
-        if getattr(obj, "model_chunk", None) is not None:
-            return 2
-        if getattr(obj, "coord_chunk", None) is not None:
-            return 0
-        return 4
-
-    def _placeholder(self, text: str):
-        wrap = QWidget()
-        wrap.setStyleSheet(ss_bg_panel())
-        lay = QVBoxLayout(wrap)
-        lay.addStretch()
-        label = QLabel(text)
-        label.setWordWrap(True)
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setStyleSheet(ss_placeholder())
-        lay.addWidget(label)
-        lay.addStretch()
-        return wrap
-
-    def _scroll_tab(self):
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setStyleSheet(ss_scrollarea_transparent())
-        inner = QWidget()
-        inner.setStyleSheet(ss_transparent())
-        inner.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        lay = QVBoxLayout(inner)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
-        scroll.setWidget(inner)
-        return scroll, lay
-
-    def _transform_tab(self, obj):
-        coord = obj if isinstance(obj, NuccChunkCoord) else getattr(obj, "coord_chunk", None)
-        if coord is None:
-            return self._placeholder(ui_text("ui_model_viewer_select_bone_or_bound_model"))
-        scroll, lay = self._scroll_tab()
-        self._vector_group(lay, ui_text("ui_model_viewer_position"), coord.node.position, lambda v: self._set_coord(coord, "position", v))
-        self._vector_group(lay, ui_text("ui_model_viewer_rotation"), coord.node.rotation, lambda v: self._set_coord(coord, "rotation", v))
-        self._vector_group(lay, ui_text("ui_model_viewer_scale"), coord.node.scale, lambda v: self._set_coord(coord, "scale", v), minimum=-1000.0, maximum=1000.0)
-        self._number_row(lay, "ui_model_viewer_unk_float", coord.node.unkFloat, lambda v: self._set_coord_scalar(coord, "unkFloat", v), float_value=True)
-        self._number_row(lay, "ui_model_viewer_unk_short", coord.node.unkShort, lambda v: self._set_coord_scalar(coord, "unkShort", int(v)), float_value=False, minimum=0, maximum=65535)
-        lay.addStretch()
-        return scroll
-
-    def _material_tab(self, obj):
-        material = obj if isinstance(obj, NuccChunkMaterial) else getattr(obj, "material_chunk", None)
-        if material is None:
-            return self._placeholder(ui_text("ui_model_viewer_select_material"))
-        scroll, lay = self._scroll_tab()
-        self._number_row(lay, "ui_model_viewer_field02", material.field02, lambda v: self._set_attr(material, "field02", int(v)), minimum=0, maximum=255)
-        self._number_row(lay, "ui_model_viewer_field04", material.field04, lambda v: self._set_attr(material, "field04", float(v)), float_value=True)
-        self._number_row(lay, "ui_model_viewer_format", material.format, lambda v: self._set_attr(material, "format", int(v)), minimum=0, maximum=255)
-        for idx, value in enumerate(material.floats):
-            self._number_row(lay, "ui_model_viewer_material_float", value, lambda v, i=idx: self._set_tuple_value(material, "floats", i, float(v)), float_value=True, suffix=f" {idx}")
-        self._texture_slots(lay, material)
-        lay.addStretch()
-        return scroll
-
-    def _model_tab(self, obj):
-        model = obj if isinstance(obj, NuccChunkModel) else getattr(obj, "model_chunk", None)
-        if model is None:
-            return self._placeholder(ui_text("ui_model_viewer_select_model"))
-        scroll, lay = self._scroll_tab()
-        self._number_row(lay, "ui_model_viewer_rigging_flag", int(model.rigging_flag), lambda v: self._set_rigging(model, int(v)), minimum=0, maximum=255)
-        self._number_row(lay, "ui_model_viewer_coord_index", model.coord_index, lambda v: self._set_attr(model, "coord_index", int(v)), minimum=-1, maximum=9999)
-        for idx, value in enumerate(model.material_flags):
-            self._number_row(lay, "ui_model_viewer_material_flag", value, lambda v, i=idx: self._set_list_value(model.material_flags, i, int(v)), suffix=f" {idx}", minimum=0, maximum=255)
-        if model.flag1_floats:
-            for idx, value in enumerate(model.flag1_floats):
-                self._number_row(lay, "ui_model_viewer_flag1_float", value, lambda v, i=idx: self._set_tuple_value(model, "flag1_floats", i, float(v)), float_value=True, suffix=f" {idx}")
-        if model.nud is not None:
-            self._vector4_group(lay, ui_text("ui_model_viewer_bounding_sphere"), model.nud.bounding_sphere, lambda v: self._set_attr(model.nud, "bounding_sphere", tuple(v)))
-            for group in model.nud.mesh_groups:
-                self._number_row(lay, "ui_model_viewer_bone_flags", group.bone_flags, lambda v, g=group: self._set_attr(g, "bone_flags", int(v)), minimum=0, maximum=65535, suffix=f" {group.name}")
-        lay.addStretch()
-        return scroll
-
-    def _dynamics_tab(self, obj):
-        dyn = obj if isinstance(obj, NuccChunkDynamics) else None
-        if dyn is None:
-            return self._placeholder(ui_text("ui_model_viewer_select_dynamics"))
-        scroll, lay = self._scroll_tab()
-        self._info(lay, ui_text("ui_model_viewer_section1_count"), str(len(dyn.section1)))
-        self._info(lay, ui_text("ui_model_viewer_section2_count"), str(len(dyn.section2)))
-        for sec_idx, sec in enumerate(dyn.section1):
-            self._number_row(lay, "ui_model_viewer_coord_index", sec.coord_index, lambda v, s=sec: self._set_attr(s, "coord_index", int(v)), suffix=f" {sec_idx}", minimum=0, maximum=9999)
-            self._vector4_group(lay, f"{ui_text('ui_model_viewer_dynamics_floats')} {sec_idx}", sec.floats, lambda v, s=sec: self._set_attr(s, "floats", tuple(v)))
-        lay.addStretch()
-        return scroll
-
-    def _raw_tab(self, obj):
-        text = QTextEdit()
-        text.setObjectName("ModelInspectorRaw")
-        text.setReadOnly(True)
-        text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-        text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        text.setStyleSheet(ss_inspector_group())
-        if obj is None:
-            text.setText(ui_text("ui_model_viewer_select_item"))
-            return text
-        lines = [f"{ui_text('ui_model_viewer_name')}: {getattr(obj, 'name', getattr(getattr(obj, 'node', None), 'name', ''))}"]
-        lines.append(f"{ui_text('ui_model_viewer_type')}: {type(obj).__name__}")
-        data = getattr(obj, "data", None)
-        if data is not None:
-            lines.append(f"{ui_text('ui_model_viewer_raw_size')}: {len(data)}")
-        if isinstance(obj, NuccChunkModel) and obj.nud:
-            verts = sum(len(mesh.vertices) for group in obj.nud.mesh_groups for mesh in group.meshes)
-            faces = sum(len(mesh.faces) for group in obj.nud.mesh_groups for mesh in group.meshes)
-            lines.append(f"{ui_text('ui_model_viewer_vertices')}: {verts}")
-            lines.append(f"{ui_text('ui_model_viewer_faces')}: {faces}")
-        text.setText("\n".join(lines))
-        return text
-
-    def _info(self, lay, label, value):
-        row = QWidget()
-        row.setStyleSheet(ss_transparent())
-        row_lay = QHBoxLayout(row)
-        row_lay.setContentsMargins(0, 0, 0, 0)
-        lbl = QLabel(label)
-        lbl.setStyleSheet(ss_field_label())
-        row_lay.addWidget(lbl)
-        val = QLabel(value)
-        val.setStyleSheet(ss_main_label())
-        row_lay.addWidget(val)
-        lay.addWidget(row)
-
-    def _vector_group(self, lay, label, values, setter, minimum=-10000.0, maximum=10000.0):
-        self._vectorn_group(
-            lay,
-            label,
-            values,
-            setter,
-            (ui_text("ui_model_viewer_axis_x"), ui_text("ui_model_viewer_axis_y"), ui_text("ui_model_viewer_axis_z")),
-            minimum,
-            maximum,
-        )
-
-    def _vector4_group(self, lay, label, values, setter, minimum=-10000.0, maximum=10000.0):
-        self._vectorn_group(
-            lay,
-            label,
-            values,
-            setter,
-            (
-                ui_text("ui_model_viewer_axis_x"),
-                ui_text("ui_model_viewer_axis_y"),
-                ui_text("ui_model_viewer_axis_z"),
-                ui_text("ui_model_viewer_axis_r"),
-            ),
-            minimum,
-            maximum,
-        )
-
-    def _vectorn_group(self, lay, label, values, setter, axis_labels, minimum, maximum):
-        frame, body = self._group_frame(label)
-        grid_wrap = QWidget()
-        grid_wrap.setStyleSheet(ss_transparent())
-        grid = QGridLayout(grid_wrap)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(4)
-        grid.setVerticalSpacing(3)
-        spins = []
-        for col, axis in enumerate(axis_labels):
-            axis_lbl = QLabel(axis)
-            axis_lbl.setStyleSheet(ss_dim_label())
-            grid.addWidget(axis_lbl, 0, col)
-            spin = self._double_spin(values[col], minimum, maximum)
-            spin.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-            spins.append(spin)
-            grid.addWidget(spin, 1, col)
-        body.addWidget(grid_wrap)
-        def emit():
-            setter(tuple(s.value() for s in spins))
-            self.value_changed.emit()
-        for spin in spins:
-            spin.valueChanged.connect(emit)
-        lay.addWidget(frame)
-
-    def _number_row(self, lay, key, value, setter, *, float_value=False, suffix="", minimum=-100000, maximum=100000):
-        frame, body = self._group_frame(ui_text(key) + suffix)
-        row = QWidget()
-        row.setStyleSheet(ss_transparent())
-        row_lay = QHBoxLayout(row)
-        row_lay.setContentsMargins(0, 0, 0, 0)
-        if float_value:
-            spin = self._double_spin(float(value), float(minimum), float(maximum))
-        else:
-            spin = QSpinBox()
-            spin.setRange(int(minimum), int(maximum))
-            spin.setValue(int(value))
-            spin.setStyleSheet(ss_inspector_input())
-            spin.setFixedHeight(26)
-        row_lay.addWidget(spin)
-        body.addWidget(row)
-        spin.valueChanged.connect(lambda v: (setter(v), self.value_changed.emit()))
-        lay.addWidget(frame)
-
-    def _texture_slots(self, lay, material):
-        if not self._doc:
-            return
-        refs = available_texture_refs(self._doc)
-        ref_labels = [r.name or r.file_path for r in refs]
-        for group_idx, slot_idx, texture_chunk, resolved in material_texture_refs(material, self._doc):
-            frame, body = self._group_frame(f"{ui_text('ui_model_viewer_texture_slot')} {group_idx}:{slot_idx}")
-            row = QWidget()
-            row.setStyleSheet(ss_transparent())
-            row_lay = QHBoxLayout(row)
-            row_lay.setContentsMargins(0, 0, 0, 0)
-            row_lay.setSpacing(6)
-            combo = QComboBox()
-            combo.setStyleSheet(ss_inspector_input())
-            combo.setFixedHeight(26)
-            combo.setMinimumContentsLength(0)
-            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-            combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-            combo.addItems(ref_labels)
-            current = getattr(texture_chunk, "name", "")
-            if current in ref_labels:
-                combo.setCurrentText(current)
-            combo.currentIndexChanged.connect(
-                lambda idx, g=group_idx, s=slot_idx: self._set_texture_slot(material, g, s, refs[idx])
-            )
-            row_lay.addWidget(combo, 1)
-            if isinstance(resolved, MissingTextureRef):
-                badge = QLabel(ui_text("ui_model_viewer_missing"))
-                badge.setFixedHeight(22)
-                badge.setStyleSheet(ss_badge_missing())
-                row_lay.addWidget(badge)
-            body.addWidget(row)
-            lay.addWidget(frame)
-
-    def _group_frame(self, title: str):
-        frame = QFrame()
-        frame.setObjectName("ModelInspectorCard")
-        frame.setStyleSheet(ss_inspector_group())
-        outer = QVBoxLayout(frame)
-        outer.setContentsMargins(6, 6, 6, 6)
-        outer.setSpacing(4)
-        lbl = QLabel(title)
-        lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
-        lbl.setStyleSheet(ss_panel_title())
-        lbl.setWordWrap(True)
-        outer.addWidget(lbl)
-        body = QVBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(4)
-        outer.addLayout(body)
-        return frame, body
-
-    def _double_spin(self, value, minimum=-10000.0, maximum=10000.0):
-        spin = QDoubleSpinBox()
-        spin.setDecimals(5)
-        spin.setRange(minimum, maximum)
-        spin.setValue(float(value))
-        spin.setSingleStep(0.1)
-        spin.setFixedHeight(26)
-        spin.setStyleSheet(ss_inspector_input())
-        return spin
-
-    def _set_coord(self, coord, attr, value):
-        setattr(coord.node, attr, tuple(value))
-
-    def _set_coord_scalar(self, coord, attr, value):
-        setattr(coord.node, attr, value)
-
-    def _set_attr(self, obj, attr, value):
-        setattr(obj, attr, value)
-
-    def _set_tuple_value(self, obj, attr, idx, value):
-        values = list(getattr(obj, attr))
-        values[idx] = value
-        setattr(obj, attr, tuple(values))
-
-    def _set_list_value(self, values, idx, value):
-        values[idx] = value
-
-    def _set_rigging(self, model, value):
-        from parsers.xfbin_lib import RiggingFlag
-        model.rigging_flag = RiggingFlag(value)
-
-    def _set_texture_slot(self, material, group_idx, slot_idx, ref):
-        set_material_texture(material, group_idx, slot_idx, ref)
-        self.value_changed.emit()
-
-
 class _ViewportPanel(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1459,6 +1304,7 @@ class _ViewportPanel(QFrame):
         self._controls = None
         self._cube = None
         self._axis = None
+        self._reset = None
         self.setStyleSheet(ss_viewport_panel())
         self.setMinimumSize(260, 220)
 
@@ -1483,6 +1329,13 @@ class _ViewportPanel(QFrame):
     def set_axis_gizmo(self, widget: QWidget):
         self._axis = widget
         widget.setParent(self)
+        widget.raise_()
+        self._relayout()
+
+    def set_reset_button(self, widget: QWidget):
+        self._reset = widget
+        widget.setParent(self)
+        widget.setFixedWidth(widget.sizeHint().width())
         widget.raise_()
         self._relayout()
 
@@ -1514,6 +1367,12 @@ class _ViewportPanel(QFrame):
             if axis_visible:
                 self._axis.move(margin, h - self._axis.height() - margin)
                 self._axis.raise_()
+        if self._reset:
+            self._reset.move(
+                w - self._reset.sizeHint().width() - margin,
+                h - self._reset.height() - margin,
+            )
+            self._reset.raise_()
 
 
 class _ViewportControls(QWidget):
@@ -1525,7 +1384,7 @@ class _ViewportControls(QWidget):
         self._compact = False
         self._columns = 1
         self._lay = QGridLayout(self)
-        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setContentsMargins(*Insets.NONE)
         self._lay.setHorizontalSpacing(6)
         self._lay.setVerticalSpacing(6)
         self.setStyleSheet(ss_transparent())
@@ -1534,10 +1393,9 @@ class _ViewportControls(QWidget):
         btn = QPushButton(text)
         btn.setCheckable(True)
         btn.setChecked(checked)
-        btn.setFont(QFont("Segoe UI", 9))
         btn.setIcon(_themed_icon(icon_name, color=P.get("button_text", P["text_main"]), size=14))
         btn.setIconSize(QSize(14, 14))
-        btn.setStyleSheet(ss_toggle_btn())
+        configure_button(btn, toggle=True)
         btn.setToolTip(text)
         self._buttons.append(btn)
         self._labels[btn] = text
@@ -1554,11 +1412,11 @@ class _ViewportControls(QWidget):
             self._columns = columns
             for btn in self._buttons:
                 btn.setText("" if compact else self._labels[btn])
-                btn.setFixedSize(button_w, 32)
+                btn.setFixedSize(button_w, Size.CONTROL)
                 btn.setIcon(_themed_icon(self._icons[btn], color=P.get("button_text", P["text_main"]), size=14))
             self._relayout_buttons()
         rows = math.ceil(max(1, len(self._buttons)) / max(1, self._columns))
-        self.setFixedSize(min(width, self._columns * button_w + max(0, self._columns - 1) * 6), rows * 32 + max(0, rows - 1) * 6)
+        self.setFixedSize(min(width, self._columns * button_w + max(0, self._columns - 1) * 6), rows * Size.CONTROL + max(0, rows - 1) * 6)
 
     def _relayout_buttons(self):
         while self._lay.count():
@@ -1609,7 +1467,7 @@ class _ViewCubeWidget(QWidget):
             painter.drawPolygon(poly)
 
         painter.setPen(QColor(P["text_main"]))
-        font = QFont("Segoe UI", 6, QFont.Weight.Bold)
+        font = ui_font(TypeSize.MICRO, QFont.Weight.Bold)
         painter.setFont(font)
         painter.drawText(QRectF(32, 28, 28, 12), Qt.AlignmentFlag.AlignCenter, ui_text("ui_model_viewer_view_top"))
         painter.drawText(QRectF(22, 48, 25, 12), Qt.AlignmentFlag.AlignCenter, ui_text("ui_model_viewer_view_front"))
@@ -1694,7 +1552,7 @@ class _AxisGizmoWidget(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawPolygon(QPolygonF([end, left, right]))
         painter.setPen(color)
-        painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        painter.setFont(ui_font(TypeSize.CAPTION, QFont.Weight.Bold))
         painter.drawText(QRectF(end.x() - 6, end.y() - 18, 18, 14), Qt.AlignmentFlag.AlignCenter, label)
 
 
@@ -1704,6 +1562,8 @@ class _ModelOpenGLViewport(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._scene: RenderScene | None = None
+        self._additional_scenes = []
+        self._scene_transform = None
         self._selected = None
         self._textures = {}
         self._mesh_lists = {}
@@ -1735,6 +1595,7 @@ class _ModelOpenGLViewport(QOpenGLWidget):
 
     def set_scene(self, scene: RenderScene, reset_camera: bool = True):
         self._scene = scene
+        self._additional_scenes = []
         self._textures.clear()
         self._mesh_lists.clear()
         self._bone_texture_height = 0
@@ -1751,6 +1612,34 @@ class _ModelOpenGLViewport(QOpenGLWidget):
     def uses_gpu_skinning(self) -> bool:
         return bool(self._shader_program and self._gpu_skinning_supported)
 
+    def set_scene_transform(self, matrix=None):
+        """Transform the displayed model, bones and bounds while keeping the grid fixed."""
+        self._scene_transform = matrix
+        self.update()
+
+    def set_additional_scenes(self, scenes):
+        """Draw independent skeletons in the same viewport and camera."""
+        self._additional_scenes = [(scene, matrix) for scene, matrix in scenes if scene is not None]
+        self.update()
+
+    def displayed_bounds(self):
+        corners = []
+        actors = [(self._scene, getattr(self, '_scene_transform', None)), *self._additional_scenes]
+        for scene, matrix in actors:
+            if scene is None:
+                continue
+            mn, mx = scene.bounds_min, scene.bounds_max
+            points = np.array([[x, y, z, 1] for x in (mn[0], mx[0])
+                               for y in (mn[1], mx[1]) for z in (mn[2], mx[2])], dtype=np.float64)
+            if matrix is not None:
+                points = points @ np.asarray(matrix).T
+            if np.isfinite(points).all():
+                corners.extend(points[:, :3])
+        if not corners:
+            return None
+        points = np.array(corners)
+        return points.min(axis=0), points.max(axis=0)
+
     def set_selected(self, obj):
         self._selected = obj
         self.update()
@@ -1764,9 +1653,9 @@ class _ModelOpenGLViewport(QOpenGLWidget):
         self.update()
 
     def reset_camera(self):
-        if self._scene:
-            mn = np.array(self._scene.bounds_min, dtype=np.float32)
-            mx = np.array(self._scene.bounds_max, dtype=np.float32)
+        bounds = self.displayed_bounds()
+        if bounds is not None:
+            mn, mx = bounds
             self._center = (mn + mx) / 2.0
             radius = max(float(np.linalg.norm(mx - mn)) * 0.75, 50.0)
             self._distance = radius * 1.8
@@ -1816,9 +1705,7 @@ class _ModelOpenGLViewport(QOpenGLWidget):
         except Exception:
             return
 
-        bg = QColor(P.get("viewport_bg", P["bg_dark"]))
-        GL.glClearColor(bg.redF(), bg.greenF(), bg.blueF(), 1.0)
-        GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+        self._clear_viewport(GL)
         GL.glLoadIdentity()
         GL.glTranslatef(0.0, 0.0, -self._distance)
         GL.glRotatef(self._pitch, 1.0, 0.0, 0.0)
@@ -1832,17 +1719,36 @@ class _ModelOpenGLViewport(QOpenGLWidget):
 
         if self._options["grid"]:
             self._draw_grid(GL)
-        if not self._scene:
-            return
-        self._prepare_gpu_skinning(GL)
-        for mesh in self._scene.meshes:
-            if mesh.visible:
-                self._draw_mesh(GL, mesh)
-        GL.glUseProgram(0)
-        if self._options["bones"]:
-            self._draw_bones(GL)
-        if self._options["bounds"]:
-            self._draw_bounds(GL)
+        primary = self._scene
+        actors = [(primary, getattr(self, '_scene_transform', None)), *self._additional_scenes]
+        try:
+            for scene, transform in actors:
+                if scene is None:
+                    continue
+                self._scene = scene
+                GL.glPushMatrix()
+                try:
+                    if transform is not None:
+                        GL.glMultMatrixf(np.asarray(transform, dtype=np.float32).T.copy())
+                    # Upload this actor's palette before drawing its meshes.
+                    self._prepare_gpu_skinning(GL)
+                    for mesh in scene.meshes:
+                        if mesh.visible:
+                            self._draw_mesh(GL, mesh)
+                    GL.glUseProgram(0)
+                    if self._options['bones']:
+                        self._draw_bones(GL)
+                    if self._options['bounds']:
+                        self._draw_bounds(GL)
+                finally:
+                    GL.glPopMatrix()
+        finally:
+            self._scene = primary
+
+    def _clear_viewport(self, GL):
+        bg = QColor(P.get("viewport_bg", P["bg_dark"]))
+        GL.glClearColor(bg.redF(), bg.greenF(), bg.blueF(), 1.0)
+        GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
 
     def _draw_mesh(self, GL, mesh):
         selected = self._selected is mesh.model_chunk or self._selected is mesh.material_chunk
@@ -1906,7 +1812,7 @@ class _ModelOpenGLViewport(QOpenGLWidget):
 
         self._enable_mesh_arrays(GL, mesh)
         outline_width = 0.06 + min(0.45, max(0.0, float(outline_param[0]) * 0.22 if outline_param else 0.08))
-        if not self._options["wireframe"]:
+        if not self._options["wireframe"] and self._options.get('outlines', True):
             self._uniform_i(GL, program, "uOutlinePass", 1)
             self._uniform_f(GL, program, "uOutlineWidth", outline_width)
             GL.glEnable(GL.GL_CULL_FACE)
@@ -1952,14 +1858,14 @@ class _ModelOpenGLViewport(QOpenGLWidget):
         else:
             GL.glColor4f(1.0, 1.0, 1.0, 1.0)
         if self._gpu_skinning_ready:
-            ids_location = self._attribute_location(GL, self._shader_program, "aBoneIds")
-            weights_location = self._attribute_location(GL, self._shader_program, "aBoneWeights")
-            if ids_location >= 0:
-                GL.glEnableVertexAttribArray(ids_location)
-                GL.glVertexAttribPointer(ids_location, 4, GL.GL_FLOAT, False, 0, mesh.gpu_bone_ids)
-            if weights_location >= 0:
-                GL.glEnableVertexAttribArray(weights_location)
-                GL.glVertexAttribPointer(weights_location, 4, GL.GL_FLOAT, False, 0, mesh.gpu_bone_weights)
+            for name, values in (
+                ("aBoneIds", mesh.gpu_bone_ids),
+                ("aBoneWeights", mesh.gpu_bone_weights),
+            ):
+                location = self._attribute_location(GL, self._shader_program, name)
+                if location >= 0:
+                    GL.glEnableVertexAttribArray(location)
+                    GL.glVertexAttribPointer(location, 4, GL.GL_FLOAT, False, 0, values)
 
     def _disable_mesh_arrays(self, GL):
         GL.glDisableClientState(GL.GL_VERTEX_ARRAY)
@@ -2104,6 +2010,7 @@ class _ModelOpenGLViewport(QOpenGLWidget):
         """
         fragment_source = r"""
             #version 120
+            // Scene-specific uniforms
             uniform sampler2D uTex0;
             uniform sampler2D uTex1;
             uniform sampler2D uHatching;
@@ -2174,14 +2081,24 @@ class _ModelOpenGLViewport(QOpenGLWidget):
                 vec3 color = base.rgb * toon + vec3(spec);
                 float rim = pow(1.0 - abs(dot(normal, normalize(vView))), 3.0);
                 color *= 1.0 - rim * 0.22;
+                // Scene-specific postprocess
                 if (uSelected == 1) color = mix(color, vec3(0.36, 0.62, 1.0), 0.28);
                 gl_FragColor = vec4(color, base.a);
             }
         """
+        fragment_source = fragment_source.replace('// Scene-specific uniforms', self._scene_shader_uniforms())
+        fragment_source = fragment_source.replace('// Scene-specific postprocess', self._scene_shader_postprocess())
         return shaders.compileProgram(
             shaders.compileShader(vertex_source, GL.GL_VERTEX_SHADER),
             shaders.compileShader(fragment_source, GL.GL_FRAGMENT_SHADER),
         )
+
+    def _scene_shader_uniforms(self):
+        """Optional scene effects; the ordinary model viewer keeps its shader."""
+        return ''
+
+    def _scene_shader_postprocess(self):
+        return ''
 
     def _mesh_list(self, GL, mesh, *, use_texcoords: bool, use_vertex_colors: bool):
         key = (id(mesh), use_texcoords, use_vertex_colors)

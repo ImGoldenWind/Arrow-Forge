@@ -1,44 +1,59 @@
-import os
+from core.design_tokens import (
+    LayoutRole,
+    Size,
+    TypeSize,
+    ui_font,
+)
+from core.style_helpers import (
+    make_editor_field_shell,
+    make_editor_grid_card,
+    make_empty_state,
+    ss_bg_dark,
+    ss_sidebar_btn,
+    ss_transparent,
+)
+from core.ui.editor_widgets import (
+    EditorActionRow,
+    EditorListRow,
+    EditorSeparator,
+    EditorSidebar,
+    EditorToolbar,
+    configure_button,
+    configure_card,
+    configure_field,
+    configure_file_label,
+    configure_input,
+    configure_layout,
+    configure_scrollarea,
+    configure_search,
+)
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.editor_actions import commit_save_path, editor_path, install_file_actions
 import copy
 
 from PyQt6.QtWidgets import (
-    QWidget, QFrame, QLabel, QPushButton, QLineEdit, QVBoxLayout, QHBoxLayout,
+    QWidget, QLabel, QPushButton, QLineEdit, QVBoxLayout, QHBoxLayout,
     QFileDialog, QMessageBox, QScrollArea, QSizePolicy,
 )
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, QTimer, QEvent, QThreadPool
 
-from core.style_helpers import (
-    make_empty_state,
-    make_editor_field_shell,
-    make_editor_grid_card,
-    ss_btn, ss_sep, ss_accent_sep, ss_input, ss_search, ss_file_label, ss_sidebar_btn,
-    ss_scrollarea, ss_scrollarea_transparent, ss_panel,
-    ss_bg_dark, ss_bg_panel, ss_dim_label, ss_main_label,
-    ss_placeholder, ss_sidebar_frame, ss_transparent, TOOLBAR_H, TOOLBAR_BTN_H,
-)
 from core.editor_file_state import set_file_label
 from parsers.galleryartparam_parser import (
     parse_galleryartparam_xfbin,
     save_galleryartparam_xfbin,
     make_default_entry,
-    UNLOCK_LABELS,
 )
-from core.translations import ui_text
-from core.settings import create_backup_on_open, game_files_dialog_dir
-
-
-_PART_NAMES = {
-    0: ui_text("ui_galleryartparam_no_part_special"),
-    1: ui_text("ui_galleryartparam_phantom_blood"),
-    2: ui_text("ui_galleryartparam_battle_tendency"),
-    3: ui_text("ui_galleryartparam_stardust_crusaders"),
-    4: ui_text("ui_galleryartparam_diamond_is_unbreakable"),
-    5: ui_text("ui_galleryartparam_golden_wind"),
-    6: ui_text("ui_galleryartparam_stone_ocean"),
-    7: ui_text("ui_galleryartparam_steel_ball_run"),
-    8: ui_text("ui_galleryartparam_jojolion"),
-}
+from core.translations import current_language, ui_text
+from core.settings import create_backup_on_open, game_files_dialog_dir, load_settings
+from core.ui.editor_widgets import EditorFilterCombo, fit_scroll_page
+from core.ui.editor_actions import refresh_file_actions
+from core.ui.value_combo import EditorValueCombo
+from core.ui.number_input import IntegerStepper
+from core.ui.image_preview import ImagePreview, ImageLoadSignals as _ImageSignals, ImageLoadJob as _ImageJob
+from core.ui.message_preview import message_lookup
+from core.style_helpers import ss_dim_label, ss_input_validation
+from core.gallery_tools import (INTEGER_RANGES, MESSAGE_KEYS, parse_field, part_name,
+    unlock_choices, next_identity, entry_issues, data_root, load_image, path_choices, resource_path)
 
 
 def _clear_layout(layout):
@@ -55,11 +70,6 @@ def _clear_layout(layout):
             _clear_layout(item.layout())
 
 
-def _truncate(text: str, limit: int) -> str:
-    text = str(text)
-    return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
-
-
 class GalleryArtParamEditor(QWidget):
     """Embedded editor for GalleryArtParam.bin.xfbin."""
 
@@ -73,15 +83,28 @@ class GalleryArtParamEditor(QWidget):
         self._version: int = 1000
         self._entries: list[dict] = []
         self._dirty = False
-        self._filter_text = ""
         self._current_index: int | None = None
         self._entry_buttons: list[tuple[QPushButton, int]] = []
-        self._fields: dict[str, QLineEdit] = {}
+        self._fields: dict[str, QWidget] = {}
         self._loading_detail = False
-        self._last_compact: bool | None = None
-        self._active_grid_columns = 3
 
+        self._root = None
+        self._snapshot = []
+        self._search_cache = {}
+        self._grids = []
+        self._image_token = 0
+        self._image_signature = None
+        self._signals = _ImageSignals()
+        self._signals.finished.connect(self._image_ready)
+        self._image_pool = QThreadPool(self)
+        self._image_pool.setMaxThreadCount(1)
+        self._detail_timer = QTimer(self)
+        self._detail_timer.setSingleShot(True)
+        self._detail_timer.setInterval(180)
+        self._detail_timer.timeout.connect(self._refresh_detail)
         self._build_ui()
+        install_file_actions(self, self._btn_save, save_to=lambda path: self._do_save(target_path=path))
+        install_editor_chrome(self)
 
     def _tr(self, key, fallback):
         value = self._t(key)
@@ -89,127 +112,117 @@ class GalleryArtParamEditor(QWidget):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        configure_layout(root, LayoutRole.ROOT)
 
-        top = QFrame()
-        top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(ss_bg_panel())
-        tl = QHBoxLayout(top)
-        tl.setContentsMargins(12, 8, 12, 8)
-        tl.setSpacing(4)
+        top = EditorToolbar()
+        tl = top.content_layout
 
         self._btn_open = QPushButton(self._tr("btn_open_file", ui_text("btn_open_file")))
-        self._btn_open.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_open.setFont(QFont("Segoe UI", 10))
-        self._btn_open.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._btn_open, accent=True)
         self._btn_open.clicked.connect(self._do_open)
+        self._btn_open.setProperty("designAction", 'open')
         tl.addWidget(self._btn_open)
 
         self._btn_save = QPushButton(self._tr("btn_save_file", ui_text("btn_save_file")))
-        self._btn_save.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_save.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self._btn_save.setEnabled(False)
-        self._btn_save.setStyleSheet(ss_btn(accent=True))
-        self._btn_save.clicked.connect(self._do_save)
+        configure_button(self._btn_save, accent=True)
+        self._btn_save.clicked.connect(lambda: self._do_save())
         tl.addWidget(self._btn_save)
 
         self._lbl_file = QLabel(self._tr("no_file_loaded", ui_text("cpk_no_file")))
-        self._lbl_file.setFont(QFont("Consolas", 12))
-        self._lbl_file.setStyleSheet(ss_file_label())
-        tl.addWidget(self._lbl_file)
-        tl.addStretch()
+
+        configure_file_label(self._lbl_file)
+        self._lbl_file.setMinimumWidth(0)
+        self._lbl_file.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        tl.addWidget(self._lbl_file, 1)
         root.addWidget(top)
 
-        sep = QFrame()
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
+        sep = EditorSeparator(accent=True)
+
+
         root.addWidget(sep)
 
         main = QWidget()
         main_l = QHBoxLayout(main)
-        main_l.setContentsMargins(0, 0, 0, 0)
-        main_l.setSpacing(0)
+        configure_layout(main_l, LayoutRole.ROOT)
 
-        sidebar = QFrame()
-        sidebar.setFixedWidth(260)
-        sidebar.setStyleSheet(ss_sidebar_frame())
-        sl = QVBoxLayout(sidebar)
-        sl.setContentsMargins(8, 8, 8, 4)
-        sl.setSpacing(4)
+        sidebar = EditorSidebar()
+
+
+        sl = sidebar.content_layout
+
 
         self._search = QLineEdit()
-        self._search.setPlaceholderText(self._tr("search_placeholder", ui_text("search_placeholder")))
-        self._search.setFixedHeight(32)
-        self._search.setFont(QFont("Segoe UI", 13))
-        self._search.setStyleSheet(ss_search())
+        configure_search(self._search)
         self._search.textChanged.connect(self._on_filter_changed)
         sl.addWidget(self._search)
+        self._part_filter = EditorFilterCombo()
+        self._part_filter.addItem(ui_text('ui_customcardparam_part'), None)
+        self._part_filter.currentIndexChanged.connect(self._on_filter_changed)
+        sl.addWidget(self._part_filter)
+        self._unlock_filter = EditorFilterCombo()
+        self._unlock_filter.addItem(ui_text('ui_charviewer_unlock_condition'), None)
+        self._unlock_filter.currentIndexChanged.connect(self._on_filter_changed)
+        sl.addWidget(self._unlock_filter)
 
-        actions = QWidget()
-        actions.setStyleSheet(ss_transparent())
-        al = QHBoxLayout(actions)
-        al.setContentsMargins(0, 2, 0, 4)
-        al.setSpacing(4)
-        btn_font = QFont("Segoe UI", 10)
+        actions = EditorActionRow()
+
+        al = actions.content_layout
+
 
         self._btn_add = QPushButton(self._tr("btn_new", ui_text("btn_new")))
-        self._btn_add.setFixedHeight(28)
-        self._btn_add.setFont(btn_font)
-        self._btn_add.setStyleSheet(ss_btn())
+        configure_button(self._btn_add, height=Size.COMPACT_CONTROL)
         self._btn_add.setEnabled(False)
         self._btn_add.clicked.connect(self._do_add)
+        self._btn_add.setProperty("designAction", 'new')
         al.addWidget(self._btn_add, 1)
 
         self._btn_dup = QPushButton(self._tr("btn_duplicate", ui_text("btn_duplicate")))
-        self._btn_dup.setFixedHeight(28)
-        self._btn_dup.setFont(btn_font)
-        self._btn_dup.setStyleSheet(ss_btn())
+        configure_button(self._btn_dup, height=Size.COMPACT_CONTROL)
         self._btn_dup.setEnabled(False)
         self._btn_dup.clicked.connect(self._do_dup)
+        self._btn_dup.setProperty("designAction", 'duplicate')
         al.addWidget(self._btn_dup, 1)
 
         self._btn_del = QPushButton(self._tr("btn_delete", ui_text("btn_delete")))
-        self._btn_del.setFixedHeight(28)
-        self._btn_del.setFont(btn_font)
-        self._btn_del.setStyleSheet(ss_btn(danger=True))
+        configure_button(self._btn_del, danger=True, height=Size.COMPACT_CONTROL)
         self._btn_del.setEnabled(False)
         self._btn_del.clicked.connect(self._do_del)
+        self._btn_del.setProperty("designAction", 'delete')
         al.addWidget(self._btn_del, 1)
 
         sl.addWidget(actions)
 
         self._list_scroll = QScrollArea()
-        self._list_scroll.setWidgetResizable(True)
-        self._list_scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+
         self._list_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._list_scroll.setStyleSheet(ss_scrollarea_transparent())
+        configure_scrollarea(self._list_scroll, transparent=True)
         self._list_widget = QWidget()
         self._list_widget.setMinimumWidth(0)
         self._list_widget.setStyleSheet(ss_transparent())
         self._list_layout = QVBoxLayout(self._list_widget)
-        self._list_layout.setContentsMargins(0, 0, 0, 0)
-        self._list_layout.setSpacing(1)
+        configure_layout(self._list_layout, LayoutRole.LIST)
         self._list_layout.addStretch()
         self._list_scroll.setWidget(self._list_widget)
         sl.addWidget(self._list_scroll, 1)
         main_l.addWidget(sidebar)
 
-        divider = QFrame()
-        divider.setFixedWidth(1)
-        divider.setStyleSheet(ss_sep())
+        divider = EditorSeparator(orientation=Qt.Orientation.Vertical)
+
+
         main_l.addWidget(divider)
 
         self._editor_scroll = QScrollArea()
-        self._editor_scroll.setWidgetResizable(True)
-        self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+
         self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._editor_scroll.setStyleSheet(ss_scrollarea())
+        configure_scrollarea(self._editor_scroll)
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(12, 12, 12, 12)
-        self._editor_layout.setSpacing(8)
+        configure_layout(self._editor_layout, LayoutRole.PAGE)
+        self._editor_scroll.viewport().installEventFilter(self)
         self._editor_scroll.setWidget(self._editor_widget)
         main_l.addWidget(self._editor_scroll, 1)
 
@@ -217,6 +230,9 @@ class GalleryArtParamEditor(QWidget):
         root.addWidget(main, 1)
 
     def _show_placeholder(self, text):
+        self._image_token += 1
+        self._image_signature = None
+        self._fields, self._grids = {}, []
         _clear_layout(self._editor_layout)
         card = make_empty_state(
             self._editor_widget,
@@ -232,352 +248,433 @@ class GalleryArtParamEditor(QWidget):
         _clear_layout(self._list_layout)
         self._list_layout.addStretch()
 
-    def _visible_indices(self):
-        text = self._filter_text.lower().strip()
-        result = []
-        for i, e in enumerate(self._entries):
-            haystack = " ".join((
-                e.get("art_id", ""),
-                e.get("art_name", ""),
-                e.get("chara_code", ""),
-                e.get("art_string1", ""),
-                e.get("art_string2", ""),
-                e.get("icon_name", ""),
-                str(e.get("part", "")),
-                str(e.get("dlc_id", "")),
-            )).lower()
-            if not text or text in haystack:
-                result.append(i)
-        return result
+    @staticmethod
+    def _public(entry):
+        return {k: v for k, v in entry.items() if not k.startswith('_')}
 
-    def _populate_list(self, preserve_selection: int | None = None):
+    def _title(self, entry):
+        reference = message_lookup(self).resolve(entry['art_string1'])
+        return reference.text if reference and reference.text else entry['art_id'] or ui_text('gallery_empty_id')
+
+    def _cache_search(self, entry):
+        text = [str(v) for v in self._public(entry).values()]
+        text.extend((self._title(entry), part_name(entry['part']), ui_text('char_' + entry['chara_code'])))
+        for key in MESSAGE_KEYS:
+            result = message_lookup(self).resolve(entry[key])
+            if result and result.text:
+                text.append(result.text)
+        self._search_cache[id(entry)] = ' '.join(text).casefold()
+
+    def _visible_indices(self):
+        query = self._search.text().casefold().strip()
+        part, unlock = self._part_filter.currentData(), self._unlock_filter.currentData()
+        return [i for i, e in enumerate(self._entries)
+                if (not query or query in self._search_cache.get(id(e), ''))
+                and (part is None or e['part'] == part)
+                and (unlock is None or e['unlock_cond'] == unlock)]
+
+    def _refresh_filters(self):
+        for combo, key, values in (
+            (self._part_filter, 'ui_customcardparam_part', [(v, part_name(v)) for v in sorted({e['part'] for e in self._entries})]),
+            (self._unlock_filter, 'ui_charviewer_unlock_condition', unlock_choices(self._entries))):
+            selected = combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem(ui_text(key), None)
+            for value, caption in values:
+                if any(e['part' if combo is self._part_filter else 'unlock_cond'] == value for e in self._entries):
+                    combo.addItem(caption, value)
+            combo.setCurrentIndex(max(0, combo.findData(selected)))
+            combo.blockSignals(False)
+
+    def _populate_list(self, preserve_selection=None):
         self._clear_entry_list()
         self._entry_buttons = []
-        visible = self._visible_indices()
-
-        for i in visible:
-            btn = self._make_entry_button(i)
-            self._list_layout.insertWidget(self._list_layout.count() - 1, btn)
-            self._entry_buttons.append((btn, i))
-
-        if preserve_selection is not None and preserve_selection in visible:
+        for i, entry in enumerate(self._entries):
+            self._cache_search(entry)
+            button = EditorListRow()
+            button.set_texts(self._title(entry), entry['art_id'] + ' · ' + part_name(entry['part']))
+            button.setToolTip(self._title(entry))
+            button.clicked.connect(lambda checked=False, index=i: self._select_entry(index))
+            self._list_layout.insertWidget(self._list_layout.count() - 1, button)
+            self._entry_buttons.append((button, i))
+        self._refresh_filters()
+        self._on_filter_changed()
+        if preserve_selection is not None:
             self._select_entry(preserve_selection)
-        elif self._current_index in visible:
-            self._select_entry(self._current_index)
-        elif visible:
-            self._select_entry(visible[0])
+        elif self._entries:
+            self._select_entry(0)
         else:
             self._current_index = None
             self._set_detail_buttons(False)
-            self._show_placeholder(ui_text("ui_galleryartparam_select_a_gallery_entry_to_edit"))
+            self._show_placeholder(ui_text('ui_galleryartparam_select_a_gallery_entry_to_edit'))
 
-    def _make_entry_button(self, idx):
-        e = self._entries[idx]
-        title_text = ui_text("ui_customcardparam_entry_value_2", p0=idx)
-        subtitle_text = ui_text("ui_customcardparam_value_value", p0=e.get('art_id', ''), p1=e.get('chara_code', ''))
+    def _on_filter_changed(self):
+        visible = set(self._visible_indices())
+        for button, i in self._entry_buttons:
+            button.setVisible(i in visible)
 
-        btn = QPushButton()
-        btn.setFixedHeight(44)
-        btn.setMinimumWidth(0)
-        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet(ss_sidebar_btn(selected=(idx == self._current_index)))
-
-        bl = QVBoxLayout(btn)
-        bl.setContentsMargins(10, 3, 10, 3)
-        bl.setSpacing(0)
-
-        title = QLabel(_truncate(title_text, 24))
-        title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        title.setStyleSheet(ss_main_label())
-        title.setMinimumWidth(0)
-        title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        title.setToolTip(title_text)
-        title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        bl.addWidget(title)
-
-        subtitle = QLabel(_truncate(subtitle_text, 28))
-        subtitle.setFont(QFont("Consolas", 11))
-        subtitle.setStyleSheet(ss_dim_label())
-        subtitle.setMinimumWidth(0)
-        subtitle.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        subtitle.setToolTip(subtitle_text)
-        subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        bl.addWidget(subtitle)
-
-        btn.clicked.connect(lambda checked=False, i=idx: self._select_entry(i))
-        return btn
-
-    def _set_detail_buttons(self, has_selection):
-        self._btn_dup.setEnabled(has_selection)
-        self._btn_del.setEnabled(has_selection)
+    def _set_detail_buttons(self, selected):
+        self._btn_dup.setEnabled(selected)
+        self._btn_del.setEnabled(selected)
 
     def _select_entry(self, idx):
-        if idx < 0 or idx >= len(self._entries):
-            return
+        if not 0 <= idx < len(self._entries):
+            return False
+        if self._current_index == idx and self._fields:
+            return True
+        if not self._apply_fields():
+            return False
+        self._detail_timer.stop()
         self._current_index = idx
         self._set_detail_buttons(True)
-        for btn, i in self._entry_buttons:
-            btn.setStyleSheet(ss_sidebar_btn(selected=(i == idx)))
+        for button, i in self._entry_buttons:
+            button.setStyleSheet(ss_sidebar_btn(selected=i == idx))
         self._build_editor(idx)
+        self._editor_scroll.verticalScrollBar().setValue(0)
+        return True
 
-    def _is_compact_editor(self) -> bool:
-        if not hasattr(self, "_editor_scroll"):
-            return False
-        return self._editor_scroll.viewport().width() < 780
-
-    def _grid_columns(self, max_columns: int) -> int:
-        width = self._editor_scroll.viewport().width()
-        if width < 780:
-            return 1
-        if width < 1080:
-            return min(2, max_columns)
-        return max_columns
-
-    def _prep_card(self, card: QFrame):
-        card.setMinimumWidth(0)
-        card.setMaximumWidth(980)
-        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        return card
-
-    def _prep_field_widget(self, widget: QWidget):
-        widget.setMinimumWidth(0)
-        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        return widget
-
-    def _add_editor_card(self, card: QFrame):
+    def _card(self, title, icon='fa6s.sliders', columns=2, subtitle=None):
+        card, grid = make_editor_grid_card(self._editor_widget, title=title,
+                                          icon_name=icon, subtitle=subtitle)
+        configure_card(card)
         self._editor_layout.addWidget(card)
+        self._grids.append((grid, [], columns))
+        return grid
 
-    def _field_position(self, row: int, col: int, max_columns: int) -> tuple[int, int]:
-        columns = self._grid_columns(max_columns)
-        logical_index = row * max_columns + col
-        return divmod(logical_index, columns)
+    def _choices(self, key, entry):
+        if key == 'part':
+            return [(v, f'{v} — {part_name(v)}') for v in sorted({*range(9), *(e[key] for e in self._entries)})]
+        if key == 'unlock_cond':
+            return unlock_choices(self._entries)
+        if key == 'menu_index':
+            return [(0, ui_text('gallery_precheck_off')), (1, ui_text('gallery_precheck_on'))]
+        if key in ('art_path', 'icon_path'):
+            return path_choices(self._root, self._entries, key)
+        if key in ('chara_code', 'dlc_id', 'patch', 'art_name', 'icon_name'):
+            values = {e[key] for e in self._entries}
+            if key == 'chara_code':
+                from core.dictionary_tools import character_catalog
+                characters, _ = character_catalog(self._filepath, load_settings().get('game_files_dir', ''))
+                values.update(characters)
+            return [(v, f'{v} — {ui_text("char_" + v)}' if key == 'chara_code' and
+                     ui_text('char_' + v) != 'char_' + v else str(v)) for v in sorted(values)]
+        return None
+
+    def _add_field(self, key, caption, entry):
+        grid, frames, _ = self._grids[-1]
+        frame, layout, _, _ = make_editor_field_shell(caption)
+        choices = self._choices(key, entry)
+        value = str(entry[key])
+        if choices is not None:
+            edit = EditorValueCombo(choices, value)
+            edit.currentTextChanged.connect(self._changed)
+            content = edit
+        else:
+            edit = configure_input(QLineEdit(value))
+            edit.textChanged.connect(self._changed)
+            content = IntegerStepper(edit, *INTEGER_RANGES[key]) if key in INTEGER_RANGES else edit
+        configure_field(frame, edit)
+        edit.setAccessibleName(caption)
+        edit.setToolTip(ui_text('gallery_hint_' + key))
+        edit.setProperty('messageReference', key in MESSAGE_KEYS)
+        edit.setProperty('messageTextOnly', key in MESSAGE_KEYS)
+        layout.addWidget(content)
+        frames.append(frame)
+        self._fields[key] = edit
+        self._captions[key] = caption
+        grid.addWidget(frame, len(frames) - 1, 0)
 
     def _build_editor(self, idx):
         self._loading_detail = True
+        self._image_token += 1
+        self._image_signature = None
         _clear_layout(self._editor_layout)
-        self._fields = {}
-        self._last_compact = self._is_compact_editor()
-        e = self._entries[idx]
-        summary = ui_text("ui_customcardparam_value_value", p0=e.get("art_id", ""), p1=e.get("chara_code", ""))
-        summary = _truncate(summary, 54 if self._last_compact else 92)
-
-        hdr, grid = make_editor_grid_card(
-            self._editor_widget,
-            title=ui_text("ui_customcardparam_entry_value", p0=idx),
-            icon_name="fa6s.images",
-            subtitle=summary,
-            grid_margins=(0, 2, 0, 0),
-            vertical_spacing=8,
-        )
-        self._prep_card(hdr)
-        self._active_grid_columns = 3
-        self._add_field(grid, 0, 0, "art_id", ui_text("ui_galleryartparam_art_id"), e.get("art_id", ""), wide=True)
-        self._add_field(grid, 0, 1, "chara_code", ui_text("ui_galleryartparam_chara_code"), e.get("chara_code", ""))
-        self._add_field(grid, 0, 2, "index", ui_text("ui_dictionaryparam_index"), e.get("index", 0))
-        self._add_editor_card(hdr)
-
-        self._add_section(ui_text("ui_galleryartparam_text"))
-        self._add_card_grid([
-            ("art_string1", ui_text("ui_galleryartparam_art_string_1"), e.get("art_string1", "")),
-            ("art_string2", ui_text("ui_galleryartparam_art_string_2"), e.get("art_string2", "")),
-        ], columns=2)
-
-        self._add_section(ui_text("ui_galleryartparam_asset_paths"))
-        self._add_card_grid([
-            ("icon_path", ui_text("ui_galleryartparam_icon_path"), e.get("icon_path", "")),
-            ("icon_name", ui_text("ui_galleryartparam_icon_name"), e.get("icon_name", "")),
-            ("art_path", ui_text("ui_galleryartparam_art_path"), e.get("art_path", "")),
-            ("art_name", ui_text("ui_galleryartparam_art_name"), e.get("art_name", "")),
-        ], columns=2)
-
-        self._add_section(ui_text("ui_galleryartparam_game_logic"))
-        self._add_card_grid([
-            ("part", self._label_with_hint(ui_text("ui_customcardparam_part"), _PART_NAMES, e.get("part", 0)), e.get("part", 0)),
-            ("unlock_cond", self._label_with_hint(ui_text("ui_galleryartparam_unlock_cond"), UNLOCK_LABELS, e.get("unlock_cond", 6)), e.get("unlock_cond", 6)),
-            ("menu_index", ui_text("ui_galleryartparam_menu_index"), e.get("menu_index", 1)),
-            ("price", ui_text("ui_customcardparam_price"), e.get("price", 0)),
-            ("dlc_id", ui_text("ui_charviewer_dlc_id"), e.get("dlc_id", 0)),
-            ("patch", ui_text("ui_customcardparam_patch"), e.get("patch", 0)),
-        ], columns=3)
-
-        spacer = QWidget()
-        spacer.setFixedHeight(20)
-        spacer.setStyleSheet(ss_transparent())
-        self._editor_layout.addWidget(spacer)
+        self._fields, self._captions, self._grids = {}, {}, []
+        entry = self._entries[idx]
+        self._card(self._title(entry), 'fa6s.images', columns=2)
+        for key, caption in (('art_id', 'gallery_art_id'), ('chara_code', 'ui_galleryartparam_chara_code'),
+                             ('part', 'ui_customcardparam_part'), ('index', 'gallery_index')):
+            self._add_field(key, ui_text(caption), entry)
+        self._card(ui_text('gallery_images'), 'fa6s.image', columns=1,
+                   subtitle=ui_text('gallery_image_scope'))
+        self._preview_kind = EditorValueCombo([('art', ui_text('gallery_full_image')),
+                                               ('icon', ui_text('gallery_icon_image'))], 'art')
+        self._preview_kind.setEditable(False)
+        self._preview_kind.currentIndexChanged.connect(self._refresh_detail)
+        grid = self._grids[-1][0]
+        self._preview = ImagePreview()
+        self._preview_status = QLabel()
+        self._preview_status.setTextFormat(Qt.TextFormat.PlainText)
+        self._preview_status.setWordWrap(True)
+        self._preview_status.setMinimumWidth(0)
+        self._preview_status.setFont(ui_font(TypeSize.BODY))
+        self._preview_status.setStyleSheet(ss_dim_label())
+        grid.addWidget(self._preview_kind, 0, 0)
+        grid.addWidget(self._preview, 1, 0)
+        grid.addWidget(self._preview_status, 2, 0)
+        self._card(ui_text('ui_galleryartparam_text'), 'fa6s.font')
+        for key, caption in (('art_string1', 'gallery_name_message'), ('art_string2', 'gallery_description_message')):
+            self._add_field(key, ui_text(caption), entry)
+        self._card(ui_text('ui_galleryartparam_asset_paths'), 'fa6s.link', columns=1)
+        for key in ('art_path', 'art_name', 'icon_path', 'icon_name'):
+            self._add_field(key, ui_text('ui_galleryartparam_' + key), entry)
+        self._card(ui_text('gallery_access'), 'fa6s.lock')
+        for key, caption in (('unlock_cond', 'ui_charviewer_unlock_condition'), ('price', 'gallery_price'),
+                             ('dlc_id', 'ui_charviewer_dlc_id'), ('patch', 'ui_customcardparam_patch'),
+                             ('menu_index', 'gallery_precheck')):
+            self._add_field(key, ui_text(caption), entry)
+        self._card(ui_text('gallery_diagnostics'), 'fa6s.circle-info', columns=1)
+        self._diagnostics = QLabel()
+        self._diagnostics.setWordWrap(True)
+        self._diagnostics.setTextFormat(Qt.TextFormat.PlainText)
+        self._diagnostics.setMinimumWidth(0)
+        self._diagnostics.setFont(ui_font(TypeSize.BODY))
+        self._diagnostics.setStyleSheet(ss_dim_label())
+        self._grids[-1][0].addWidget(self._diagnostics, 0, 0)
         self._editor_layout.addStretch()
         self._loading_detail = False
+        self._reflow()
+        self._refresh_detail()
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self._current_index is not None and self._last_compact is not None:
-            QTimer.singleShot(0, self._maybe_rebuild_for_compact)
+    def _draft(self):
+        values, errors = {}, []
+        for key, edit in self._fields.items():
+            try:
+                values[key] = parse_field(key, edit.value_text() if isinstance(edit, EditorValueCombo) else edit.text())
+                invalid = False
+            except (ValueError, OverflowError, UnicodeError):
+                errors.append(key)
+                invalid = True
+            if bool(edit.property('galleryInvalid')) != invalid:
+                edit.setStyleSheet(ss_input_validation(invalid))
+                edit.setProperty('galleryInvalid', invalid)
+        return values, errors
 
-    def _maybe_rebuild_for_compact(self):
-        if self._current_index is None or self._loading_detail:
-            return
-        compact = self._is_compact_editor()
-        if compact == self._last_compact:
-            return
-        self._build_editor(self._current_index)
-
-    def _label_with_hint(self, label, names, value):
-        hint = names.get(value)
-        return f"{label} ({hint})" if hint else label
-
-    def _add_section(self, title):
-        self._pending_section_title = title
-
-    def _add_card_grid(self, fields, columns=3):
-        section_title = getattr(self, "_pending_section_title", None)
-        self._pending_section_title = None
-        card, grid = make_editor_grid_card(
-            self._editor_widget,
-            title=section_title,
-            icon_name="fa6s.sliders",
-            vertical_spacing=10,
-        )
-        self._prep_card(card)
-
-        self._active_grid_columns = columns
-        for i, (key, label, value) in enumerate(fields):
-            row, col = divmod(i, columns)
-            self._add_field(grid, row, col, key, label, value)
-
-        self._add_editor_card(card)
-
-    def _add_field(self, grid, row, col, key, label, value, wide=False):
-        f, fl, _label, _hint = make_editor_field_shell(label)
-        self._prep_field_widget(f)
-
-        le = QLineEdit()
-        text = str(value)
-        le.setText(text)
-        le.setCursorPosition(next((i for i, ch in enumerate(text) if ch.isprintable() and ord(ch) >= 32 and ch not in {"\u25a1", "\ufffd"}), 0))
-        le.setFixedHeight(30 if not wide else 36)
-        le.setFont(QFont("Consolas", 13 if not wide else 16))
-        le.setStyleSheet(ss_input())
-        le.setMinimumWidth(0)
-        le.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        le.textChanged.connect(lambda text, k=key: self._on_field_changed(k, text))
-        fl.addWidget(le)
-
-        mapped_row, mapped_col = self._field_position(row, col, getattr(self, "_active_grid_columns", 3))
-        grid.addWidget(f, mapped_row, mapped_col)
-        grid.setColumnStretch(mapped_col, 1)
-        self._fields[key] = le
-
-    def _on_field_changed(self, key, text):
-        if self._loading_detail or self._current_index is None:
-            return
-        e = self._entries[self._current_index]
-        try:
-            if key in {"part", "dlc_id", "patch", "unlock_cond", "menu_index", "price", "index"}:
-                e[key] = int(text.strip() or "0")
-            else:
-                e[key] = text.strip()
-        except ValueError:
-            return
-
-        self._mark_dirty()
-        if key in {"art_id", "chara_code"}:
+    def _apply_fields(self, show_errors=True):
+        if self._current_index is None or not self._fields:
+            return True
+        values, errors = self._draft()
+        if errors:
+            if show_errors:
+                edit = self._fields[errors[0]]
+                QMessageBox.warning(self, ui_text('dlg_title_warning'),
+                                    ui_text('gallery_invalid', field=self._captions[errors[0]]))
+                self._editor_scroll.ensureWidgetVisible(edit)
+                edit.setFocus()
+            return False
+        entry = self._entries[self._current_index]
+        if any(entry[k] != v for k, v in values.items()):
+            entry.update(values)
+            self._cache_search(entry)
             self._refresh_current_button()
+            self._refresh_filters()
+            self._on_filter_changed()
+        return True
+
+    def _changed(self, *args):
+        if self._loading_detail:
+            return
+        self._apply_fields(show_errors=False)
+        self._update_dirty()
+        self._detail_timer.start()
+
+    def _update_dirty(self):
+        _, errors = self._draft()
+        self._dirty = bool(errors) or [self._public(e) for e in self._entries] != self._snapshot
+        self._btn_save.setEnabled(self._raw_data is not None and self._dirty and not errors)
+        set_file_label(self._lbl_file, self._filepath, dirty=self._dirty)
+        refresh_file_actions(self, loaded=self._raw_data is not None)
 
     def _refresh_current_button(self):
         if self._current_index is None:
             return
-        e = self._entries[self._current_index]
-        for btn, i in self._entry_buttons:
-            if i == self._current_index:
-                labels = btn.findChildren(QLabel)
-                if len(labels) >= 2:
-                    title_text = ui_text("ui_customcardparam_entry_value_2", p0=i)
-                    subtitle_text = ui_text("ui_customcardparam_value_value", p0=e.get('art_id', ''), p1=e.get('chara_code', ''))
-                    labels[0].setText(_truncate(title_text, 24))
-                    labels[0].setToolTip(title_text)
-                    labels[1].setText(_truncate(subtitle_text, 28))
-                    labels[1].setToolTip(subtitle_text)
+        entry = self._entries[self._current_index]
+        for button, idx in self._entry_buttons:
+            if idx == self._current_index:
+                button.set_texts(self._title(entry), entry['art_id'] + ' · ' + part_name(entry['part']))
+                button.setToolTip(self._title(entry))
                 break
 
-    def _on_filter_changed(self):
-        self._filter_text = self._search.text()
-        self._populate_list(preserve_selection=self._current_index)
+    def _refresh_detail(self, *args):
+        if self._current_index is None or not self._fields or self._loading_detail:
+            return
+        values, errors = self._draft()
+        if errors:
+            self._diagnostics.setText(ui_text('gallery_pending'))
+            # Never leave an old image presented as the result of invalid text.
+            self._image_token += 1
+            self._image_signature = None
+            self._preview.set_image(None)
+            self._preview_status.setText(ui_text('gallery_pending'))
+            self._reflow()
+            return
+        entry = dict(self._entries[self._current_index], **values)
+        issues = entry_issues(entry, self._entries, self._entries[self._current_index])
+        self._diagnostics.setText('\n'.join(issues) if issues else ui_text('gallery_no_issues'))
+        kind = self._preview_kind.currentData()
+        signature = (kind, entry[kind + '_path'], entry[kind + '_name'], self._root, current_language())
+        if signature != self._image_signature:
+            self._image_signature = signature
+            self._image_token += 1
+            self._preview.set_image(None)
+            self._preview_status.setText(ui_text('gallery_loading'))
+            job = _ImageJob(self._signals, self._image_token, kind, self._root,
+                            entry[kind + '_path'], entry[kind + '_name'], signature[-1], loader=load_image)
+            self._image_pool.clear()
+            self._image_pool.start(job)
+        self._reflow()
 
-    def _mark_dirty(self):
-        self._dirty = True
-        self._btn_save.setEnabled(self._filepath is not None)
-        set_file_label(self._lbl_file, self._filepath, dirty=True)
+    def _image_ready(self, token, kind, image, names, error):
+        if token != self._image_token or not self._fields:
+            return
+        self._preview.set_image(image)
+        self._preview_status.setText(error if error else ui_text('gallery_image_size', width=image.width, height=image.height))
+        if image is not None and self._image_signature is not None:
+            try:
+                path = resource_path(self._root, self._image_signature[1], self._image_signature[-1])
+                self._preview_status.setText(self._preview_status.text() + '\n' +
+                                            'data/' + path.relative_to(self._root).as_posix())
+            except (OSError, ValueError, AttributeError):
+                pass  # An already decoded image may outlive a removed resource.
+        edit = self._fields[kind + '_name']
+        value = edit.value_text()
+        edit.blockSignals(True)
+        # Suggestions never replace custom or unfinished input.
+        for name in names:
+            if edit.findData(name) < 0:
+                edit.addItem(name, name)
+        index = edit.findData(value)
+        edit.setCurrentIndex(index)
+        if index < 0:
+            edit.setEditText(value)
+        edit.blockSignals(False)
+        self._reflow()
+
+    def _reflow(self):
+        width = self._editor_scroll.viewport().width()
+        for grid, frames, maximum in self._grids:
+            columns = 1 if width < 760 else maximum
+            for col in range(maximum):
+                grid.setColumnStretch(col, int(col < columns))
+            for i, frame in enumerate(frames):
+                row, col = divmod(i, columns)
+                position = grid.indexOf(frame)
+                if position < 0 or grid.getItemPosition(position) != (row, col, 1, 1):
+                    grid.addWidget(frame, row, col, Qt.AlignmentFlag.AlignTop)
+        fit_scroll_page(self._editor_scroll)
+
+    def eventFilter(self, watched, event):
+        if watched is self._editor_scroll.viewport() and event.type() == QEvent.Type.Resize:
+            QTimer.singleShot(0, self._reflow)
+        return super().eventFilter(watched, event)
 
     def _do_open(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_galleryartparam_open_galleryartparam"),
-            game_files_dialog_dir(os.path.expanduser("~"), ("GalleryArtParam.xfbin", "GalleryArtParam.bin.xfbin")),
-            "XFBIN files (*.xfbin);;All files (*)",
-        )
-        if not path:
-            return
-        create_backup_on_open(path)
+        path, _ = QFileDialog.getOpenFileName(self, ui_text('ui_galleryartparam_open_galleryartparam'),
+            game_files_dialog_dir(target_patterns=('GalleryArtParam.xfbin', 'GalleryArtParam.bin.xfbin')),
+            'XFBIN files (*.xfbin);;All files (*)')
+        if path:
+            self._load_file(path)
+
+    def _load_file(self, path):
         try:
             raw, version, entries = parse_galleryartparam_xfbin(path)
         except Exception as exc:
-            QMessageBox.critical(self, ui_text("dlg_title_error"), ui_text("ui_customizedefaultparam_failed_to_load_file_value", p0=exc))
-            return
-
-        self._filepath = path
-        self._raw_data = raw
-        self._version = version
-        self._entries = entries
-        self._dirty = False
+            QMessageBox.critical(self, ui_text('dlg_title_error'), ui_text('msg_load_error', error=exc))
+            return False
+        if self._dirty:
+            reply = QMessageBox.question(self, ui_text('dlg_title_warning'), ui_text('term_discard_changes'),
+                QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if reply != QMessageBox.StandardButton.Discard:
+                return False
+        create_backup_on_open(path)
+        self._detail_timer.stop()
+        self._image_pool.clear()
+        self._image_token += 1
         self._current_index = None
-        self._btn_add.setEnabled(True)
-        self._btn_save.setEnabled(False)
-        set_file_label(self._lbl_file, path)
-        self._search.setText("")
-        self._filter_text = ""
+        self._fields = {}
+        self._filepath, self._raw_data, self._version, self._entries = str(path), raw, version, entries
+        self._root = data_root(path, load_settings().get('game_files_dir', ''))
+        self._snapshot = [self._public(e) for e in entries]
+        self._dirty = False
+        self._search_cache.clear()
+        self._search.blockSignals(True)
+        self._search.clear()
+        self._search.blockSignals(False)
+        for combo in (self._part_filter, self._unlock_filter):
+            combo.blockSignals(True)
+            combo.setCurrentIndex(0)
+            combo.blockSignals(False)
         self._populate_list()
+        self._btn_add.setEnabled(True)
+        self._update_dirty()
+        return True
 
-    def _do_save(self):
-        if not self._filepath or self._raw_data is None:
-            return
+    def _do_save(self, target_path=None):
+        path = target_path or editor_path(self)
+        if not path or self._raw_data is None or not self._apply_fields():
+            return False
         try:
-            save_galleryartparam_xfbin(self._filepath, self._raw_data, self._version, self._entries)
-            with open(self._filepath, "rb") as fh:
-                self._raw_data = bytearray(fh.read())
-            self._dirty = False
-            self._btn_save.setEnabled(False)
-            set_file_label(self._lbl_file, self._filepath)
+            save_galleryartparam_xfbin(path, self._raw_data, self._version, self._entries)
+            raw, _, saved = parse_galleryartparam_xfbin(path)
+            for entry, disk in zip(self._entries, saved):
+                entry.update({k: v for k, v in disk.items() if k.startswith('_')})
+            self._raw_data = raw
+            commit_save_path(self, str(path))
+            self._snapshot = [self._public(e) for e in self._entries]
+            self._update_dirty()
+            return True
         except Exception as exc:
-            QMessageBox.critical(self, ui_text("ui_customizedefaultparam_save_failed"), str(exc))
+            QMessageBox.critical(self, ui_text('dlg_title_error'), ui_text('msg_save_error', error=exc))
+            return False
+
+    def _new_identity(self):
+        try:
+            return next_identity(self._entries)
+        except ValueError as exc:
+            QMessageBox.warning(self, ui_text('dlg_title_warning'), str(exc))
+            return None
 
     def _do_add(self):
-        if self._raw_data is None:
+        if self._raw_data is None or not self._apply_fields():
             return
-        self._entries.append(make_default_entry(len(self._entries)))
-        self._mark_dirty()
-        self._populate_list(preserve_selection=len(self._entries) - 1)
+        identity = self._new_identity()
+        if identity is None:
+            return
+        index, name = identity
+        entry = make_default_entry(index)
+        entry['art_id'] = name
+        self._entries.append(entry)
+        self._current_index, self._fields = None, {}
+        self._populate_list(len(self._entries) - 1)
+        self._update_dirty()
 
     def _do_dup(self):
-        if self._current_index is None:
+        if self._current_index is None or not self._apply_fields():
             return
-        new_e = copy.deepcopy(self._entries[self._current_index])
-        self._entries.insert(self._current_index + 1, new_e)
-        self._mark_dirty()
-        self._populate_list(preserve_selection=self._current_index + 1)
+        identity = self._new_identity()
+        if identity is None:
+            return
+        index = self._current_index + 1
+        entry = copy.deepcopy(self._entries[self._current_index])
+        entry['index'], entry['art_id'] = identity
+        self._entries.insert(index, entry)
+        self._current_index, self._fields = None, {}
+        self._populate_list(index)
+        self._update_dirty()
 
     def _do_del(self):
-        if self._current_index is None:
+        if self._current_index is None or not self._apply_fields():
             return
-        e = self._entries[self._current_index]
-        reply = QMessageBox.question(
-            self, ui_text("ui_customizedefaultparam_delete_entry"),
-            ui_text("ui_dlcinfoparam_delete_entry_value_value_value", p0=self._current_index, p1=e.get('art_id', ''), p2=e.get('art_name', '')),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        entry = self._entries[self._current_index]
+        if QMessageBox.question(self, ui_text('ui_customizedefaultparam_delete_entry'),
+                ui_text('ui_dlcinfoparam_delete_entry_value_value_value', p0=self._current_index,
+                        p1=entry['art_id'], p2=self._title(entry)),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
-        old_idx = self._current_index
-        self._entries.pop(old_idx)
-        self._mark_dirty()
-        new_sel = min(old_idx, len(self._entries) - 1) if self._entries else None
-        self._current_index = None
-        self._populate_list(preserve_selection=new_sel)
+        index = self._current_index
+        self._entries.pop(index)
+        self._current_index, self._fields = None, {}
+        self._populate_list(min(index, len(self._entries) - 1) if self._entries else None)
+        self._update_dirty()

@@ -23,7 +23,7 @@ Clump struct (56 bytes, repeated clump_count times):
   +8   uint64 LE  clump_name_off   → relative ptr to clump name string
   +16  uint64 LE  unk_name_off     → relative ptr to unk string (often empty)
   +24  uint64 LE  unk2_name_off    → relative ptr to unk2 string (often empty)
-  +32  16 bytes   skip_data        (uint32 flag, float, 8 zero bytes)
+  +32  16 bytes   skip_data        (uint32, float, 8 opaque bytes)
   +48  uint32 LE  val1
   +52  uint32 LE  val2
 
@@ -32,19 +32,24 @@ using  pad = (8 − (sizeof_incl_null % 8)) % 8  (standard 8-byte alignment).
 Stage codes use variable-length aligned strings (same _str_padded formula as all other strings).
 """
 
+import os
 import struct
+import tempfile
 
 # Constants
 STAGE_HDR_SIZE   = 40     # 5 × uint64
-STAGE_PARAM_SIZE = 136    # 17 × uint32 of stage environment parameters
+STAGE_PARAM_SIZE = 136    # 34 words; preserve the entire block
 STAGE_BLOCK_SIZE = 176    # STAGE_HDR_SIZE + STAGE_PARAM_SIZE
 STAGE_CODE_SIZE  = 24     # fixed char[24] field
 CLUMP_STRUCT_SIZE = 56    # 4 ptr × 8 + 16 skip + 2 × uint32
 
 # Stage params field layout (offsets relative to start of the 136-byte block)
 # Layout:  6 × 4-byte colour  |  3 × float32  |  uint32 flag1
-#          4-byte colour7     |  8 zero bytes  |  float1  |  float2
-#          4-byte colour8     |  uint32 flag2  |  7 × float32  |  40 zero bytes
+#          4-byte colour7     |  8 opaque bytes  |  float1  |  float2
+#          4-byte colour8     |  uint32 flag2  |  7 × float32  |  40 opaque bytes
+# Colours are packed MSB-first RGBA (disk A, B, G, R), native RVA 6DCC90.
+# Native RVA 603728 also copies words within both opaque spans. Their effects
+# are unresolved, so the legacy PARAM_ZEROS names below do not imply padding.
 
 PARAM_COLORS       = [(i*4, f"Color {i+1}") for i in range(6)]          # bytes 0-23
 PARAM_POS_X        = (24,  "Pos X (float)")
@@ -100,7 +105,9 @@ def _str_padded(s):
 
     Standard alignment: pad = (8 - (n % 8)) % 8  (0..7, can be 0).
     """
-    encoded = s.encode('ascii', errors='replace')
+    if '\0' in s:
+        raise ValueError('Stage Info strings cannot contain null characters')
+    encoded = s.encode('ascii')
     n       = len(encoded) + 1          # including null terminator
     pad     = (8 - (n % 8)) % 8        # 0..7
     return encoded + b'\x00' * (1 + pad)
@@ -355,8 +362,15 @@ def save_stageinfo_xfbin(filepath, raw, result):
 
     buf = raw[:bin_hdr_off] + new_hdr + out + raw[old_chunk_end:]
 
-    with open(filepath, 'wb') as f:
-        f.write(buf)
+    destination = os.path.abspath(filepath)
+    fd, temporary = tempfile.mkstemp(prefix='.arrow-stage-', dir=os.path.dirname(destination))
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(buf)
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 # Stage params helpers (for the editor)

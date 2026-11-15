@@ -1,3 +1,4 @@
+import struct
 from .binary_reader import BrStruct, BinaryReader, Endian, Whence
 
 
@@ -11,13 +12,13 @@ class BrNut(BrStruct):
         self.version = br.read_uint16()
         self.texture_count = br.read_uint16()
         br.read_uint32(2)   # 8 bytes padding
+        self.header_template = bytes(br.buffer()[:16])
         self.textures = list(br.read_struct(BrNutTexture, self.texture_count, self))
 
     def __br_write__(self, br: BinaryReader, nut):
-        br.write_str('NTP3')
-        br.write_uint16(0x0100)
-        br.write_uint16(len(nut.textures))
-        br.write_uint64(0)
+        header = bytearray(getattr(nut, 'header_template', b'NTP3\x01\x00\x00\x00' + bytes(8)))
+        struct.pack_into('>H', header, 6, len(nut.textures))
+        br.write_bytes(bytes(header))
         for tex in nut.textures:
             br.write_struct(BrNutTexture(), tex)
 
@@ -83,24 +84,21 @@ class BrNutTexture(BrStruct):
         else:
             self.mipmaps      = [br.read_bytes(self.data_size)]
             self.texture_data = self.mipmaps[0]
+        self._raw_record = bytes(br.buffer()[start:start + self.total_size])
 
     def __br_write__(self, br: BinaryReader, nut_tex):
+        if getattr(nut_tex, '_raw_record', None) is not None and nut_tex.storage_key() == nut_tex._original_key:
+            br.write_bytes(nut_tex._raw_record)
+            return
         start = br.pos()
-        br.write_uint32(nut_tex.total_size)
-        br.write_uint32(0)
-        br.write_uint32(nut_tex.data_size)
-        br.write_uint16(nut_tex.header_size)
-        br.write_uint16(0)
-        br.write_uint8(0)
-        br.write_uint8(nut_tex.mipmap_count)
-        br.write_uint8(0)
-        br.write_uint8(nut_tex.pixel_format)
-        br.write_uint16(nut_tex.width)
-        br.write_uint16(nut_tex.height)
-        br.write_uint32(0)
-        br.write_uint32(nut_tex.cubemap_format)
-        for _ in range(4):
-            br.write_uint32(0)
+        header = bytearray(getattr(nut_tex, '_header_template', None) or bytes(48))
+        struct.pack_into('>I', header, 0, nut_tex.total_size)
+        struct.pack_into('>I', header, 8, nut_tex.data_size)
+        struct.pack_into('>H', header, 12, nut_tex.header_size)
+        header[17], header[19] = nut_tex.mipmap_count, nut_tex.pixel_format
+        struct.pack_into('>HH', header, 20, nut_tex.width, nut_tex.height)
+        struct.pack_into('>I', header, 28, nut_tex.cubemap_format)
+        br.write_bytes(bytes(header))
 
         if nut_tex.cubemap_format & 0x200:
             br.write_uint32(nut_tex.cubemap_size)
@@ -115,18 +113,10 @@ class BrNutTexture(BrStruct):
             if used % 0x10:
                 br.write_bytes(b'\x00' * (0x10 - (used % 0x10)))
 
-        # eXt section
-        br.write_str('eXt')
-        br.write_uint8(0)
-        br.write_uint32(0x20)
-        br.write_uint32(0x10)
-        br.write_uint32(0)
-
-        # GIDX section
-        br.write_str('GIDX')
-        br.write_uint32(0x10)
-        br.write_uint32(0)
-        br.write_uint32(0)
+        extension = bytearray(getattr(nut_tex, '_extension_template', None) or (
+            b'eXt\0' + struct.pack('>III', 0x20, 0x10, 0) + b'GIDX' + struct.pack('>III', 0x10, 0, 0)))
+        struct.pack_into('>I', extension, 24, getattr(nut_tex, 'hash_id', 0))
+        br.write_bytes(bytes(extension))
 
         # Texture data
         if nut_tex.is_cube_map:

@@ -8,7 +8,7 @@ Binary layout (inside the XFBIN binary chunk):
   [20]     notes[first_pointer - 8]
   [20+]    entries × 40 bytes each
            +0  uint32  interaction_type  (0=Unknown, 1=BattleStart, 2=RoundWin, 3=BattleWin)
-           +4  uint32  is_round_win      (Bool 0/1)
+           +4  uint32  is_round_win      (stock: 1 for type 2, else 0; runtime meaning unverified)
            +8  uint64  ptr  → char1  string
            +16 uint64  ptr  → char2  string
            +24 uint64  ptr  → dialogue1 string
@@ -21,6 +21,8 @@ Pointer resolution:
 """
 
 import struct
+import os
+import tempfile
 
 
 # constants
@@ -49,9 +51,11 @@ def _read_cstr(data: bytes | bytearray, off: int) -> str:
 def _find_binary_chunk(data: bytes | bytearray):
     """
     Return (chunk_header_offset, chunk_size) for the first nuccChunkBinary.
-    The chunk header is 12 bytes: size(4 BE), type_idx(2 BE), path_idx(2 BE), flags(4 BE).
+    The chunk header is 12 bytes: size(4 BE), map_idx(4 BE), version/flags(4 BE).
     chunk_size is the value stored in the 4-byte field (bytes of chunk payload).
     """
+    if len(data) < 28 or data[:4] != b'NUCC':
+        raise ValueError('Not a NUCC/XFBIN file')
     chunk_table_size = struct.unpack(">I", data[16:20])[0]
     offset = 28 + chunk_table_size
     if offset % 4:
@@ -59,11 +63,8 @@ def _find_binary_chunk(data: bytes | bytearray):
 
     while offset + 12 <= len(data):
         size = struct.unpack(">I", data[offset: offset + 4])[0]
-        type_idx = struct.unpack(">H", data[offset + 4: offset + 6])[0]
-        if size > 0 and type_idx == 1:          # nuccChunkBinary is always type index 1
-            return offset, size
-        # also accept any large chunk as the binary chunk
-        if size > 512:
+        type_idx = struct.unpack(">I", data[offset + 4: offset + 8])[0]
+        if size >= 20 and type_idx == 1:
             return offset, size
         next_off = offset + 12 + size
         if next_off % 4:
@@ -85,8 +86,8 @@ def parse_speaking_xfbin(filepath: str) -> tuple[bytearray, int, list[dict]]:
         (raw_xfbin_data, version, entries)
 
     Each entry dict has keys:
-        interaction_type  int   0-3
-        is_round_win      int   0 or 1
+        interaction_type  int   uint32, including custom types
+        is_round_win      int   stored uint32, including custom values
         char1             str
         char2             str
         dialogue1         str
@@ -95,8 +96,19 @@ def parse_speaking_xfbin(filepath: str) -> tuple[bytearray, int, list[dict]]:
     with open(filepath, "rb") as fh:
         data = bytearray(fh.read())
 
-    chunk_hdr_off, _chunk_size = _find_binary_chunk(data)
+    version, entries, _notes = _parse_data(data)
+    return data, version, entries
+
+
+def _parse_data(data):
+    if len(data) < 28:
+        raise ValueError('Truncated XFBIN header')
+
+    chunk_hdr_off, chunk_size = _find_binary_chunk(data)
     payload_off = chunk_hdr_off + 12   # start of chunk payload
+    payload_end = payload_off + chunk_size
+    if chunk_size < 20 or payload_end > len(data):
+        raise ValueError('Truncated SpeakingLineParam payload')
 
     # The payload starts with a 4-byte BE inner size, then the SpeakingLineParam struct
     spm_off = payload_off + 4          # SpeakingLineParam struct starts here
@@ -105,6 +117,8 @@ def parse_speaking_xfbin(filepath: str) -> tuple[bytearray, int, list[dict]]:
     count   = struct.unpack_from("<I", data, spm_off + 4)[0]
     first_ptr = struct.unpack_from("<Q", data, spm_off + 8)[0]
     notes_len = first_ptr - 8
+    if notes_len < 0 or spm_off + HEADER_SIZE + notes_len + count * ENTRY_SIZE > payload_end:
+        raise ValueError('Invalid SpeakingLineParam record table')
 
     entries_base = spm_off + HEADER_SIZE + notes_len
 
@@ -117,7 +131,13 @@ def parse_speaking_xfbin(filepath: str) -> tuple[bytearray, int, list[dict]]:
         def _str(ptr_idx: int) -> str:
             field_off = e_off + 8 + ptr_idx * 8
             ptr_val   = struct.unpack_from("<Q", data, field_off)[0]
-            return _read_cstr(data, field_off + ptr_val)
+            target = field_off + ptr_val
+            if target >= payload_end:
+                raise ValueError('SpeakingLineParam string pointer outside payload')
+            end = data.find(b'\x00', target, payload_end)
+            if end < 0:
+                raise ValueError('Unterminated SpeakingLineParam string')
+            return bytes(data[target:end]).decode('utf-8', errors='strict')
 
         entries.append({
             "interaction_type": int(interaction),
@@ -128,10 +148,11 @@ def parse_speaking_xfbin(filepath: str) -> tuple[bytearray, int, list[dict]]:
             "dialogue2": _str(3),
         })
 
-    return data, version, entries
+    notes = bytes(data[spm_off + HEADER_SIZE:entries_base])
+    return version, entries, notes
 
 
-def _build_spm_binary(version: int, entries: list[dict]) -> bytes:
+def _build_spm_binary(version: int, entries: list[dict], notes: bytes = b'') -> bytes:
     """
     Build the SpeakingLineParam binary (WITHOUT the leading 4-byte BE size).
 
@@ -147,6 +168,8 @@ def _build_spm_binary(version: int, entries: list[dict]) -> bytes:
     pool_map: dict[str, int] = {}   # string → byte offset in pool
 
     def pool_add(s: str) -> int:
+        if '\x00' in s:
+            raise ValueError('String IDs cannot contain NUL characters')
         if s not in pool_map:
             pool_map[s] = len(pool_bytes)
             pool_bytes.extend(s.encode("utf-8") + b"\x00")
@@ -167,13 +190,14 @@ def _build_spm_binary(version: int, entries: list[dict]) -> bytes:
     # Header
     buf += struct.pack("<I", version)      # version
     buf += struct.pack("<I", count)        # count
-    buf += struct.pack("<Q", 8)            # first_pointer = 8 (no notes)
+    buf += struct.pack("<Q", 8 + len(notes))
+    buf += notes
 
     # String pool starts right after all entry records
-    pool_start = HEADER_SIZE + count * ENTRY_SIZE
+    pool_start = HEADER_SIZE + len(notes) + count * ENTRY_SIZE
 
     for i, (e, (o1, o2, o3, o4)) in enumerate(zip(entries, string_offsets)):
-        entry_start = HEADER_SIZE + i * ENTRY_SIZE
+        entry_start = HEADER_SIZE + len(notes) + i * ENTRY_SIZE
 
         buf += struct.pack("<I", e["interaction_type"])
         buf += struct.pack("<I", e["is_round_win"])
@@ -207,7 +231,11 @@ def save_speaking_xfbin(filepath: str, original_data: bytearray,
       [284..]    binary chunk payload             ← rebuilt here
       [last 20]  page/index trailing chunk        ← kept intact
     """
-    new_spm = _build_spm_binary(version, entries)
+    old_version, old_entries, notes = _parse_data(original_data)
+    if old_version == version and old_entries == entries:
+        _atomic_write(filepath, bytes(original_data))
+        return
+    new_spm = _build_spm_binary(version, entries, notes)
 
     # Inner size field (BE uint32) = len(new_spm)
     inner_size = len(new_spm)
@@ -237,5 +265,16 @@ def save_speaking_xfbin(filepath: str, original_data: bytearray,
 
     result = prefix + new_hdr + new_payload + trailing
 
-    with open(filepath, "wb") as fh:
-        fh.write(result)
+    _atomic_write(filepath, result)
+
+
+def _atomic_write(filepath, data):
+    directory = os.path.dirname(os.path.abspath(filepath))
+    fd, temporary = tempfile.mkstemp(prefix='.arrow-dialogue-', dir=directory)
+    try:
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(data)
+        os.replace(temporary, filepath)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)

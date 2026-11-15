@@ -13,14 +13,10 @@ Each entry is 72 bytes and uses self-relative string pointers:
   +16  uint64 LE  - move name text key pointer
   +24  uint64 LE  - command/detail text key pointer
   +32  uint64 LE  - command input text key pointer
-  +40  uint32 LE  - unk5
-  +44  uint32 LE  - unk6
-  +48  uint32 LE  - unk7
-  +52  uint32 LE  - unk8
-  +56  uint32 LE  - unk9
-  +60  uint32 LE  - unk10
-  +64  uint32 LE  - commandListNum / order value
-  +68  int32  LE  - unk12
+  +40..+56 uint32 LE - five condition tag IDs (native signed > 0 test)
+  +60  uint32 LE  - move-list check mark available when exactly 1
+  +64  int32  LE  - primary commandListNum link (-1 = absent)
+  +68  int32  LE  - secondary commandListNum link (-1 = absent)
 
 Strings are null-terminated ASCII and 8-byte aligned in retail files.
 """
@@ -28,7 +24,9 @@ Strings are null-terminated ASCII and 8-byte aligned in retail files.
 from __future__ import annotations
 
 import copy
+import os
 import struct
+import tempfile
 
 
 ENTRY_SIZE = 72
@@ -147,7 +145,7 @@ def parse_commandlistparam_xfbin(filepath: str) -> tuple[bytearray, dict]:
             for ptr in (ptrs[key],)
         }
         move_type = struct.unpack_from("<Q", data, base + 8)[0]
-        values = struct.unpack_from("<IIIIIIIi", data, base + 40)
+        values = struct.unpack_from("<IIIIIIii", data, base + 40)
         entry = {
             "char_id": strings["char_id"],
             "move_type": move_type,
@@ -197,7 +195,9 @@ def make_default_entry(source: dict | None = None) -> dict:
 
 def _pad_string(pool: bytearray, text: str) -> int:
     off = len(pool)
-    pool.extend(str(text).encode("ascii", errors="replace") + b"\x00")
+    if '\x00' in text:
+        raise ValueError('Move List keys cannot contain NUL characters.')
+    pool.extend(str(text).encode("ascii") + b"\x00")
     rem = len(pool) % 8
     if rem:
         pool.extend(b"\x00" * (8 - rem))
@@ -263,5 +263,14 @@ def save_commandlistparam_xfbin(filepath: str, original_data: bytearray, result:
     if orig_end % 4:
         orig_end += 4 - orig_end % 4
 
-    with open(filepath, "wb") as fh:
-        fh.write(bytes(original_data[:chunk_hdr_off]) + bytes(chunk_hdr) + payload + bytes(original_data[orig_end:]))
+    staged = bytes(original_data[:chunk_hdr_off]) + bytes(chunk_hdr) + payload + bytes(original_data[orig_end:])
+    fd, temporary = tempfile.mkstemp(prefix='.arrow-movelist-', dir=os.path.dirname(os.path.abspath(filepath)))
+    try:
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(staged)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, filepath)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)

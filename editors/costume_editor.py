@@ -1,3 +1,39 @@
+from core.design_tokens import (
+    Insets,
+    LayoutRole,
+    Size,
+    TypeSize,
+    mono_font,
+    ui_font,
+)
+from core.style_helpers import (
+    add_editor_card_title,
+    make_editor_card,
+    make_editor_field_shell,
+    make_empty_state,
+    ss_bg_dark,
+    ss_dim_label,
+    ss_main_label,
+    ss_panel_title,
+    ss_sidebar_btn,
+    ss_tab_widget,
+    ss_transparent,
+)
+from core.ui.editor_widgets import (
+    EditorActionRow,
+    EditorSeparator,
+    EditorSidebar,
+    EditorToolbar,
+    configure_button,
+    configure_field,
+    configure_file_label,
+    configure_input,
+    configure_layout,
+    configure_scrollarea,
+    configure_search,
+)
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.editor_actions import commit_save_path, editor_path, install_file_actions
 import os
 import copy
 import threading
@@ -10,15 +46,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QColor, QCursor
 from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal
 from core.themes import P
-from core.style_helpers import (
-    ss_btn, ss_accent_sep, ss_input,
-    ss_scrollarea, ss_scrollarea_transparent, ss_file_label,
-    ss_main_label, ss_dim_label,
-    ss_panel_title, ss_tab_widget, ss_transparent, ss_search,
-    ss_sidebar_btn, ss_bg_dark, ss_bg_panel, ss_sidebar_frame, ss_sep,
-    make_editor_card, make_empty_state, make_editor_field_shell, add_editor_card_title,
-    TOOLBAR_H, TOOLBAR_BTN_H,
-)
 from core.editor_file_state import set_file_label, set_file_label_empty
 from core.skeleton import SkeletonListRow, SkeletonBar
 from parsers.costume_parser import parse_costume_xfbin, save_costume_xfbin
@@ -82,125 +109,107 @@ class CostumeEditor(QWidget):
         self._sig_load_error.connect(self._on_load_error)
 
         self._build_ui()
+        install_file_actions(self, self._save_btn, save_to=lambda path: self._save_file(target_path=path))
+        install_editor_chrome(self)
 
     def _build_ui(self):
         self.setStyleSheet(ss_bg_dark())
         outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(0, 0, 0, 0)
-        outer_layout.setSpacing(0)
+        configure_layout(outer_layout, LayoutRole.ROOT)
 
         # Top bar
-        top = QFrame(self)
-        top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(ss_bg_panel())
-        top_layout = QHBoxLayout(top)
-        top_layout.setContentsMargins(12, 8, 12, 8)
-        top_layout.setSpacing(4)
+        top = EditorToolbar(self)
+        top_layout = top.content_layout
 
         open_btn = QPushButton(self.t("btn_open_file"), top)
-        open_btn.setFixedHeight(TOOLBAR_BTN_H)
-        open_btn.setFont(QFont("Segoe UI", 10))
-        open_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(open_btn, accent=True)
         open_btn.clicked.connect(self._load_file)
+        open_btn.setProperty("designAction", 'open')
         top_layout.addWidget(open_btn)
 
         self._save_btn = QPushButton(self.t("btn_save_file"), top)
-        self._save_btn.setFixedHeight(TOOLBAR_BTN_H)
-        self._save_btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self._save_btn.setEnabled(False)
-        self._save_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._save_btn, accent=True)
         self._save_btn.clicked.connect(self._save_file)
         top_layout.addWidget(self._save_btn)
 
         self._file_label = QLabel(self.t("no_file_loaded"), top)
-        self._file_label.setFont(QFont("Consolas", 12))
-        self._file_label.setStyleSheet(ss_file_label())
+
+        configure_file_label(self._file_label)
         top_layout.addWidget(self._file_label)
         top_layout.addStretch()
 
         outer_layout.addWidget(top)
 
         # Separator
-        sep = QFrame(self)
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
+        sep = EditorSeparator(self, accent=True)
+
+
         outer_layout.addWidget(sep)
 
         # Main area
         main = QWidget(self)
         main.setStyleSheet(ss_bg_dark())
         main_layout = QHBoxLayout(main)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        configure_layout(main_layout, LayoutRole.ROOT)
 
         # Character list sidebar
-        list_frame = QFrame(main)
-        list_frame.setFixedWidth(276)
-        list_frame.setStyleSheet(ss_sidebar_frame())
-        list_layout = QVBoxLayout(list_frame)
-        list_layout.setContentsMargins(0, 0, 0, 0)
-        list_layout.setSpacing(0)
+        list_frame = EditorSidebar(main, width=276)
+
+
+        list_layout = list_frame.content_layout
+
 
         # Search
         search_frame = QWidget(list_frame)
         search_frame.setStyleSheet(ss_transparent())
         search_layout = QHBoxLayout(search_frame)
-        search_layout.setContentsMargins(8, 8, 8, 4)
+        configure_layout(search_layout, LayoutRole.ROOT)
         self._search_entry = QLineEdit(search_frame)
-        self._search_entry.setPlaceholderText(self.t("search_placeholder"))
-        self._search_entry.setFixedHeight(32)
-        self._search_entry.setFont(QFont("Segoe UI", 13))
-        self._search_entry.setStyleSheet(ss_search())
+        configure_search(self._search_entry)
         self._search_entry.textChanged.connect(self._filter_list)
         search_layout.addWidget(self._search_entry)
         list_layout.addWidget(search_frame)
 
         # Actions
-        actions_frame = QWidget(list_frame)
-        actions_frame.setStyleSheet(ss_transparent())
-        actions_layout = QHBoxLayout(actions_frame)
-        actions_layout.setContentsMargins(8, 2, 8, 4)
-        actions_layout.setSpacing(4)
-        btn_font = QFont("Segoe UI", 10)
+        actions_frame = EditorActionRow(list_frame)
+        actions_layout = actions_frame.content_layout
+        btn_font = ui_font(TypeSize.BODY)
 
         self._add_btn = QPushButton(self.t("btn_new"), actions_frame)
-        self._add_btn.setFixedHeight(28)
-        self._add_btn.setFont(btn_font)
         self._add_btn.setEnabled(False)
-        self._add_btn.setStyleSheet(ss_btn())
+        configure_button(self._add_btn, height=Size.COMPACT_CONTROL)
         self._add_btn.clicked.connect(self._add_new_char)
+        self._add_btn.setProperty("designAction", 'new')
         actions_layout.addWidget(self._add_btn, 1)
 
         self._dup_btn = QPushButton(self.t("btn_duplicate"), actions_frame)
-        self._dup_btn.setFixedHeight(28)
-        self._dup_btn.setFont(btn_font)
         self._dup_btn.setEnabled(False)
-        self._dup_btn.setStyleSheet(ss_btn())
+        configure_button(self._dup_btn, height=Size.COMPACT_CONTROL)
         self._dup_btn.clicked.connect(self._duplicate_char)
+        self._dup_btn.setProperty("designAction", 'duplicate')
         actions_layout.addWidget(self._dup_btn, 1)
 
         self._del_btn = QPushButton(self.t("btn_delete"), actions_frame)
-        self._del_btn.setFixedHeight(28)
-        self._del_btn.setFont(btn_font)
         self._del_btn.setEnabled(False)
-        self._del_btn.setStyleSheet(ss_btn(danger=True))
+        configure_button(self._del_btn, danger=True, height=Size.COMPACT_CONTROL)
         self._del_btn.clicked.connect(self._delete_char)
+        self._del_btn.setProperty("designAction", 'delete')
         actions_layout.addWidget(self._del_btn, 1)
 
         list_layout.addWidget(actions_frame)
 
         # Scrollable character list
         self._char_scroll = QScrollArea(list_frame)
-        self._char_scroll.setWidgetResizable(True)
-        self._char_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._char_scroll.setStyleSheet(ss_scrollarea_transparent())
+
+
+        configure_scrollarea(self._char_scroll, transparent=True)
         self._char_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._char_list_widget = QWidget()
         self._char_list_widget.setMinimumWidth(0)
         self._char_list_widget.setStyleSheet(ss_transparent())
         self._char_list_layout = QVBoxLayout(self._char_list_widget)
-        self._char_list_layout.setContentsMargins(0, 0, 0, 0)
-        self._char_list_layout.setSpacing(1)
+        configure_layout(self._char_list_layout, LayoutRole.LIST)
         self._char_list_layout.addStretch()
         self._char_scroll.setWidget(self._char_list_widget)
         list_layout.addWidget(self._char_scroll)
@@ -208,22 +217,21 @@ class CostumeEditor(QWidget):
         main_layout.addWidget(list_frame)
 
         # Divider line
-        divider = QFrame(main)
-        divider.setFixedWidth(1)
-        divider.setStyleSheet(ss_sep())
+        divider = EditorSeparator(main, orientation=Qt.Orientation.Vertical)
+
+
         main_layout.addWidget(divider)
 
         # Editor panel (scrollable)
         self._editor_scroll = QScrollArea(main)
-        self._editor_scroll.setWidgetResizable(True)
-        self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+
         self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._editor_scroll.setStyleSheet(ss_scrollarea())
+        configure_scrollarea(self._editor_scroll)
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(12, 12, 12, 12)
-        self._editor_layout.setSpacing(8)
+        configure_layout(self._editor_layout, LayoutRole.PAGE)
         self._editor_scroll.setWidget(self._editor_widget)
 
         self._show_placeholder()
@@ -270,21 +278,18 @@ class CostumeEditor(QWidget):
         hdr, hdr_layout = self._make_editor_card(margins=(16, 14, 16, 14), spacing=8)
         hdr_layout.addWidget(SkeletonBar(hdr, height=36, corner_radius=5))
         self._editor_layout.addWidget(hdr)
-        self._editor_layout.setContentsMargins(12, 12, 12, 12)
-        self._editor_layout.setSpacing(8)
+        configure_layout(self._editor_layout, LayoutRole.PAGE)
 
         for _ in range(3):
             sec, sec_layout = self._make_editor_card(margins=(12, 12, 12, 12), spacing=8)
 
             g = QWidget(sec)
             g_layout = QGridLayout(g)
-            g_layout.setContentsMargins(0, 0, 0, 0)
-            g_layout.setSpacing(8)
+            configure_layout(g_layout, LayoutRole.TITLE)
             for col in range(4):
                 f = QWidget(g)
                 f_layout = QVBoxLayout(f)
-                f_layout.setContentsMargins(0, 0, 0, 0)
-                f_layout.setSpacing(4)
+                configure_layout(f_layout, LayoutRole.FIELD)
                 f_layout.addWidget(SkeletonBar(f, height=11, corner_radius=3))
                 f_layout.addWidget(SkeletonBar(f, height=30, corner_radius=4))
                 g_layout.addWidget(f, 0, col)
@@ -294,8 +299,7 @@ class CostumeEditor(QWidget):
 
     def _show_placeholder(self):
         _clear_layout(self._editor_layout)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        configure_layout(self._editor_layout, LayoutRole.PAGE)
         card = make_empty_state(
             self._editor_widget,
             title=self.t("no_file_loaded"),
@@ -336,22 +340,22 @@ class CostumeEditor(QWidget):
 
     # Save
 
-    def _save_file(self):
+    def _save_file(self, target_path=None):
+        save_path = target_path or editor_path(self)
         if not self._raw_data:
             return
         self._apply_colors()
-        if not self._filepath:
+        if not save_path:
             return
         try:
-            path = self._filepath
+            path = save_path
             save_costume_xfbin(path, self._raw_data, self._characters, self._binary_offset, self._notes)
+            commit_save_path(self, save_path)
             self._dirty = False
             set_file_label(self._file_label, path)
-            QMessageBox.information(self, self.t("dlg_title_success"),
-                                    self.t("msg_save_success", path=os.path.basename(path)))
+            QMessageBox.information(self, self.t('dlg_title_success'), self.t('msg_save_success', path=os.path.basename(path)))
         except Exception as e:
-            QMessageBox.critical(self, self.t("dlg_title_error"),
-                                 self.t("msg_save_error", error=e))
+            QMessageBox.critical(self, self.t('dlg_title_error'), self.t('msg_save_error', error=e))
 
     # Character list
 
@@ -360,26 +364,25 @@ class CostumeEditor(QWidget):
         self._char_buttons = []
         for char in self._characters:
             btn = QPushButton(self._char_list_widget)
-            btn.setFixedHeight(44)
+            btn.setFixedHeight(Size.LIST_ROW)
             btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             btn.setStyleSheet(ss_sidebar_btn())
             btn.clicked.connect(lambda checked, c=char: self._select_char(c))
 
             # Internal layout for the button content
             btn_layout = QHBoxLayout(btn)
-            btn_layout.setContentsMargins(10, 3, 10, 3)
-            btn_layout.setSpacing(4)
+            btn_layout.setContentsMargins(*Insets.LIST_ROW)
+            btn_layout.setSpacing(Size.GAP_SM)
 
             # Text section
             text_widget = QWidget(btn)
             text_widget.setMinimumWidth(0)
             text_widget.setStyleSheet(ss_transparent())
             text_layout = QVBoxLayout(text_widget)
-            text_layout.setContentsMargins(0, 0, 0, 0)
-            text_layout.setSpacing(0)
+            configure_layout(text_layout, LayoutRole.ROOT)
 
             name_lbl = QLabel(_truncate(char['name'], 22), text_widget)
-            name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+            name_lbl.setFont(ui_font(TypeSize.TITLE, QFont.Weight.Bold))
             name_lbl.setStyleSheet(ss_main_label())
             name_lbl.setToolTip(char['name'])
             name_lbl.setMinimumWidth(0)
@@ -391,7 +394,7 @@ class CostumeEditor(QWidget):
             sub_key = "char_costumes_sub" if slots_count == 1 else "char_costumes_sub_plural"
             sub_text = self.t(sub_key, char_id=char['char_id'], n=slots_count)
             id_lbl = QLabel(_truncate(sub_text, 28), text_widget)
-            id_lbl.setFont(QFont("Consolas", 11))
+            id_lbl.setFont(mono_font(TypeSize.CODE))
             id_lbl.setStyleSheet(ss_dim_label())
             id_lbl.setToolTip(sub_text)
             id_lbl.setMinimumWidth(0)
@@ -457,10 +460,10 @@ class CostumeEditor(QWidget):
 
     # Editor panel
 
-    def _make_editor_card(self, parent=None, margins=(16, 14, 16, 14), spacing=10):
+    def _make_editor_card(self, parent=None, margins=Insets.CARD, spacing=Size.CARD_GAP):
         card, layout = make_editor_card(parent or self._editor_widget, margins=margins, spacing=spacing)
         card.setMinimumWidth(0)
-        card.setMaximumWidth(1040)
+        card.setMaximumWidth(16777215)
         card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         return card, layout
 
@@ -470,10 +473,7 @@ class CostumeEditor(QWidget):
         return self._editor_scroll.viewport().width() < 760
 
     def _prep_field(self, frame, editor):
-        frame.setMinimumWidth(0)
-        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        editor.setMinimumWidth(0)
-        editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        configure_field(frame, editor)
 
     def _make_overview_field(self, parent, label, value, *, editable=False, font=None):
         frame, layout, _label, _hint = make_editor_field_shell(label)
@@ -481,9 +481,7 @@ class CostumeEditor(QWidget):
 
         if editable:
             entry = QLineEdit(frame)
-            entry.setFixedHeight(36)
-            entry.setFont(font or QFont("Consolas", 15))
-            entry.setStyleSheet(ss_input())
+            configure_input(entry, height=Size.LARGE_CONTROL, monospace=True, font=font)
             entry.setText(str(value))
             entry.setMinimumWidth(0)
             entry.setCursorPosition(0)
@@ -492,7 +490,7 @@ class CostumeEditor(QWidget):
             return frame, entry
 
         value_lbl = QLabel(str(value), frame)
-        value_lbl.setFont(font or QFont("Consolas", 18, QFont.Weight.Bold))
+        value_lbl.setFont(font or mono_font(TypeSize.DISPLAY, QFont.Weight.Bold))
         value_lbl.setStyleSheet(ss_main_label())
         value_lbl.setMinimumWidth(0)
         value_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
@@ -510,34 +508,25 @@ class CostumeEditor(QWidget):
         self._char_id_entry = None
         self._name_entry = None
         self._costume_frames = []
-        self._editor_layout.setContentsMargins(12, 12, 12, 12)
-        self._editor_layout.setSpacing(8)
+        configure_layout(self._editor_layout, LayoutRole.PAGE)
         self._last_compact = self._is_compact_editor()
 
-        hdr, hdr_wrap_layout = self._make_editor_card(margins=(16, 14, 16, 14), spacing=10)
-        add_editor_card_title(
-            hdr_wrap_layout,
-            char['name'],
-            "fa6s.palette",
-            subtitle=f"{char['char_id']} / {len(char['costumes'])} {self.t('label_costumes').lower()}",
-            icon_size=20,
-        )
+        hdr, hdr_wrap_layout = self._make_editor_card(margins=Insets.CARD, spacing=Size.CARD_GAP)
+        add_editor_card_title(hdr_wrap_layout, char['name'], 'fa6s.palette', subtitle=f"{char['char_id']} / {len(char['costumes'])} {self.t('label_costumes').lower()}")
         hdr_layout = QGridLayout()
-        hdr_layout.setContentsMargins(0, 4, 0, 0)
-        hdr_layout.setHorizontalSpacing(16)
-        hdr_layout.setVerticalSpacing(10)
+        configure_layout(hdr_layout, LayoutRole.GRID_TITLED)
 
         name_frame, self._name_entry = self._make_overview_field(
             hdr, self.t("label_display_name"), char['name'],
-            editable=True, font=QFont("Segoe UI", 18, QFont.Weight.Bold)
+            editable=True, font=ui_font(TypeSize.DISPLAY, QFont.Weight.Bold)
         )
         id_frame, self._char_id_entry = self._make_overview_field(
             hdr, self.t("label_char_id_short"), char['char_id'],
-            editable=True, font=QFont("Consolas", 16)
+            editable=True, font=mono_font(TypeSize.LARGE)
         )
         count_frame, _ = self._make_overview_field(
             hdr, self.t("label_costumes"), len(char['costumes']),
-            font=QFont("Consolas", 18, QFont.Weight.Bold)
+            font=mono_font(TypeSize.DISPLAY, QFont.Weight.Bold)
         )
         if self._last_compact:
             hdr_layout.addWidget(name_frame, 0, 0)
@@ -557,7 +546,7 @@ class CostumeEditor(QWidget):
         tabs.setDocumentMode(True)
         tabs.setStyleSheet(ss_tab_widget())
         tabs.setMinimumWidth(0)
-        tabs.setMaximumWidth(1040)
+        tabs.setMaximumWidth(16777215)
         tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         tabs.tabBar().setUsesScrollButtons(True)
         tabs.tabBar().setExpanding(False)
@@ -567,7 +556,7 @@ class CostumeEditor(QWidget):
             tab.setStyleSheet(ss_transparent())
             tab_layout = QVBoxLayout(tab)
             tab_layout.setContentsMargins(0, 10, 0, 0)
-            tab_layout.setSpacing(8)
+            tab_layout.setSpacing(Size.GAP)
             tab_layout.addWidget(
                 self._build_costume_section(char, ci, costume, tab),
                 0,
@@ -578,11 +567,10 @@ class CostumeEditor(QWidget):
         self._editor_layout.addWidget(tabs)
 
         add_costume_btn = QPushButton(self.t("btn_add_costume_slot"), self._editor_widget)
-        add_costume_btn.setFixedHeight(30)
-        add_costume_btn.setFont(QFont("Segoe UI", 10))
         add_costume_btn.setIcon(qta.icon("fa6s.plus", color=P["text_main"]))
-        add_costume_btn.setStyleSheet(ss_btn())
+        configure_button(add_costume_btn)
         add_costume_btn.clicked.connect(lambda: self._add_costume_slot(char))
+        add_costume_btn.setProperty("designAction", 'new')
         self._editor_layout.addWidget(add_costume_btn, 0, Qt.AlignmentFlag.AlignLeft)
         self._editor_layout.addSpacing(20)
         self._editor_layout.addStretch()
@@ -596,12 +584,11 @@ class CostumeEditor(QWidget):
         header = QWidget(sec)
         header.setStyleSheet(ss_transparent())
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(8)
+        configure_layout(header_layout, LayoutRole.TITLE)
 
         slot_title = self._slot_title(costume)
         slot_lbl = QLabel(_truncate(slot_title, 26 if compact_section else 56), header)
-        slot_lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
+        slot_lbl.setFont(ui_font(TypeSize.SECTION, QFont.Weight.Bold))
         slot_lbl.setStyleSheet(ss_panel_title())
         slot_lbl.setMinimumWidth(0)
         slot_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
@@ -619,16 +606,15 @@ class CostumeEditor(QWidget):
             header_layout.addWidget(chip)
 
         remove_btn = QPushButton(self.t("btn_remove"), header)
-        remove_btn.setFixedHeight(28)
         if compact_section:
             remove_btn.setFixedWidth(34)
             remove_btn.setText("")
             remove_btn.setToolTip(self.t("btn_remove"))
-        remove_btn.setFont(QFont("Segoe UI", 10))
         remove_btn.setIcon(qta.icon("fa6s.trash", color=ui_text("ui_costume_ffffff")))
         remove_btn.setIconSize(QSize(14, 14))
-        remove_btn.setStyleSheet(ss_btn(danger=True))
+        configure_button(remove_btn, danger=True, height=Size.COMPACT_CONTROL)
         remove_btn.clicked.connect(lambda checked, c=ci: self._remove_costume(c))
+        remove_btn.setProperty("designAction", 'delete')
         header_layout.addWidget(remove_btn)
         sec_layout.addWidget(header)
 
@@ -636,8 +622,8 @@ class CostumeEditor(QWidget):
         grid.setStyleSheet(ss_transparent())
         grid.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         grid_layout = QGridLayout(grid)
-        grid_layout.setContentsMargins(0, 4, 0, 0)
-        grid_layout.setHorizontalSpacing(16)
+        grid_layout.setContentsMargins(*Insets.GRID_TITLE)
+        grid_layout.setHorizontalSpacing(Size.GRID_GAP)
         grid_layout.setVerticalSpacing(14)
 
         color_names = self._get_color_names(len(costume['colors']))
@@ -653,14 +639,13 @@ class CostumeEditor(QWidget):
             title_row = QWidget(cf)
             title_row.setStyleSheet(ss_transparent())
             title_layout = QHBoxLayout(title_row)
-            title_layout.setContentsMargins(0, 0, 0, 0)
-            title_layout.setSpacing(8)
+            configure_layout(title_layout, LayoutRole.TITLE)
             dot = QFrame(title_row)
             dot.setFixedSize(12, 12)
             dot.setStyleSheet(_color_dot_style(f"#{color['r']:02x}{color['g']:02x}{color['b']:02x}"))
             title_layout.addWidget(dot)
             color_name_lbl = QLabel(color_label_text, title_row)
-            color_name_lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+            color_name_lbl.setFont(ui_font(TypeSize.LABEL, QFont.Weight.Bold))
             color_name_lbl.setStyleSheet(ss_panel_title())
             title_layout.addWidget(color_name_lbl)
             title_layout.addStretch()
@@ -669,17 +654,17 @@ class CostumeEditor(QWidget):
             del_btn.setFixedSize(28, 28)
             del_btn.setIcon(qta.icon("fa6s.xmark", color=ui_text("ui_costume_c0392b")))
             del_btn.setIconSize(QSize(14, 14))
-            del_btn.setStyleSheet(ss_btn(danger=True))
+            configure_button(del_btn, danger=True)
             del_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             del_btn.clicked.connect(lambda checked, c=ci, co=coli: self._remove_color(c, co))
+            del_btn.setProperty("designAction", 'delete')
             title_layout.addWidget(del_btn)
             cf_layout.addWidget(title_row)
 
             color_row = QWidget(cf)
             color_row.setStyleSheet(ss_transparent())
             color_row_layout = QVBoxLayout(color_row) if compact_color_card else QHBoxLayout(color_row)
-            color_row_layout.setContentsMargins(0, 0, 0, 0)
-            color_row_layout.setSpacing(8)
+            configure_layout(color_row_layout, LayoutRole.TITLE)
 
             hex_color = f"#{color['r']:02x}{color['g']:02x}{color['b']:02x}"
             swatch = QFrame(color_row)
@@ -690,8 +675,8 @@ class CostumeEditor(QWidget):
             color_row_layout.addWidget(swatch, 0, swatch_alignment)
 
             input_grid = QGridLayout()
-            input_grid.setContentsMargins(0, 0, 0, 0)
-            input_grid.setHorizontalSpacing(8)
+            input_grid.setContentsMargins(*Insets.NONE)
+            input_grid.setHorizontalSpacing(Size.GAP)
             input_grid.setVerticalSpacing(6)
             r_entry = QLineEdit(color_row)
             g_entry = QLineEdit(color_row)
@@ -704,26 +689,22 @@ class CostumeEditor(QWidget):
                 ("B", b_entry, color['b']),
             ]):
                 lbl = QLabel(label_text, color_row)
-                lbl.setFont(QFont("Consolas", 11))
+                lbl.setFont(mono_font(TypeSize.CODE))
                 lbl.setStyleSheet(ss_dim_label())
                 input_grid.addWidget(lbl, input_row, 0)
-                entry.setFixedHeight(28)
                 entry.setMinimumWidth(0)
                 entry.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-                entry.setFont(QFont("Consolas", 13))
-                entry.setStyleSheet(ss_input())
+                configure_input(entry, monospace=True)
                 entry.setText(str(rgb_val))
                 input_grid.addWidget(entry, input_row, 1)
 
             hex_lbl = QLabel(ui_text("ui_costume_hex"), color_row)
-            hex_lbl.setFont(QFont("Consolas", 11))
+            hex_lbl.setFont(mono_font(TypeSize.CODE))
             hex_lbl.setStyleSheet(ss_dim_label())
             input_grid.addWidget(hex_lbl, 3, 0)
-            hex_entry.setFixedHeight(28)
             hex_entry.setMinimumWidth(0)
             hex_entry.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-            hex_entry.setFont(QFont("Consolas", 13))
-            hex_entry.setStyleSheet(ss_input())
+            configure_input(hex_entry, monospace=True)
             hex_entry.setText(hex_color)
             input_grid.addWidget(hex_entry, 3, 1)
             input_grid.setColumnStretch(1, 1)
@@ -800,13 +781,12 @@ class CostumeEditor(QWidget):
         sec_layout.addWidget(grid)
 
         add_color_btn = QPushButton(self.t("btn_add_color"), sec)
-        add_color_btn.setFixedHeight(28)
-        add_color_btn.setFont(QFont("Segoe UI", 10))
         add_color_btn.setIcon(qta.icon("fa6s.plus", color=P["text_main"]))
         add_color_btn.setIconSize(QSize(12, 12))
-        add_color_btn.setStyleSheet(ss_btn())
+        configure_button(add_color_btn, height=Size.COMPACT_CONTROL)
         add_color_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         add_color_btn.clicked.connect(lambda checked, c=ci: self._add_color_entry(char, c))
+        add_color_btn.setProperty("designAction", 'new')
         sec_layout.addWidget(add_color_btn, 0, Qt.AlignmentFlag.AlignLeft)
         return sec
 

@@ -1,3 +1,6 @@
+from core.design_tokens import TypeSize
+from core.design_tokens import ui_font
+from core.ui.editor_widgets import configure_search
 import os
 
 from PyQt6.QtCore import QEasingCurve, QPoint, QPointF, QPropertyAnimation, QSize, Qt, QTimer
@@ -161,7 +164,7 @@ class AppLayoutMixin:
         header_layout.addWidget(app_icon_lbl)
 
         self._header_title_lbl = QLabel(self.t("app_title"))
-        self._header_title_lbl.setFont(QFont("Segoe UI", 22, QFont.Weight.Bold))
+        self._header_title_lbl.setFont(ui_font(TypeSize.HERO, QFont.Weight.Bold))
         self._header_title_lbl.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self._header_title_lbl.setAutoFillBackground(False)
         self._header_title_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent; border: none;")
@@ -173,14 +176,11 @@ class AppLayoutMixin:
         header_layout.addStretch()
 
         self._tool_search_entry = QLineEdit()
-        self._tool_search_entry.setPlaceholderText(self.t("tool_search_placeholder"))
+        configure_search(self._tool_search_entry)
         self._tool_search_entry.setMinimumWidth(120)
         self._tool_search_entry.setMaximumWidth(360)
-        self._tool_search_entry.setFixedHeight(34)
         self._tool_search_entry.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._tool_search_entry.setFont(QFont("Segoe UI", 13))
-        self._tool_search_entry.setStyleSheet(ss_search())
         self._tool_search_entry.setClearButtonEnabled(True)
         self._tool_search_entry.setText(self._tool_search_query)
         self._tool_search_entry.textChanged.connect(self._on_tool_search_changed)
@@ -189,19 +189,19 @@ class AppLayoutMixin:
 
         unpack_btn = _make_styled_btn(
             "  " + self.t("cpk_unpack_btn"), P["mid"], P["bg_card_hov"], P["accent"],
-            QFont("Segoe UI", 13), width=120, height=34, icon=self._unpack_icon)
+            ui_font(TypeSize.TITLE), width=120, height=34, icon=self._unpack_icon)
         unpack_btn.clicked.connect(self._open_cpk_editor)
         header_layout.addWidget(unpack_btn)
 
         credits_btn = _make_styled_btn(
             "  Credits", P["mid"], P["bg_card_hov"], P["secondary"],
-            QFont("Segoe UI", 13), width=120, height=34, icon=self._credits_icon)
+            ui_font(TypeSize.TITLE), width=120, height=34, icon=self._credits_icon)
         credits_btn.clicked.connect(self._open_credits)
         header_layout.addWidget(credits_btn)
 
         settings_btn = _make_styled_btn(
             "  " + self.t("settings"), P["mid"], P["bg_card_hov"], P["secondary"],
-            QFont("Segoe UI", 13), width=130, height=34, icon=self._settings_icon)
+            ui_font(TypeSize.TITLE), width=130, height=34, icon=self._settings_icon)
         settings_btn.clicked.connect(self._open_settings)
         header_layout.addWidget(settings_btn)
 
@@ -451,7 +451,7 @@ class AppLayoutMixin:
         header_row.setSpacing(0)
 
         title_lbl = QLabel(self.t(i18n_key))
-        title_lbl.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+        title_lbl.setFont(ui_font(TypeSize.DISPLAY, QFont.Weight.Bold))
         _make_label_background_transparent(title_lbl)
         title_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent; border: none;")
         header_row.addWidget(title_lbl)
@@ -459,7 +459,7 @@ class AppLayoutMixin:
         header_row.addStretch()
 
         subtitle_lbl = QLabel(self.t("tools_avail", n=len(tool_rows)))
-        subtitle_lbl.setFont(QFont("Segoe UI", 12))
+        subtitle_lbl.setFont(ui_font(TypeSize.LABEL))
         _make_label_background_transparent(subtitle_lbl)
         subtitle_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent; border: none;")
         subtitle_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -538,7 +538,7 @@ class AppLayoutMixin:
         header_row.setSpacing(0)
 
         title_lbl = QLabel("Pillarmen ass hair")
-        title_lbl.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+        title_lbl.setFont(ui_font(TypeSize.DISPLAY, QFont.Weight.Bold))
         _make_label_background_transparent(title_lbl)
         title_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent; border: none;")
         header_row.addWidget(title_lbl)
@@ -651,12 +651,12 @@ class AppLayoutMixin:
         bubble_layout.setContentsMargins(18, 14, 18, 14)
 
         self._char_name_label = QLabel(self.t("hover_hint"))
-        self._char_name_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        self._char_name_label.setFont(ui_font(TypeSize.BODY, QFont.Weight.Bold))
         self._char_name_label.setStyleSheet(f"color: {P['accent']}; background: transparent; border: none;")
         bubble_layout.addWidget(self._char_name_label)
 
         self._char_quote_label = QLabel(self.t("hover_default"))
-        self._char_quote_label.setFont(QFont("Segoe UI", 10))
+        self._char_quote_label.setFont(ui_font(TypeSize.BODY))
         self._char_quote_label.setStyleSheet(f"color: {P['text_sec']}; background: transparent; border: none;")
         self._char_quote_label.setWordWrap(True)
         bubble_layout.addWidget(self._char_quote_label)

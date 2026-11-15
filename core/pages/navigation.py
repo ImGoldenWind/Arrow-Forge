@@ -1,3 +1,5 @@
+from core.design_tokens import TypeSize
+from core.design_tokens import ui_font
 import fnmatch
 import os
 import re
@@ -224,7 +226,7 @@ class NavigationMixin:
         header_row.setSpacing(0)
 
         title_lbl = QLabel(self.t("tool_search_results_title"))
-        title_lbl.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+        title_lbl.setFont(ui_font(TypeSize.DISPLAY, QFont.Weight.Bold))
         _make_label_background_transparent(title_lbl)
         title_lbl.setStyleSheet(f"color: {P['accent']}; background: transparent; border: none;")
         header_row.addWidget(title_lbl)
@@ -232,7 +234,7 @@ class NavigationMixin:
         header_row.addStretch()
 
         subtitle_lbl = QLabel(self.t("tools_avail", n=len(tool_rows)))
-        subtitle_lbl.setFont(QFont("Segoe UI", 12))
+        subtitle_lbl.setFont(ui_font(TypeSize.LABEL))
         _make_label_background_transparent(subtitle_lbl)
         subtitle_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent; border: none;")
         subtitle_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -278,7 +280,7 @@ class NavigationMixin:
                 grid.addWidget(card, idx // 2, idx % 2)
         else:
             empty_lbl = QLabel(self.t("tool_search_no_results"))
-            empty_lbl.setFont(QFont("Segoe UI", 14))
+            empty_lbl.setFont(ui_font(TypeSize.SUBHEADING))
             empty_lbl.setStyleSheet(f"color: {P['text_dim']};")
             empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             grid.addWidget(empty_lbl, 0, 0, 1, 2)

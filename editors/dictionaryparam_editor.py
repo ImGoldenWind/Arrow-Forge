@@ -1,723 +1,518 @@
-"""editors/dictionaryparam_editor.py  –  Full editor for DictionaryParam.bin.xfbin."""
-
-import os
+"""JoJo glossary workspace. Data semantics live in core.dictionary_tools."""
 import copy
+import os
 
-from PyQt6.QtWidgets import (
-    QWidget, QFrame, QLabel, QPushButton, QLineEdit, QCheckBox,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QMessageBox,
-    QScrollArea, QSizePolicy,
-)
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import QEvent, Qt, QTimer
+from PyQt6.QtWidgets import (QWidget, QLabel, QPushButton, QLineEdit, QCheckBox,
+                             QComboBox, QVBoxLayout, QHBoxLayout, QScrollArea,
+                             QFileDialog, QMessageBox, QSizePolicy)
 
-from core.style_helpers import (
-    add_editor_card_title, make_editor_card, make_editor_field, make_empty_state,
-    ss_accent_sep, ss_bg_dark, ss_bg_panel, ss_btn, ss_check, ss_dim_label,
-    ss_file_label, ss_scrollarea, ss_scrollarea_transparent,
-    ss_main_label, ss_search, ss_sep, ss_sidebar_btn, ss_sidebar_frame, ss_transparent,
-    TOOLBAR_H, TOOLBAR_BTN_H,
-)
+from core.design_tokens import LayoutRole, Size, TypeSize, ui_font
+from core.style_helpers import (make_editor_field_shell, make_editor_grid_card,
+    make_empty_state, ss_bg_dark, ss_transparent, ss_check, ss_dim_label,
+    ss_input_validation)
+from core.ui.editor_widgets import (EditorToolbar, EditorSidebar, EditorActionRow,
+    EditorSeparator, EditorListRow, EditorFilterCombo, configure_button,
+    configure_card, configure_field, configure_input, configure_file_label,
+    configure_layout, configure_search, configure_scrollarea, fit_scroll_page)
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.editor_actions import (commit_save_path, editor_path, install_file_actions,
+                                    refresh_file_actions)
+from core.ui.value_combo import EditorValueCombo
+from core.ui.number_input import IntegerStepper
+from core.ui.message_preview import message_lookup
+from core.dictionary_tools import (CATEGORY_KEYS, SHARED_GALLERY_KEYS, STRING_KEYS,
+    UINT32_MAX, parse_field, category_label, categories, unlock_choices,
+    next_identity, panel_catalog, entry_issues, character_catalog,
+    stored_caption, stored_hint, stored_choices)
 from core.editor_file_state import set_file_label
-from parsers.dictionaryparam_parser import (
-    parse_dictionaryparam_xfbin, save_dictionaryparam_xfbin, make_default_entry,
-)
+from core.settings import create_backup_on_open, game_files_dialog_dir, load_settings
 from core.translations import ui_text
-from core.settings import create_backup_on_open, game_files_dialog_dir
+from parsers.dictionaryparam_parser import (parse_dictionaryparam_xfbin,
+    save_dictionaryparam_xfbin, make_default_entry)
 
 
 def _clear_layout(layout):
-    if layout is None:
-        return
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            item.widget().deleteLater()
+            widget = item.widget()
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
         elif item.layout():
             _clear_layout(item.layout())
-
-
-def _truncate(text: str, limit: int) -> str:
-    text = str(text)
-    return text if len(text) <= limit else text[:max(1, limit - 1)] + "..."
-
-
-_FLAG_NAMES = {
-    "flag1":  ui_text("ui_charviewer_part_1"),
-    "flag2":  ui_text("ui_charviewer_part_2"),
-    "flag3":  ui_text("ui_charviewer_part_3"),
-    "flag4":  ui_text("ui_charviewer_part_4"),
-    "flag5":  ui_text("ui_charviewer_part_5"),
-    "flag6":  ui_text("ui_charviewer_part_6"),
-    "flag7":  ui_text("ui_charviewer_part_7"),
-    "flag8":  ui_text("ui_charviewer_part_8"),
-    "flag13": ui_text("ui_dictionaryparam_flag_a"),
-    "flag14": ui_text("ui_dictionaryparam_flag_b"),
-    "flag15": ui_text("ui_dictionaryparam_flag_c"),
-    "flag19": ui_text("ui_dictionaryparam_flag_d"),
-}
-
-_DLC_NAMES = {
-    0:     ui_text("ui_charviewer_base_game"),
-    10001: ui_text("ui_charviewer_dlc_1"),
-    10002: ui_text("ui_charviewer_dlc_2"),
-    10003: ui_text("ui_charviewer_dlc_3"),
-    10004: ui_text("ui_charviewer_dlc_4"),
-    10005: ui_text("ui_charviewer_dlc_5"),
-    10006: ui_text("ui_charviewer_dlc_6"),
-    10007: ui_text("ui_charviewer_dlc_7"),
-    10008: ui_text("ui_charviewer_dlc_8"),
-    10009: ui_text("ui_charviewer_dlc_9"),
-    10010: ui_text("ui_charviewer_dlc_10"),
-    10011: ui_text("ui_charviewer_dlc_11"),
-}
 
 
 class DictionaryParamEditor(QWidget):
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
-        self._t        = t or (lambda k, **kw: ui_text(k, **kw))
+        self._t = t or ui_text
         self._embedded = embedded
-        self._filepath: str | None = None
-        self._original_data: bytearray | None = None
-        self._version: int = 1000
-        self._entries: list[dict] = []
-        self._current_entry: dict | None = None
-        self._entry_buttons: list[tuple] = []
-        self._fields: dict[str, QWidget] = {}
-        self._last_editor_compact: bool | None = None
-        self._dirty = False
-
+        self._filepath = self._original_data = None
+        self._version = 1000
+        self._entries = []
+        self._current_entry = None
+        self._entry_buttons = []
+        self._fields, self._captions = {}, {}
+        self._grids = []
+        self._panels, self._panel_error = {}, ''
+        self._characters, self._character_error = frozenset(), ''
+        self._search_text = {}
+        self._dirty = self._loading_detail = False
+        self._detail_timer = QTimer(self)
+        self._detail_timer.setSingleShot(True)
+        self._detail_timer.setInterval(120)
+        self._detail_timer.timeout.connect(self._refresh_diagnostics)
         self._build_ui()
-
-    # UI construction
+        install_file_actions(self, self._save_btn, save_to=self._on_save)
+        install_editor_chrome(self)
 
     def _build_ui(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        root = configure_layout(QVBoxLayout(self), LayoutRole.ROOT)
         self.setStyleSheet(ss_bg_dark())
-
-        # Top bar
-        top = QFrame()
-        top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(ss_bg_panel())
-        tl = QHBoxLayout(top)
-        tl.setContentsMargins(12, 8, 12, 8)
-        tl.setSpacing(4)
-
-        open_btn = QPushButton(self._t("btn_open_file"))
-        open_btn.setFixedHeight(TOOLBAR_BTN_H)
-        open_btn.setFont(QFont("Segoe UI", 10))
-        open_btn.setStyleSheet(ss_btn(accent=True))
+        top = EditorToolbar()
+        open_btn = configure_button(QPushButton(self._t('btn_open_file')), accent=True)
+        open_btn.setProperty('designAction', 'open')
         open_btn.clicked.connect(self._on_open)
-        tl.addWidget(open_btn)
-
-        self._save_btn = QPushButton(self._t("btn_save_file"))
-        self._save_btn.setFixedHeight(TOOLBAR_BTN_H)
-        self._save_btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        self._save_btn = configure_button(QPushButton(self._t('btn_save_file')), accent=True)
+        self._save_btn.clicked.connect(lambda: self._on_save())
         self._save_btn.setEnabled(False)
-        self._save_btn.setStyleSheet(ss_btn(accent=True))
-        self._save_btn.clicked.connect(self._on_save)
-        tl.addWidget(self._save_btn)
-
-        self._file_lbl = QLabel(self._t("no_file_loaded"))
-        self._file_lbl.setFont(QFont("Consolas", 12))
-        self._file_lbl.setStyleSheet(ss_file_label())
-        tl.addWidget(self._file_lbl)
-        tl.addStretch()
-
+        self._file_lbl = configure_file_label(QLabel(self._t('no_file_loaded')))
+        self._file_lbl.setMinimumWidth(0)
+        self._file_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        for widget in (open_btn, self._save_btn):
+            top.content_layout.addWidget(widget)
+        top.content_layout.addWidget(self._file_lbl, 1)
         root.addWidget(top)
-
-        # Separator
-        sep = QFrame()
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
-        root.addWidget(sep)
-
-        # Main area
+        root.addWidget(EditorSeparator(accent=True))
         main = QWidget()
-        main_layout = QHBoxLayout(main)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-
-        # Left sidebar
-        list_frame = QFrame()
-        list_frame.setFixedWidth(260)
-        list_frame.setStyleSheet(ss_sidebar_frame())
-        list_vlayout = QVBoxLayout(list_frame)
-        list_vlayout.setContentsMargins(8, 8, 8, 4)
-        list_vlayout.setSpacing(4)
-
-        self._search_entry = QLineEdit()
-        self._search_entry.setPlaceholderText(self._t("search_placeholder"))
-        self._search_entry.setFixedHeight(32)
-        self._search_entry.setFont(QFont("Segoe UI", 13))
-        self._search_entry.setStyleSheet(ss_search())
+        body = configure_layout(QHBoxLayout(main), LayoutRole.ROOT)
+        sidebar = EditorSidebar(width=290)
+        self._search_entry = configure_search(QLineEdit())
         self._search_entry.textChanged.connect(self._filter_list)
-        list_vlayout.addWidget(self._search_entry)
-
-        actions_frame = QWidget()
-        actions_frame.setStyleSheet(ss_transparent())
-        actions_layout = QHBoxLayout(actions_frame)
-        actions_layout.setContentsMargins(0, 2, 0, 4)
-        actions_layout.setSpacing(4)
-
-        btn_font = QFont("Segoe UI", 10)
-
-        self._add_btn = QPushButton(self._t("btn_new"))
-        self._add_btn.setFixedHeight(28)
-        self._add_btn.setFont(btn_font)
-        self._add_btn.setEnabled(False)
-        self._add_btn.setStyleSheet(ss_btn())
-        self._add_btn.clicked.connect(self._add_new_entry)
-        actions_layout.addWidget(self._add_btn, 1)
-
-        self._dup_btn = QPushButton(self._t("btn_duplicate"))
-        self._dup_btn.setFixedHeight(28)
-        self._dup_btn.setFont(btn_font)
-        self._dup_btn.setEnabled(False)
-        self._dup_btn.setStyleSheet(ss_btn())
-        self._dup_btn.clicked.connect(self._duplicate_entry)
-        actions_layout.addWidget(self._dup_btn, 1)
-
-        self._del_btn = QPushButton(self._t("btn_delete"))
-        self._del_btn.setFixedHeight(28)
-        self._del_btn.setFont(btn_font)
-        self._del_btn.setEnabled(False)
-        self._del_btn.setStyleSheet(ss_btn(danger=True))
-        self._del_btn.clicked.connect(self._delete_entry)
-        actions_layout.addWidget(self._del_btn, 1)
-
-        list_vlayout.addWidget(actions_frame)
-
-        self._entry_scroll = QScrollArea()
-        self._entry_scroll.setWidgetResizable(True)
-        self._entry_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._entry_scroll.setStyleSheet(ss_scrollarea_transparent())
+        sidebar.content_layout.addWidget(self._search_entry)
+        self._category_filter = EditorFilterCombo()
+        self._category_filter.addItem(ui_text('dictionary_categories'), None)
+        for key in CATEGORY_KEYS:
+            self._category_filter.addItem(category_label(key), key)
+        self._category_filter.currentIndexChanged.connect(self._filter_list)
+        sidebar.content_layout.addWidget(self._category_filter)
+        self._unlock_filter = EditorFilterCombo()
+        self._unlock_filter.addItem(ui_text('ui_charviewer_unlock_condition'), None)
+        self._unlock_filter.currentIndexChanged.connect(self._filter_list)
+        sidebar.content_layout.addWidget(self._unlock_filter)
+        actions = EditorActionRow()
+        for attr, key, callback, action in (
+            ('_add_btn', 'btn_new', self._add_new_entry, 'new'),
+            ('_dup_btn', 'btn_duplicate', self._duplicate_entry, 'duplicate'),
+            ('_del_btn', 'btn_delete', self._delete_entry, 'delete')):
+            button = configure_button(QPushButton(self._t(key)),
+                danger=action == 'delete', height=Size.COMPACT_CONTROL)
+            button.setProperty('designAction', action)
+            button.setEnabled(False)
+            button.clicked.connect(callback)
+            actions.content_layout.addWidget(button, 1)
+            setattr(self, attr, button)
+        sidebar.content_layout.addWidget(actions)
+        self._entry_scroll = configure_scrollarea(QScrollArea(), transparent=True)
         self._entry_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._entry_list_widget = QWidget()
         self._entry_list_widget.setMinimumWidth(0)
         self._entry_list_widget.setStyleSheet(ss_transparent())
-        self._entry_list_layout = QVBoxLayout(self._entry_list_widget)
-        self._entry_list_layout.setContentsMargins(0, 0, 0, 0)
-        self._entry_list_layout.setSpacing(1)
+        self._entry_list_layout = configure_layout(QVBoxLayout(self._entry_list_widget), LayoutRole.LIST)
         self._entry_list_layout.addStretch()
         self._entry_scroll.setWidget(self._entry_list_widget)
-        list_vlayout.addWidget(self._entry_scroll)
-
-        main_layout.addWidget(list_frame)
-
-        divider = QFrame()
-        divider.setFixedWidth(1)
-        divider.setStyleSheet(ss_sep())
-        main_layout.addWidget(divider)
-
-        # Editor panel
-        self._editor_scroll = QScrollArea()
-        self._editor_scroll.setWidgetResizable(True)
-        self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        sidebar.content_layout.addWidget(self._entry_scroll, 1)
+        body.addWidget(sidebar)
+        body.addWidget(EditorSeparator(orientation=Qt.Orientation.Vertical))
+        self._editor_scroll = configure_scrollarea(QScrollArea())
         self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._editor_scroll.setStyleSheet(ss_scrollarea())
+        self._editor_scroll.viewport().installEventFilter(self)
         self._editor_widget = QWidget()
+        self._editor_widget.setMinimumWidth(0)
         self._editor_widget.setStyleSheet(ss_bg_dark())
-        self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(12, 12, 12, 12)
-        self._editor_layout.setSpacing(8)
+        self._editor_layout = configure_layout(QVBoxLayout(self._editor_widget), LayoutRole.PAGE)
         self._editor_scroll.setWidget(self._editor_widget)
-
-        self._placeholder = make_empty_state(
-            self._editor_widget,
-            title=self._t("no_file_loaded"),
-            text=ui_text("ui_dictionaryparam_open_a_dictionaryparam_xfbin_file_to_begin_editing"),
-            icon_name="fa6s.book",
-        )
-        self._editor_layout.addStretch()
-        self._editor_layout.addWidget(self._placeholder, 0, Qt.AlignmentFlag.AlignCenter)
-        self._editor_layout.addStretch()
-
-        main_layout.addWidget(self._editor_scroll, 1)
+        body.addWidget(self._editor_scroll, 1)
         root.addWidget(main, 1)
+        self._show_placeholder(ui_text('ui_dictionaryparam_open_a_dictionaryparam_xfbin_file_to_begin_editing'))
 
-    # Helpers
-
-    def _clear_entry_list(self):
-        _clear_layout(self._entry_list_layout)
-        self._entry_list_layout.addStretch()
-
-    def _clear_editor(self):
-        if getattr(self, "_placeholder", None) is not None:
-            self._placeholder.hide()
-            self._placeholder.setParent(None)
-            self._placeholder.deleteLater()
-            self._placeholder = None
+    def _show_placeholder(self, text):
         _clear_layout(self._editor_layout)
-
-    def _add_section(self, title):
-        self._pending_section_title = title
-
-    def _is_compact_editor(self):
-        if not hasattr(self, "_editor_scroll"):
-            return False
-        return self._editor_scroll.viewport().width() < 760
-
-    def _grid_columns(self, max_columns):
-        width = self._editor_scroll.viewport().width()
-        if width < 760:
-            return 1
-        if width < 980:
-            return min(2, max_columns)
-        return max_columns
-
-    def _prep_card(self, card):
-        card.setMinimumWidth(0)
-        card.setMaximumWidth(980)
-        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        return card
-
-    def _prep_field(self, frame, editor):
-        frame.setMinimumWidth(0)
-        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        editor.setMinimumWidth(0)
-        editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        return frame, editor
-
-    def _add_editor_card(self, card):
-        self._editor_layout.addWidget(card)
-
-    def _apply_pending_section_title(self, card_layout, content_layout, icon_name=None):
-        section_title = getattr(self, "_pending_section_title", None)
-        self._pending_section_title = None
-        if not section_title:
-            return
-        content_layout.setContentsMargins(0, 4, 0, 0)
-        add_editor_card_title(card_layout, section_title, icon_name=icon_name)
-
-    # File I/O
+        self._fields, self._grids = {}, []
+        self._editor_layout.addStretch()
+        self._editor_layout.addWidget(make_empty_state(self._editor_widget,
+            title=ui_text('no_file_loaded') if not self._filepath else ui_text('select_entry'), text=text),
+            0, Qt.AlignmentFlag.AlignCenter)
+        self._editor_layout.addStretch()
 
     def _on_open(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("ui_dictionaryparam_open_dictionaryparam_xfbin"), game_files_dialog_dir(target_patterns=("DictionaryParam.xfbin", "DictionaryParam.bin.xfbin")),
-            "XFBIN Files (*.xfbin);;All Files (*.*)",
-        )
+        path, _ = QFileDialog.getOpenFileName(self,
+            ui_text('ui_dictionaryparam_open_dictionaryparam_xfbin'),
+            game_files_dialog_dir(target_patterns=('DictionaryParam.xfbin', 'DictionaryParam.bin.xfbin')),
+            'XFBIN Files (*.xfbin);;All Files (*.*)')
         if path:
             self._load_file(path)
 
-    def _load_file(self, filepath: str):
-        create_backup_on_open(filepath)
+    def _load_file(self, filepath):
         try:
-            data, version, entries = parse_dictionaryparam_xfbin(filepath)
+            raw, version, entries = parse_dictionaryparam_xfbin(filepath)
         except Exception as exc:
-            QMessageBox.critical(self, ui_text("dlg_title_error"), ui_text("ui_assist_failed_to_open_file_value", p0=exc))
-            return
-
-        self._filepath      = filepath
-        self._original_data = data
-        self._version       = version
-        self._entries       = entries
+            QMessageBox.critical(self, ui_text('dlg_title_error'), ui_text('msg_load_error', error=exc))
+            return False
+        if self._dirty:
+            reply = QMessageBox.question(self, ui_text('dlg_title_warning'),
+                ui_text('term_discard_changes'),
+                QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if reply != QMessageBox.StandardButton.Discard:
+                return False
+        create_backup_on_open(filepath)
+        self._detail_timer.stop()
+        self._filepath, self._original_data, self._version = filepath, raw, version
+        self._entries = entries
         self._current_entry = None
-        self._fields        = {}
-
+        self._fields = {}
         self._dirty = False
+        self._panels, self._panel_error = panel_catalog(filepath, load_settings().get('game_files_dir', ''))
+        self._characters, self._character_error = character_catalog(filepath, load_settings().get('game_files_dir', ''))
+        self._search_entry.clear()
+        self._category_filter.setCurrentIndex(0)
+        self._unlock_filter.setCurrentIndex(0)
+        self._refresh_unlock_filter()
         set_file_label(self._file_lbl, filepath)
-        self._save_btn.setEnabled(True)
-        self._add_btn.setEnabled(True)
-        self._dup_btn.setEnabled(True)
-        self._del_btn.setEnabled(True)
-
         self._populate_list()
+        if entries:
+            self._select_entry(entries[0])
+        else:
+            self._show_placeholder(ui_text('select_entry'))
+        self._update_actions()
+        return True
 
-    def _on_save(self):
-        if not self._filepath or self._original_data is None:
-            return
-        self._apply_fields()
-        path = self._filepath
+    def _on_save(self, target_path=None):
+        path = target_path or editor_path(self)
+        if not path or self._original_data is None or not self._apply_fields():
+            return False
         try:
             save_dictionaryparam_xfbin(path, self._original_data, self._version, self._entries)
-            with open(path, "rb") as fh:
-                self._original_data = bytearray(fh.read())
+            # Refresh record offsets after structural changes, so later edits patch
+            # the newly saved table instead of relying on stale source metadata.
+            raw, version, entries = parse_dictionaryparam_xfbin(path)
+            for current, saved in zip(self._entries, entries):
+                current.update({k: v for k, v in saved.items() if k.startswith('_')})
+            self._original_data = raw
+            commit_save_path(self, path)
             self._dirty = False
             set_file_label(self._file_lbl, path)
-            QMessageBox.information(self, ui_text("ui_assist_saved"), ui_text("ui_dictionaryparam_saved_to_value", p0=os.path.basename(path)))
+            self._update_actions()
+            QMessageBox.information(self, ui_text('dlg_title_success'),
+                ui_text('ui_dictionaryparam_saved_to_value', p0=os.path.basename(path)))
+            return True
         except Exception as exc:
-            QMessageBox.critical(self, ui_text("ui_assist_save_error"), ui_text("ui_assist_failed_to_save_value", p0=exc))
+            QMessageBox.critical(self, ui_text('dlg_title_error'), ui_text('msg_save_error', error=exc))
+            return False
 
-    # Entry list
+    def _refresh_unlock_filter(self):
+        selected = self._unlock_filter.currentData()
+        self._unlock_filter.blockSignals(True)
+        self._unlock_filter.clear()
+        self._unlock_filter.addItem(ui_text('ui_charviewer_unlock_condition'), None)
+        for value, caption in unlock_choices(self._entries):
+            if any(e['no_panel'] == value for e in self._entries):
+                self._unlock_filter.addItem(caption, value)
+        self._unlock_filter.setCurrentIndex(max(0, self._unlock_filter.findData(selected)))
+        self._unlock_filter.blockSignals(False)
+
+    def _entry_title(self, entry):
+        return message_lookup(self).text(entry['title'])[0] or entry['title'] or entry['char_id']
+
+    def _refresh_row(self, button, entry):
+        title, subtitle = button.findChildren(QLabel)[:2]
+        name = self._entry_title(entry).replace('\n', ' ')
+        title.setText(name)
+        title.setToolTip(name)
+        subtitle.setText(entry['char_id'])
+        subtitle.setToolTip(entry['char_id'])
+        button.setToolTip(name + '\n' + ' · '.join(category_label(k) for k in categories(entry)))
+        # Resolve text once per modified row, not on every search keystroke.
+        self._search_text[id(entry)] = ' '.join((name, *(str(v) for k, v in entry.items() if not k.startswith('_')),
+            message_lookup(self).text(entry['header'])[0],
+            *(category_label(k) for k in categories(entry)), self._panels.get(entry['panel'], ''))).casefold()
 
     def _populate_list(self):
-        self._clear_entry_list()
-        self._entry_buttons = []
+        _clear_layout(self._entry_list_layout)
+        self._entry_list_layout.addStretch()
+        self._entry_buttons, self._search_text = [], {}
         for entry in self._entries:
-            btn = self._make_entry_button(entry)
-            self._entry_list_layout.insertWidget(self._entry_list_layout.count() - 1, btn)
-            self._entry_buttons.append((btn, entry))
-        if self._entries:
-            self._select_entry(self._entries[0])
-
-    def _make_entry_button(self, entry):
-        btn = QPushButton()
-        btn.setFixedHeight(44)
-        btn.setMinimumWidth(0)
-        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet(ss_sidebar_btn(False))
-
-        btn_layout = QVBoxLayout(btn)
-        btn_layout.setContentsMargins(10, 3, 10, 3)
-        btn_layout.setSpacing(0)
-
-        name_text = str(entry.get('char_id', ''))
-        name_lbl = QLabel(_truncate(name_text, 24))
-        name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        name_lbl.setStyleSheet(ss_main_label())
-        name_lbl.setMinimumWidth(0)
-        name_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        name_lbl.setToolTip(name_text)
-        name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        btn_layout.addWidget(name_lbl)
-
-        sub_text = str(entry.get('title', '') or f"#{entry.get('index', 0)}")
-        sub_lbl = QLabel(_truncate(sub_text, 28))
-        sub_lbl.setFont(QFont("Consolas", 11))
-        sub_lbl.setStyleSheet(ss_dim_label())
-        sub_lbl.setMinimumWidth(0)
-        sub_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        sub_lbl.setToolTip(sub_text)
-        sub_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        btn_layout.addWidget(sub_lbl)
-
-        btn.clicked.connect(lambda checked=False, e=entry: self._select_entry(e))
-        return btn
+            button = EditorListRow()
+            button.add_title()
+            button.add_subtitle()
+            self._refresh_row(button, entry)
+            button.clicked.connect(lambda checked=False, e=entry: self._select_entry(e))
+            self._entry_list_layout.insertWidget(self._entry_list_layout.count() - 1, button)
+            self._entry_buttons.append((button, entry))
+        self._filter_list()
 
     def _filter_list(self):
-        query = self._search_entry.text().lower()
-        for btn, entry in self._entry_buttons:
-            match = (
-                query in entry['char_id'].lower() or
-                query in (entry.get('title') or '').lower() or
-                query in str(entry.get('index', ''))
-            )
-            btn.setVisible(match)
+        query = self._search_entry.text().strip().casefold()
+        category = self._category_filter.currentData()
+        unlock = self._unlock_filter.currentData()
+        for button, entry in self._entry_buttons:
+            button.setVisible((not query or query in self._search_text.get(id(entry), '')) and
+                (category is None or entry[category] != 0) and
+                (unlock is None or entry['no_panel'] == unlock))
 
     def _select_entry(self, entry):
-        self._apply_fields()
+        if not self._apply_fields():
+            return False
+        self._detail_timer.stop()
         self._current_entry = entry
-        for btn, e in self._entry_buttons:
-            try:
-                if e is entry:
-                    btn.setStyleSheet(ss_sidebar_btn(True))
-                else:
-                    btn.setStyleSheet(ss_sidebar_btn(False))
-            except Exception:
-                pass
+        for button, candidate in self._entry_buttons:
+            button.set_selected(candidate is entry)
         self._build_editor(entry)
+        self._update_actions()
+        return True
 
-    def _apply_fields(self):
-        if not self._current_entry or not self._fields:
-            return
-        e = self._current_entry
+    def _draft(self):
+        if self._current_entry is None:
+            return {}, []
+        values, errors = {}, []
         for key, widget in self._fields.items():
             try:
                 if isinstance(widget, QCheckBox):
-                    e[key] = 4 if (key == 'no_panel' and widget.isChecked()) else (1 if widget.isChecked() else 0)
+                    # Preserve noncanonical truthy words unless explicitly toggled.
+                    before = self._current_entry[key]
+                    value = before if bool(before) == widget.isChecked() else int(widget.isChecked())
                 else:
-                    val = widget.text().strip()
-                    if key in ('char_id', 'panel', 'title', 'header', 'dmy'):
-                        e[key] = val
-                    elif key == 'padding':
-                        e[key] = int(val or 'FFFFFFFF', 16) & 0xFFFFFFFF
-                    else:
-                        e[key] = int(val) if val else 0
-            except (ValueError, KeyError):
-                pass
-        for btn, entry in self._entry_buttons:
-            if entry is self._current_entry:
-                labels = btn.findChildren(QLabel)
-                if labels:
-                    name_text = str(entry.get('char_id', ''))
-                    labels[0].setText(_truncate(name_text, 24))
-                    labels[0].setToolTip(name_text)
-                if len(labels) >= 2:
-                    sub_text = str(entry.get('title', '') or f"#{entry.get('index', 0)}")
-                    labels[1].setText(_truncate(sub_text, 28))
-                    labels[1].setToolTip(sub_text)
-                break
+                    value = parse_field(key, widget.value_text() if isinstance(widget, EditorValueCombo) else widget.text())
+                values[key] = value
+                invalid = False
+            except (ValueError, UnicodeError, OverflowError):
+                errors.append(key)
+                invalid = True
+            if not isinstance(widget, QCheckBox) and bool(widget.property('dictionaryInvalid')) != invalid:
+                widget.setStyleSheet(ss_input_validation(invalid))
+                widget.setProperty('dictionaryInvalid', invalid)
+        return values, errors
 
-    # Editor
+    def _apply_fields(self, show_errors=True):
+        if self._current_entry is None:
+            return True
+        values, errors = self._draft()
+        if errors:
+            key = errors[0]
+            widget = self._fields[key]
+            if show_errors:
+                QMessageBox.warning(self, ui_text('dlg_title_warning'),
+                    ui_text('dictionary_invalid_field', field=self._captions[key]))
+                self._editor_scroll.ensureWidgetVisible(widget)
+                widget.setFocus()
+            return False
+        if all(self._current_entry[key] == value for key, value in values.items()):
+            return True
+        self._current_entry.update(values)
+        for button, entry in self._entry_buttons:
+            if entry is self._current_entry:
+                self._refresh_row(button, entry)
+                break
+        self._refresh_unlock_filter()
+        self._filter_list()
+        return True
+
+    def _card(self, title, icon, columns=2):
+        card, grid = make_editor_grid_card(self._editor_widget, title=title, icon_name=icon)
+        configure_card(card)
+        self._editor_layout.addWidget(card)
+        self._grids.append((grid, [], columns))
+        return grid
+
+    def _field(self, grid, key, caption, *, choices=None, hint='', step=False):
+        if key in CATEGORY_KEYS:
+            frame = QWidget()
+            layout = configure_layout(QVBoxLayout(frame), LayoutRole.FIELD)
+        else:
+            frame, layout, _, _ = make_editor_field_shell(caption)
+        value = self._current_entry[key]
+        if choices is not None:
+            widget = EditorValueCombo(choices, value)
+            widget.lineEdit().setCursorPosition(0)
+            widget.editTextChanged.connect(self._mark_dirty)
+        elif key in CATEGORY_KEYS:
+            widget = QCheckBox(category_label(key))
+            widget.setFont(ui_font(TypeSize.LABEL))
+            widget.setStyleSheet(ss_check())
+            widget.setChecked(value != 0)
+            widget.toggled.connect(self._mark_dirty)
+        else:
+            widget = configure_input(QLineEdit(str(value)))
+            widget.textChanged.connect(self._mark_dirty)
+        widget.setProperty('messageReference', key in ('title', 'header', 'availability_message1', 'availability_message2'))
+        widget.setProperty('messageTextOnly', key in ('title', 'header'))
+        widget.setToolTip(hint)
+        widget.setAccessibleName(caption)
+        layout.addWidget(IntegerStepper(widget, 0, UINT32_MAX) if step else widget)
+        configure_field(frame, widget)
+        self._fields[key], self._captions[key] = widget, caption
+        next(frames for candidate, frames, _ in self._grids if candidate is grid).append(frame)
+        return widget
 
     def _build_editor(self, entry):
-        self._clear_editor()
-        self._fields = {}
-        self._last_editor_compact = self._is_compact_editor()
-
-        # Identity header
-        hdr, hdr_main = make_editor_card(self._editor_widget, margins=(18, 16, 18, 16), spacing=14)
-        self._prep_card(hdr)
-        add_editor_card_title(
-            hdr_main,
-            ui_text("ui_dictionaryparam_identifiers"),
-            "fa6s.book-open",
-            subtitle=entry["char_id"],
-            icon_size=20,
-        )
-        hdr_inner = QWidget(hdr)
-        hdr_inner.setStyleSheet(ss_transparent())
-        hdr_grid = QGridLayout(hdr_inner)
-        hdr_grid.setContentsMargins(0, 0, 0, 0)
-        hdr_grid.setHorizontalSpacing(16)
-        hdr_grid.setVerticalSpacing(10)
-        compact = self._is_compact_editor()
-
-        ci_frame, e_ci = make_editor_field(
-            ui_text("ui_assist_char_id"),
-            entry["char_id"],
-            height=36,
-            value_font=QFont("Segoe UI", 18, QFont.Weight.Bold),
-            accent=True,
-        )
-        self._prep_field(ci_frame, e_ci)
-        self._fields['char_id'] = e_ci
-        hdr_grid.addWidget(ci_frame, 0, 0)
-        hdr_grid.setColumnStretch(0, 2)
-
-        idx_frame, e_idx = make_editor_field(
-            ui_text("ui_dictionaryparam_index"),
-            entry["index"],
-            height=36,
-            value_font=QFont("Consolas", 16),
-        )
-        self._prep_field(idx_frame, e_idx)
-        self._fields['index'] = e_idx
-        hdr_grid.addWidget(idx_frame, 1 if compact else 0, 0 if compact else 1)
-        hdr_grid.setColumnStretch(1, 1)
-
-        hdr_main.addWidget(hdr_inner)
-        self._add_editor_card(hdr)
-
-        # Strings
-        self._add_section(ui_text("ui_customcardparam_strings"))
-        str_frame, str_main = make_editor_card(self._editor_widget, spacing=8)
-        self._prep_card(str_frame)
-        str_inner = QWidget(str_frame)
-        str_inner.setMinimumWidth(0)
-        str_inner.setStyleSheet(ss_transparent())
-        str_grid = QGridLayout(str_inner)
-        str_grid.setContentsMargins(0, 4, 0, 0)
-        str_grid.setHorizontalSpacing(16)
-        str_grid.setVerticalSpacing(8)
-        self._apply_pending_section_title(str_main, str_grid, "fa6s.quote-left")
-        str_main.addWidget(str_inner)
-
-        str_fields = [
-            ("panel",  ui_text("ui_dictionaryparam_panel"),       entry['panel']),
-            ("title",  ui_text("ui_dictionaryparam_title_key"),   entry['title']),
-            ("header", ui_text("ui_dictionaryparam_header_key"),  entry['header']),
-            ("dmy",    "DMY",         entry['dmy']),
-        ]
-        str_cols = self._grid_columns(2)
-        for fi, (key, label, val) in enumerate(str_fields):
-            row, col = divmod(fi, str_cols)
-            f, e = make_editor_field(label, val)
-            self._prep_field(f, e)
-            str_grid.addWidget(f, row, col)
-            str_grid.setColumnStretch(col, 1)
-            self._fields[key] = e
-
-        self._add_editor_card(str_frame)
-
-        # Identifiers
-        self._add_section(ui_text("ui_dictionaryparam_identifiers"))
-        ids_frame, ids_main = make_editor_card(self._editor_widget, spacing=8)
-        self._prep_card(ids_frame)
-        ids_inner = QWidget(ids_frame)
-        ids_inner.setMinimumWidth(0)
-        ids_inner.setStyleSheet(ss_transparent())
-        ids_grid = QGridLayout(ids_inner)
-        ids_grid.setContentsMargins(0, 4, 0, 0)
-        ids_grid.setHorizontalSpacing(16)
-        ids_grid.setVerticalSpacing(8)
-        self._apply_pending_section_title(ids_main, ids_grid, "fa6s.hashtag")
-        ids_main.addWidget(ids_inner)
-
-        dlc_hint = _DLC_NAMES.get(entry['dlc_id'], f"ID {entry['dlc_id']}")
-        ids_list = [
-            ("dlc_id", f"DLC ID  ({dlc_hint})", entry['dlc_id']),
-            ("patch",  ui_text("ui_dictionaryparam_patch_version"),          entry['patch']),
-        ]
-        ids_cols = self._grid_columns(2)
-        for ci, (key, label, val) in enumerate(ids_list):
-            row, col = divmod(ci, ids_cols)
-            f, e = make_editor_field(label, val)
-            self._prep_field(f, e)
-            ids_grid.addWidget(f, row, col)
-            ids_grid.setColumnStretch(col, 1)
-            self._fields[key] = e
-
-        self._add_editor_card(ids_frame)
-
-        # Part Flags
-        self._add_section(ui_text("ui_dictionaryparam_part_flags"))
-        flags_frame, flags_main = make_editor_card(self._editor_widget, spacing=10)
-        self._prep_card(flags_frame)
-        flags_inner = QWidget(flags_frame)
-        flags_inner.setMinimumWidth(0)
-        flags_inner.setStyleSheet(ss_transparent())
-        flags_grid = QGridLayout(flags_inner)
-        flags_grid.setContentsMargins(0, 4, 0, 0)
-        flags_grid.setHorizontalSpacing(16)
-        flags_grid.setVerticalSpacing(8)
-        self._apply_pending_section_title(flags_main, flags_grid, "fa6s.toggle-on")
-        flags_main.addWidget(flags_inner)
-
-        flag_cols = self._grid_columns(4)
-        for fi, (key, name) in enumerate(_FLAG_NAMES.items()):
-            row, col = divmod(fi, flag_cols)
-            cb = QCheckBox(name)
-            cb.setChecked(bool(entry.get(key, 0)))
-            cb.setFont(QFont("Segoe UI", 12))
-            cb.setStyleSheet(ss_check())
-            cb.setMinimumWidth(0)
-            cb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            flags_grid.addWidget(cb, row, col)
-            flags_grid.setColumnStretch(col, 1)
-            self._fields[key] = cb
-
-        self._add_editor_card(flags_frame)
-
-        # Panel Settings
-        self._add_section(ui_text("ui_dictionaryparam_panel_settings"))
-        panel_frame, panel_main = make_editor_card(self._editor_widget, spacing=8)
-        self._prep_card(panel_frame)
-        panel_inner = QWidget(panel_frame)
-        panel_inner.setMinimumWidth(0)
-        panel_inner.setStyleSheet(ss_transparent())
-        panel_vl = QVBoxLayout(panel_inner)
-        panel_vl.setContentsMargins(0, 4, 0, 0)
-        panel_vl.setSpacing(8)
-        self._apply_pending_section_title(panel_main, panel_vl, "fa6s.rectangle-list")
-        panel_main.addWidget(panel_inner)
-
-        no_panel_cb = QCheckBox(ui_text("ui_dictionaryparam_no_panel_entry_is_not_unlockable_via_a_panel"))
-        no_panel_cb.setChecked(entry.get('no_panel', 0) == 4)
-        no_panel_cb.setFont(QFont("Segoe UI", 12))
-        no_panel_cb.setStyleSheet(ss_check())
-        no_panel_cb.setMinimumWidth(0)
-        no_panel_cb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        panel_vl.addWidget(no_panel_cb)
-        self._fields['no_panel'] = no_panel_cb
-
-        self._add_editor_card(panel_frame)
-
-        # Advanced
-        self._add_section(ui_text("ui_charviewer_advanced"))
-        adv_frame, adv_main = make_editor_card(self._editor_widget, spacing=8)
-        self._prep_card(adv_frame)
-        adv_inner = QWidget(adv_frame)
-        adv_inner.setMinimumWidth(0)
-        adv_inner.setStyleSheet(ss_transparent())
-        adv_grid = QGridLayout(adv_inner)
-        adv_grid.setContentsMargins(0, 4, 0, 0)
-        adv_grid.setHorizontalSpacing(16)
-        adv_grid.setVerticalSpacing(8)
-        self._apply_pending_section_title(adv_main, adv_grid, "fa6s.sliders")
-        adv_main.addWidget(adv_inner)
-
-        adv_fields = [
-            ("const1",  ui_text("ui_dictionaryparam_const1_always_1"),         entry.get('const1', 1)),
-            ("padding", ui_text("ui_dictionaryparam_padding_hex_ffffffff"),    f"{entry.get('padding', 0xFFFFFFFF) & 0xFFFFFFFF:08X}"),
-            ("pad1",    ui_text("ui_dictionaryparam_pad_1"),                      entry.get('pad1', 0)),
-            ("pad2",    ui_text("ui_dictionaryparam_pad_2"),                      entry.get('pad2', 0)),
-            ("pad3",    ui_text("ui_dictionaryparam_pad_3"),                      entry.get('pad3', 0)),
-            ("pad4",    ui_text("ui_dictionaryparam_pad_4"),                      entry.get('pad4', 0)),
-            ("pad5",    ui_text("ui_dictionaryparam_pad_5"),                      entry.get('pad5', 0)),
-            ("pad6",    ui_text("ui_dictionaryparam_pad_6"),                      entry.get('pad6', 0)),
-            ("pad7",    ui_text("ui_dictionaryparam_pad_7"),                      entry.get('pad7', 0)),
-            ("pad8",    ui_text("ui_dictionaryparam_pad_8"),                      entry.get('pad8', 0)),
-            ("res1",    ui_text("ui_dictionaryparam_res_1"),                      entry.get('res1', 0)),
-            ("res2",    ui_text("ui_dictionaryparam_res_2"),                      entry.get('res2', 0)),
-            ("res3",    ui_text("ui_dictionaryparam_res_3"),                      entry.get('res3', 0)),
-            ("res4",    ui_text("ui_dictionaryparam_res_4"),                      entry.get('res4', 0)),
-            ("res5",    ui_text("ui_dictionaryparam_res_5"),                      entry.get('res5', 0)),
-        ]
-        adv_cols = self._grid_columns(3)
-        for fi, (key, label, val) in enumerate(adv_fields):
-            row, col = divmod(fi, adv_cols)
-            f, e = make_editor_field(label, val)
-            self._prep_field(f, e)
-            adv_grid.addWidget(f, row, col)
-            adv_grid.setColumnStretch(col, 1)
-            self._fields[key] = e
-
-        self._add_editor_card(adv_frame)
-
-        for widget in self._fields.values():
-            if isinstance(widget, QLineEdit):
-                widget.textEdited.connect(self._mark_dirty)
-            elif isinstance(widget, QCheckBox):
-                widget.stateChanged.connect(self._mark_dirty)
-
-        spacer = QWidget()
-        spacer.setFixedHeight(20)
-        spacer.setStyleSheet(ss_transparent())
-        self._editor_layout.addWidget(spacer)
+        self._loading_detail = True
+        _clear_layout(self._editor_layout)
+        self._fields, self._captions, self._grids = {}, {}, []
+        grid = self._card(ui_text('dictionary_article'), 'fa6s.book-open', 1)
+        self._field(grid, 'title', ui_text('ui_dictionaryparam_title_key'))
+        self._field(grid, 'header', ui_text('ui_dictionaryparam_header_key'))
+        grid = self._card(ui_text('dictionary_categories'), 'fa6s.layer-group', 3)
+        for key in CATEGORY_KEYS:
+            self._field(grid, key, category_label(key), hint=ui_text('dictionary_category_hint'))
+        grid = self._card(ui_text('dictionary_links'), 'fa6s.link')
+        self._field(grid, 'char_id', ui_text('dictionary_lookup_id'), hint=ui_text('dictionary_lookup_hint'))
+        self._field(grid, 'index', ui_text('dictionary_save_index'), step=True, hint=ui_text('dictionary_index_hint'))
+        panel_ids = sorted(set(self._panels) | {e['panel'] for e in self._entries} | {''})
+        self._field(grid, 'panel', ui_text('ui_dictionaryparam_panel'),
+            choices=[(key, f'{key} — {self._panels[key]}' if key in self._panels else key) for key in panel_ids],
+            hint=ui_text('dictionary_panel_hint'))
+        self._field(grid, 'no_panel', ui_text('ui_charviewer_unlock_condition'),
+            choices=unlock_choices(self._entries), hint=ui_text('dictionary_unlock_hint'))
+        for key, caption in (('dlc_id', ui_text('ui_charviewer_dlc_id')), ('patch', ui_text('ui_dictionaryparam_patch_version'))):
+            values = sorted({e[key] for e in self._entries})
+            choices = [(v, ui_text('ui_charviewer_base_game') if key == 'dlc_id' and v == 0 else str(v)) for v in values]
+            self._field(grid, key, caption, choices=choices, hint=ui_text('dictionary_content_hint'))
+        grid = self._card(ui_text('dictionary_saved_values'), 'fa6s.sliders', 3)
+        for key in SHARED_GALLERY_KEYS:
+            choices = stored_choices(key, self._entries, self._characters)
+            self._field(grid, key, stored_caption(key), choices=choices, hint=stored_hint(key),
+                        step=choices is None and key not in STRING_KEYS)
+        grid = self._card(ui_text('dictionary_connections'), 'fa6s.circle-info', 1)
+        self._diagnostics = QLabel()
+        self._diagnostics.setFont(ui_font(TypeSize.BODY))
+        self._diagnostics.setStyleSheet(ss_dim_label())
+        self._diagnostics.setWordWrap(True)
+        self._diagnostics.setTextFormat(Qt.TextFormat.PlainText)
+        self._diagnostics.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        grid.addWidget(self._diagnostics)
         self._editor_layout.addStretch()
+        self._loading_detail = False
+        self._reflow()
+        self._refresh_diagnostics()
+        self._editor_scroll.verticalScrollBar().setValue(0)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if not self._current_entry or self._last_editor_compact is None:
+    def _reflow(self):
+        width = self._editor_scroll.viewport().width()
+        for grid, frames, maximum in self._grids:
+            if not frames:
+                continue
+            columns = 1 if width < 760 else min(2 if width < 1060 else 3, maximum)
+            for col in range(maximum):
+                stretch = int(col < columns)
+                if grid.columnStretch(col) != stretch:
+                    grid.setColumnStretch(col, stretch)
+            for i, frame in enumerate(frames):
+                row, col = divmod(i, columns)
+                if grid.indexOf(frame) < 0 or grid.getItemPosition(grid.indexOf(frame)) != (row, col, 1, 1):
+                    grid.addWidget(frame, row, col, Qt.AlignmentFlag.AlignTop)
+        fit_scroll_page(self._editor_scroll)
+
+    def eventFilter(self, watched, event):
+        if watched is self._editor_scroll.viewport() and event.type() == QEvent.Type.Resize:
+            QTimer.singleShot(0, self._reflow)
+        return super().eventFilter(watched, event)
+
+    def _refresh_diagnostics(self):
+        if self._current_entry is None or not self._fields:
             return
-        compact = self._is_compact_editor()
-        if compact != self._last_editor_compact:
-            self._apply_fields()
-            QTimer.singleShot(0, lambda: self._current_entry and self._build_editor(self._current_entry))
+        values, errors = self._draft()
+        if errors:
+            self._diagnostics.setText(ui_text('dictionary_pending_input'))
+            fit_scroll_page(self._editor_scroll)
+            return
+        draft = dict(self._current_entry, **values)
+        rows = [draft if e is self._current_entry else e for e in self._entries]
+        issues = entry_issues(draft, rows, self._panels)
+        summary = ' · '.join(category_label(k) for k in categories(draft)) or ui_text('dictionary_no_category')
+        panel = self._panels.get(draft['panel'], draft['panel'])
+        if panel:
+            summary += '\n' + ui_text('dictionary_linked_panel', panel=panel)
+        if self._panel_error:
+            issues.append(ui_text('dictionary_panel_catalog_error', error=self._panel_error))
+        if self._character_error:
+            issues.append(ui_text('dictionary_character_catalog_error', error=self._character_error))
+        self._diagnostics.setText('\n'.join((summary, *issues)))
+        fit_scroll_page(self._editor_scroll)
 
     def _mark_dirty(self, *_):
-        if self._dirty:
+        if self._loading_detail:
             return
         self._dirty = True
         if self._filepath:
             set_file_label(self._file_lbl, self._filepath, dirty=True)
+        self._detail_timer.start()
+        self._update_actions()
 
-    # Add / Duplicate / Delete
+    def _update_actions(self):
+        loaded = self._original_data is not None
+        selected = self._current_entry is not None
+        self._save_btn.setEnabled(loaded)
+        self._add_btn.setEnabled(loaded)
+        self._dup_btn.setEnabled(loaded and selected)
+        self._del_btn.setEnabled(loaded and selected)
+        refresh_file_actions(self, loaded=loaded)
 
     def _add_new_entry(self):
-        if self._original_data is None:
+        if self._original_data is None or not self._apply_fields():
             return
-        self._apply_fields()
-        new_entry = make_default_entry(len(self._entries))
-        self._entries.append(new_entry)
-        self._populate_list()
-        self._select_entry(new_entry)
-        self._mark_dirty()
+        identity = self._allocate_identity()
+        if identity is None:
+            return
+        index, ident = identity
+        entry = make_default_entry(index)
+        entry['char_id'] = ident
+        self._insert_entry(entry)
 
     def _duplicate_entry(self):
-        if not self._current_entry:
+        if self._current_entry is None or not self._apply_fields():
             return
-        self._apply_fields()
-        new_entry = copy.deepcopy(self._current_entry)
-        new_entry['index'] = len(self._entries)
-        new_entry['char_id'] = new_entry['char_id'] + '_copy'
-        self._entries.append(new_entry)
+        identity = self._allocate_identity()
+        if identity is None:
+            return
+        entry = copy.deepcopy(self._current_entry)
+        entry['index'], entry['char_id'] = identity
+        entry.pop('_offset', None)
+        self._insert_entry(entry)
+
+    def _allocate_identity(self):
+        try:
+            return next_identity(self._entries)
+        except ValueError:
+            QMessageBox.warning(self, ui_text('dlg_title_warning'), ui_text('dictionary_no_free_index'))
+            return None
+
+    def _insert_entry(self, entry):
+        self._entries.append(entry)
+        self._current_entry = None
+        self._fields = {}
+        self._search_entry._design_filter_reset.clear()
         self._populate_list()
-        self._select_entry(new_entry)
+        self._select_entry(entry)
+        self._entry_scroll.ensureWidgetVisible(self._entry_buttons[-1][0])
         self._mark_dirty()
 
     def _delete_entry(self):
-        if not self._current_entry:
+        if self._current_entry is None or not self._apply_fields():
             return
         if len(self._entries) <= 1:
-            QMessageBox.warning(self, ui_text("dlg_title_warning"), ui_text("msg_cannot_delete_last_entry"))
+            QMessageBox.warning(self, ui_text('dlg_title_warning'), ui_text('msg_cannot_delete_last_entry'))
             return
-        name = self._current_entry['char_id']
-        result = QMessageBox.question(
-            self, ui_text("dlg_title_confirm_delete"),
-            ui_text("ui_dictionaryparam_delete_entry_value_this_cannot_be_undone", p0=name),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if result != QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(self, ui_text('dlg_title_confirm_delete'),
+            ui_text('ui_dictionaryparam_delete_entry_value_this_cannot_be_undone', p0=self._current_entry['char_id']),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
-        self._fields = {}
-        self._entries.remove(self._current_entry)
+        index = next(i for i, entry in enumerate(self._entries) if entry is self._current_entry)
+        del self._entries[index]
         self._current_entry = None
+        self._fields = {}
         self._populate_list()
+        self._select_entry(self._entries[min(index, len(self._entries) - 1)])
         self._mark_dirty()

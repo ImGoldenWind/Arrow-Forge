@@ -1,29 +1,56 @@
-import os
+from core.design_tokens import (
+    Insets,
+    LayoutRole,
+    Padding,
+    Size,
+    TypeSize,
+    mono_font,
+    ui_font,
+)
+from core.style_helpers import (
+    add_editor_card_title,
+    make_editor_card,
+    make_editor_field_shell,
+    make_empty_state,
+    ss_accent_label,
+    ss_bg_dark,
+    ss_dim_label,
+    ss_field_label,
+    ss_input_accent,
+    ss_main_label,
+    ss_tab_bar,
+    ss_transparent,
+)
+from core.ui.editor_widgets import (
+    EditorActionRow,
+    EditorListRow,
+    EditorSeparator,
+    EditorSidebar,
+    EditorToolbar,
+    configure_button,
+    configure_file_label,
+    configure_input,
+    configure_layout,
+    configure_scrollarea,
+    configure_search,
+)
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.editor_actions import commit_save_path, editor_path, install_file_actions
 import copy
 import threading
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QScrollArea,
     QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QMessageBox,
-    QTabBar, QTabWidget, QSizePolicy,
+    QTabBar, QComboBox,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont, QPainter, QColor, QPen, QBrush, QCursor
-from core.themes import P
-from core.style_helpers import (
-    add_editor_card_title,
-    ss_accent_label, ss_bg_dark, ss_bg_panel, ss_btn, ss_dim_label,
-    ss_file_label, ss_main_label, ss_sep, ss_accent_sep, ss_input, ss_search,
-    ss_sidebar_frame, ss_tab_widget, ss_scrollarea, ss_scrollarea_transparent,
-    ss_tab_bar, ss_field_label, ss_transparent, make_editor_card,
-    make_editor_field_shell, make_empty_state,
-    TOOLBAR_H, TOOLBAR_BTN_H,
-)
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QFont, QFontMetrics
 from core.editor_file_state import set_file_label
 from core.skeleton import SkeletonListRow
 from parsers.info_parser import (
     parse_info_xfbin, save_info_xfbin,
     get_scene_description, make_default_collision,
-    analyze_char_select, COLLISION_FIELDS, INT_FIELDS,
+    analyze_char_select, INT_FIELDS,
 )
 from core.translations import ui_text
 from core.settings import create_backup_on_open, game_files_dialog_dir
@@ -46,49 +73,29 @@ def _clear_layout(layout):
 
 
 def _make_font(family="Segoe UI", size=12, bold=False):
-    f = QFont(family, size)
+    f = mono_font(size) if family == "Consolas" else ui_font(size)
     if bold:
         f.setWeight(QFont.Weight.Bold)
     return f
 
 
-def _set_bg(widget, color):
-    widget.setAutoFillBackground(True)
-    p = widget.palette()
-    p.setColor(widget.backgroundRole(), QColor(color))
-    widget.setPalette(p)
-
-
-def _style_entry(entry, *, h=32, font=None):
-    entry.setStyleSheet(ss_input())
-    entry.setFixedHeight(h)
+def _style_entry(entry, *, h=Size.CONTROL, font=None):
+    configure_input(entry, height=h, font=font)
     entry.setMinimumWidth(0)
     if font:
         entry.setFont(font)
 
 
-def _make_info_card(parent=None, *, margins=(16, 12, 16, 12), spacing=8):
+def _make_info_card(parent=None, *, margins=Insets.CARD, spacing=Size.CARD_GAP):
     return make_editor_card(parent, margins=margins, spacing=spacing)
 
 
-def _style_info_label(label):
-    label.setStyleSheet(ss_field_label())
-    label.setWordWrap(True)
-    label.setMinimumWidth(0)
-
-
 def _style_accent_entry(entry):
-    entry.setStyleSheet(ss_input() + f" QLineEdit {{ color: {P['accent']}; }}")
+    entry.setStyleSheet(ss_input_accent())
 
 
 def _field_shell(label_text, hint_text="", *, label_size=12):
-    frame, layout, _label, _hint = make_editor_field_shell(
-        label_text,
-        hint_text,
-        label_font_size=label_size,
-        spacing=3,
-    )
-    layout.setContentsMargins(8, 0, 8, 0)
+    frame, layout, _label, _hint = make_editor_field_shell(label_text, hint_text, label_font_size=label_size)
     return frame, layout
 
 
@@ -99,446 +106,21 @@ def _value_label(text, *, size=14, bold=True):
     return label
 
 
-# Collision canvas (visual map - read only)
-
-class _CollisionMapCanvas(QWidget):
-    """Read-only miniature visual representation of collision boxes."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._collisions = []
-        self._canvas_w = 600
-        self._canvas_h = 180
-        self.setFixedHeight(self._canvas_h)
-        self.setMinimumWidth(0)
-
-    def set_collisions(self, collisions):
-        self._collisions = list(collisions)
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor(P["bg_dark"]))
-
-        collisions = self._collisions
-        if not collisions:
-            painter.end()
-            return
-
-        min_x = min(c.get('x', 0) for c in collisions)
-        min_y = min(c.get('y', 0) for c in collisions)
-        max_x = max(c.get('x', 0) + c.get('w', 0) for c in collisions)
-        max_y = max(c.get('y', 0) + c.get('h', 0) for c in collisions)
-
-        range_x = max(max_x - min_x, 1)
-        range_y = max(max_y - min_y, 1)
-
-        pad = 10
-        draw_w = self.width() - 2 * pad
-        draw_h = self.height() - 2 * pad
-        scale_x = draw_w / range_x
-        scale_y = draw_h / range_y
-        scale = min(scale_x, scale_y)
-
-        palette = [ui_text("ui_info_e74c3c"), ui_text("ui_info_3498db"), ui_text("ui_info_2ecc71"), ui_text("ui_info_f39c12"), ui_text("ui_info_9b59b6"),
-                   ui_text("ui_info_1abc9c"), ui_text("ui_info_e67e22"), ui_text("ui_info_e91e63"), ui_text("ui_info_00bcd4"), ui_text("ui_info_8bc34a")]
-        colors_by_name = {}
-
-        for coll in collisions:
-            cname = coll.get('name', '')
-            if cname not in colors_by_name:
-                colors_by_name[cname] = palette[len(colors_by_name) % len(palette)]
-
-            cx = pad + (coll.get('x', 0) - min_x) * scale
-            cy = pad + (coll.get('y', 0) - min_y) * scale
-            cw = max(coll.get('w', 0) * scale, 2)
-            ch = max(coll.get('h', 0) * scale, 2)
-
-            color = QColor(colors_by_name[cname])
-            painter.setPen(QPen(color, 1))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(int(cx), int(cy), int(cw), int(ch))
-
-        painter.end()
-
-
-# Interactive collision canvas (drag & resize)
-
-class _InteractiveCollisionCanvas(QWidget):
-    """Interactive visual map where the selected collision can be dragged / resized."""
-
-    fields_changed = pyqtSignal()  # emitted when collision data changed by drag
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._collisions = []
-        self._selected_coll = None
-        self._canvas_w = 620
-        self._canvas_h = 260
-        self.setFixedHeight(self._canvas_h)
-        self.setMinimumWidth(0)
-        self.setMouseTracking(True)
-
-        self._drag_mode = None
-        self._drag_start = None
-        self._orig_x = 0
-        self._orig_y = 0
-        self._orig_w = 0
-        self._orig_h = 0
-
-        self._scale = 1.0
-        self._min_x = 0
-        self._min_y = 0
-        self._pad = 14
-        self._cursor_world = (0, 0)
-
-        self._palette = [ui_text("ui_info_e74c3c"), ui_text("ui_info_3498db"), ui_text("ui_info_2ecc71"), ui_text("ui_info_f39c12"), ui_text("ui_info_9b59b6"),
-                         ui_text("ui_info_1abc9c"), ui_text("ui_info_e67e22"), ui_text("ui_info_e91e63"), ui_text("ui_info_00bcd4"), ui_text("ui_info_8bc34a")]
-        self._colors_by_name = {}
-
-    def set_data(self, collisions, selected_coll):
-        self._collisions = list(collisions)
-        self._selected_coll = selected_coll
-        self._colors_by_name = {}
-        self._recompute_transform()
-        self.update()
-
-    def _recompute_transform(self):
-        collisions = self._collisions
-        if not collisions:
-            return
-        min_x = min(c.get('x', 0) for c in collisions)
-        min_y = min(c.get('y', 0) for c in collisions)
-        max_x = max(c.get('x', 0) + c.get('w', 0) for c in collisions)
-        max_y = max(c.get('y', 0) + c.get('h', 0) for c in collisions)
-        margin = 80
-        min_x -= margin
-        min_y -= margin
-        max_x += margin
-        max_y += margin
-        range_x = max(max_x - min_x, 1)
-        range_y = max(max_y - min_y, 1)
-        draw_w = self.width() - 2 * self._pad
-        draw_h = self.height() - 2 * self._pad
-        scale_x = draw_w / range_x
-        scale_y = draw_h / range_y
-        self._scale = min(scale_x, scale_y)
-        self._min_x = min_x
-        self._min_y = min_y
-
-    def _w2c(self, wx, wy):
-        return (self._pad + (wx - self._min_x) * self._scale,
-                self._pad + (wy - self._min_y) * self._scale)
-
-    def _c2w(self, cx, cy):
-        return ((cx - self._pad) / self._scale + self._min_x,
-                (cy - self._pad) / self._scale + self._min_y)
-
-    def _handle_rects(self):
-        """Return dict of handle_tag -> QRectF for the selected collision."""
-        sel = self._selected_coll
-        if not sel:
-            return {}
-        sx, sy = self._w2c(sel.get('x', 0), sel.get('y', 0))
-        sw = max(sel.get('w', 0) * self._scale, 4)
-        sh = max(sel.get('h', 0) * self._scale, 4)
-        hs = 5
-        positions = {
-            'h_tl': (sx, sy), 'h_tr': (sx + sw, sy),
-            'h_bl': (sx, sy + sh), 'h_br': (sx + sw, sy + sh),
-            'h_t': (sx + sw / 2, sy), 'h_b': (sx + sw / 2, sy + sh),
-            'h_l': (sx, sy + sh / 2), 'h_r': (sx + sw, sy + sh / 2),
-        }
-        from PyQt6.QtCore import QRectF
-        return {tag: QRectF(hx - hs, hy - hs, 2 * hs, 2 * hs) for tag, (hx, hy) in positions.items()}
-
-    def _sel_rect_canvas(self):
-        sel = self._selected_coll
-        if not sel:
-            return None
-        sx, sy = self._w2c(sel.get('x', 0), sel.get('y', 0))
-        sw = max(sel.get('w', 0) * self._scale, 4)
-        sh = max(sel.get('h', 0) * self._scale, 4)
-        from PyQt6.QtCore import QRectF
-        return QRectF(sx, sy, sw, sh)
-
-    # Paint
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor(P["bg_dark"]))
-
-        collisions = self._collisions
-        sel = self._selected_coll
-        if not collisions:
-            painter.end()
-            return
-
-        # Draw non-selected (dimmed, dashed)
-        for coll_item in collisions:
-            if coll_item is sel:
-                continue
-            cname = coll_item.get('name', '')
-            if cname not in self._colors_by_name:
-                self._colors_by_name[cname] = self._palette[len(self._colors_by_name) % len(self._palette)]
-            cx, cy = self._w2c(coll_item.get('x', 0), coll_item.get('y', 0))
-            cw = max(coll_item.get('w', 0) * self._scale, 2)
-            ch = max(coll_item.get('h', 0) * self._scale, 2)
-            color = QColor(self._colors_by_name[cname])
-            pen = QPen(color, 1, Qt.PenStyle.DashLine)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(int(cx), int(cy), int(cw), int(ch))
-
-        # Draw selected collision
-        if sel:
-            cname = sel.get('name', '')
-            if cname not in self._colors_by_name:
-                self._colors_by_name[cname] = self._palette[len(self._colors_by_name) % len(self._palette)]
-            sel_fill = QColor(self._colors_by_name[cname])
-            sel_fill.setAlpha(60)
-
-            sx, sy = self._w2c(sel.get('x', 0), sel.get('y', 0))
-            sw = max(sel.get('w', 0) * self._scale, 4)
-            sh = max(sel.get('h', 0) * self._scale, 4)
-
-            painter.setPen(QPen(QColor(ui_text("ui_costume_ffffff")), 2))
-            painter.setBrush(QBrush(sel_fill))
-            painter.drawRect(int(sx), int(sy), int(sw), int(sh))
-
-            # Label
-            idx = 0
-            try:
-                idx = collisions.index(sel)
-            except ValueError:
-                pass
-            painter.setPen(QColor(ui_text("ui_costume_ffffff")))
-            painter.setFont(QFont('Consolas', 8))
-            from PyQt6.QtCore import QRectF
-            painter.drawText(QRectF(sx, sy, sw, sh), Qt.AlignmentFlag.AlignCenter,
-                             f"#{idx} {cname}")
-
-            # Handles
-            handle_rects = self._handle_rects()
-            for tag, rect in handle_rects.items():
-                painter.setPen(QPen(QColor(P["accent"]), 1))
-                painter.setBrush(QBrush(QColor(ui_text("ui_costume_ffffff"))))
-                painter.drawRect(rect)
-
-        painter.end()
-
-    # Mouse events
-
-    def mousePressEvent(self, event):
-        if event.button() != Qt.MouseButton.LeftButton or not self._selected_coll:
-            return
-        pos = event.position()
-        ex, ey = pos.x(), pos.y()
-
-        # Check handles first
-        from PyQt6.QtCore import QPointF
-        pt = QPointF(ex, ey)
-        for tag, rect in self._handle_rects().items():
-            inflated = rect.adjusted(-4, -4, 4, 4)
-            if inflated.contains(pt):
-                self._start_drag(tag, ex, ey)
-                return
-
-        # Check if inside selected rect
-        sr = self._sel_rect_canvas()
-        if sr and sr.contains(pt):
-            self._start_drag('move', ex, ey)
-
-    def _start_drag(self, mode, ex, ey):
-        self._drag_mode = mode
-        self._drag_start = (ex, ey)
-        sel = self._selected_coll
-        self._orig_x = sel.get('x', 0)
-        self._orig_y = sel.get('y', 0)
-        self._orig_w = sel.get('w', 0)
-        self._orig_h = sel.get('h', 0)
-
-    def mouseMoveEvent(self, event):
-        pos = event.position()
-        ex, ey = pos.x(), pos.y()
-        self._cursor_world = self._c2w(ex, ey)
-
-        if not self._drag_mode or not self._drag_start or not self._selected_coll:
-            return
-
-        dx_px = ex - self._drag_start[0]
-        dy_px = ey - self._drag_start[1]
-        sc = self._scale
-        dx_world = round(dx_px / sc)
-        dy_world = round(dy_px / sc)
-
-        coll = self._selected_coll
-        mode = self._drag_mode
-
-        if mode == 'move':
-            coll['x'] = self._orig_x + dx_world
-            coll['y'] = self._orig_y + dy_world
-        elif mode == 'h_br':
-            coll['w'] = max(self._orig_w + dx_world, 1)
-            coll['h'] = max(self._orig_h + dy_world, 1)
-        elif mode == 'h_bl':
-            coll['x'] = self._orig_x + dx_world
-            coll['w'] = max(self._orig_w - dx_world, 1)
-            coll['h'] = max(self._orig_h + dy_world, 1)
-        elif mode == 'h_tr':
-            coll['y'] = self._orig_y + dy_world
-            coll['w'] = max(self._orig_w + dx_world, 1)
-            coll['h'] = max(self._orig_h - dy_world, 1)
-        elif mode == 'h_tl':
-            coll['x'] = self._orig_x + dx_world
-            coll['y'] = self._orig_y + dy_world
-            coll['w'] = max(self._orig_w - dx_world, 1)
-            coll['h'] = max(self._orig_h - dy_world, 1)
-        elif mode == 'h_r':
-            coll['w'] = max(self._orig_w + dx_world, 1)
-        elif mode == 'h_l':
-            coll['x'] = self._orig_x + dx_world
-            coll['w'] = max(self._orig_w - dx_world, 1)
-        elif mode == 'h_t':
-            coll['y'] = self._orig_y + dy_world
-            coll['h'] = max(self._orig_h - dy_world, 1)
-        elif mode == 'h_b':
-            coll['h'] = max(self._orig_h + dy_world, 1)
-
-        self.update()
-        self.fields_changed.emit()
-
-    def mouseReleaseEvent(self, event):
-        if self._drag_mode:
-            self.fields_changed.emit()
-        self._drag_mode = None
-        self._drag_start = None
-
-    def get_cursor_world(self):
-        return self._cursor_world
+# Shared geometry and the subject-specific canvas are kept outside the form.
+from editors.info_canvas import CollisionCanvas as _InteractiveCollisionCanvas
+from core.ui_collisions import (GEOMETRY_FIELDS, I32_MIN, I32_MAX, circle,
+                                hit_score, identity_index, parse_integer, vertices, xml_text_valid)
+from core.ui.number_input import IntegerStepper
+from core.ui.value_combo import EditorValueCombo
+from core.style_helpers import ss_input_validation
 
 
 # Set / Collision list button widgets
 
-class _SetButton(QWidget):
-    clicked = pyqtSignal()
-
+class _SetButton(EditorListRow):
     def __init__(self, desc, sub_text, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(44)
-        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._selected = False
-        self._hovered = False
-        self._desc = desc
-        self._sub = sub_text
-
-    def set_selected(self, val):
-        self._selected = val
-        self.update()
-
-    def enterEvent(self, event):
-        self._hovered = True
-        self.update()
-
-    def leaveEvent(self, event):
-        self._hovered = False
-        self.update()
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        if self._selected:
-            bg = QColor(P["bg_card"])
-        elif self._hovered:
-            bg = QColor(P["bg_card_hov"])
-        else:
-            bg = QColor("transparent")
-
-        if bg.alpha() > 0:
-            painter.setBrush(QBrush(bg))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(self.rect(), 6, 6)
-
-        painter.setPen(QColor(P["text_main"]))
-        painter.setFont(_make_font("Segoe UI", 12, bold=True))
-        painter.drawText(8, 16, self._desc)
-
-        painter.setPen(QColor(P["text_dim"]))
-        painter.setFont(_make_font("Consolas", 10))
-        painter.drawText(8, 34, self._sub)
-        painter.end()
-
-
-class _CollButton(QWidget):
-    clicked = pyqtSignal()
-
-    def __init__(self, idx, coll, t_func, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(36)
-        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._selected = False
-        self._hovered = False
-        self._idx = idx
-        self._coll = coll
-        self.t = t_func
-
-    def set_selected(self, val):
-        self._selected = val
-        self.update()
-
-    def update_from_coll(self):
-        self.update()
-
-    def enterEvent(self, event):
-        self._hovered = True
-        self.update()
-
-    def leaveEvent(self, event):
-        self._hovered = False
-        self.update()
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        if self._selected:
-            bg = QColor(P["bg_card"])
-        elif self._hovered:
-            bg = QColor(P["bg_card_hov"])
-        else:
-            bg = QColor("transparent")
-
-        if bg.alpha() > 0:
-            painter.setBrush(QBrush(bg))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(self.rect(), 4, 4)
-
-        coll = self._coll
-        painter.setPen(QColor(P["accent"]))
-        painter.setFont(_make_font("Consolas", 10, bold=True))
-        painter.drawText(4, 14, f"#{self._idx:02d}")
-
-        cname = coll.get('name', '') or self.t("coll_unnamed")
-        painter.setPen(QColor(P["text_main"]))
-        painter.setFont(_make_font("Segoe UI", 11))
-        painter.drawText(34, 14, cname)
-
-        pos_text = f"{coll.get('x', 0)},{coll.get('y', 0)} {coll.get('w', 0)}x{coll.get('h', 0)}"
-        painter.setPen(QColor(P["text_dim"]))
-        painter.setFont(_make_font("Consolas", 9))
-        painter.drawText(34, 30, pos_text)
-        painter.end()
+        self.set_texts(desc, sub_text)
 
 
 #  InfoEditor  –  main widget
@@ -546,7 +128,7 @@ class _CollButton(QWidget):
 class InfoEditor(QWidget):
     """Full-featured editor for info.xfbin UI collision files.
 
-    Displays all scene sets and their collision rectangles,
+    Displays all scene sets and their collision shapes,
     allows editing, adding, deleting collisions, and provides
     analysis of the character select screen layout.
     """
@@ -571,110 +153,100 @@ class InfoEditor(QWidget):
         self._fields = {}
         self._interactive_canvas = None
         self._computed_labels = {}
-        self._coord_timer = None
         self._vis_coord_label = None
 
         self._filepath = None
         self._dirty = False
+        self._original_collisions = {}
+        self._view_state = None
+        self._geometry_undo = []
+        self._geometry_redo = []
 
         self._load_done_signal.connect(self._on_load_done)
         self._load_error_signal.connect(self._on_load_error)
 
         self._build_ui()
+        install_file_actions(self, self._save_btn, save_to=lambda path: self._save_file(target_path=path))
+        install_editor_chrome(self)
 
     # UI construction
 
     def _build_ui(self):
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
+        configure_layout(root_layout, LayoutRole.ROOT)
 
         # Toolbar
-        top = QFrame()
-        top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(ss_bg_panel())
-        top_layout = QHBoxLayout(top)
-        top_layout.setContentsMargins(12, 8, 12, 8)
-        top_layout.setSpacing(4)
+        top = EditorToolbar()
+        top_layout = top.content_layout
 
         open_btn = QPushButton(self.t("btn_open_file"))
-        open_btn.setFixedHeight(TOOLBAR_BTN_H)
-        open_btn.setFont(QFont("Segoe UI", 10))
-        open_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(open_btn, accent=True)
         open_btn.clicked.connect(self._load_file)
+        open_btn.setProperty("designAction", 'open')
         top_layout.addWidget(open_btn)
 
         self._save_btn = QPushButton(self.t("btn_save_file"))
-        self._save_btn.setFixedHeight(TOOLBAR_BTN_H)
-        self._save_btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self._save_btn.setEnabled(False)
-        self._save_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._save_btn, accent=True)
         self._save_btn.clicked.connect(self._save_file)
         top_layout.addWidget(self._save_btn)
 
         self._file_label = QLabel(self.t("no_file_loaded"))
-        self._file_label.setFont(QFont("Consolas", 12))
-        self._file_label.setStyleSheet(ss_file_label())
+
+        configure_file_label(self._file_label)
         top_layout.addWidget(self._file_label)
 
         top_layout.addStretch()
 
-        self._info_label = QLabel("")
-        self._info_label.setFont(QFont("Consolas", 10))
-        self._info_label.setStyleSheet(ss_accent_label())
-        top_layout.addWidget(self._info_label)
 
         root_layout.addWidget(top)
 
-        sep = QFrame()
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
+        sep = EditorSeparator(accent=True)
+
+
         root_layout.addWidget(sep)
 
         # Main area: left sidebar (scenes) + collision tabs + editor
         main = QWidget()
         main_layout = QHBoxLayout(main)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        configure_layout(main_layout, LayoutRole.ROOT)
 
         # Left sidebar: scene set list
         left_panel = self._build_set_list()
         main_layout.addWidget(left_panel)
 
         # Separator
-        sep_l = QFrame()
-        sep_l.setFixedWidth(1)
-        sep_l.setStyleSheet(ss_sep())
+        sep_l = EditorSeparator(orientation=Qt.Orientation.Vertical)
+
+
         main_layout.addWidget(sep_l)
 
         # Tab widget — "Collisions" tab (collision list + editor)
         right_panel = QWidget()
         right_panel.setStyleSheet(ss_bg_dark())
         right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(0)
+        configure_layout(right_layout, LayoutRole.ROOT)
 
         coll_tabs_bar = self._build_collision_tabs_bar()
         right_layout.addWidget(coll_tabs_bar)
 
-        sep_tabs = QFrame()
-        sep_tabs.setFixedHeight(1)
-        sep_tabs.setStyleSheet(ss_sep())
+        sep_tabs = EditorSeparator()
+
+
         right_layout.addWidget(sep_tabs)
 
         # Right panel: editor (scrollable)
         self._editor_scroll = QScrollArea()
-        self._editor_scroll.setWidgetResizable(True)
-        self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+
         self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._editor_scroll.setStyleSheet(ss_scrollarea())
+        configure_scrollarea(self._editor_scroll)
         self._editor_content = QWidget()
         self._editor_content.setMinimumWidth(0)
         self._editor_content.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_content)
         self._editor_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self._editor_layout.setContentsMargins(12, 12, 12, 12)
-        self._editor_layout.setSpacing(8)
+        configure_layout(self._editor_layout, LayoutRole.PAGE)
         self._editor_scroll.setWidget(self._editor_content)
         right_layout.addWidget(self._editor_scroll, 1)
 
@@ -694,82 +266,65 @@ class InfoEditor(QWidget):
         root_layout.addWidget(main, 1)
 
     def _build_set_list(self):
-        panel = QFrame()
-        panel.setFixedWidth(260)
-        panel.setStyleSheet(ss_sidebar_frame())
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(8, 8, 8, 4)
-        layout.setSpacing(4)
+        panel = EditorSidebar()
+
+
+        layout = panel.content_layout
+
 
         # Search
         self._set_search_entry = QLineEdit()
-        self._set_search_entry.setPlaceholderText(self.t("search_scenes_placeholder"))
-        self._set_search_entry.setFixedHeight(32)
-        self._set_search_entry.setFont(QFont("Segoe UI", 13))
-        self._set_search_entry.setStyleSheet(ss_search())
+        configure_search(self._set_search_entry)
         self._set_search_entry.textChanged.connect(self._filter_set_list)
         layout.addWidget(self._set_search_entry)
 
         # Actions
-        actions = QWidget()
-        actions.setStyleSheet(ss_transparent())
-        al = QHBoxLayout(actions)
-        al.setContentsMargins(0, 2, 0, 4)
-        al.setSpacing(4)
+        actions = EditorActionRow()
 
-        btn_font = QFont("Segoe UI", 10)
+        al = actions.content_layout
+
+
+        btn_font = ui_font(TypeSize.BODY)
 
         self._add_set_btn = QPushButton(self.t("btn_add_scene"))
-        self._add_set_btn.setFixedHeight(28)
-        self._add_set_btn.setFont(btn_font)
-        self._add_set_btn.setStyleSheet(ss_btn())
+        configure_button(self._add_set_btn, height=Size.COMPACT_CONTROL)
         self._add_set_btn.setEnabled(False)
         self._add_set_btn.clicked.connect(self._add_new_set)
+        self._add_set_btn.setProperty("designAction", 'new')
         al.addWidget(self._add_set_btn, 1)
 
         self._del_set_btn = QPushButton(self.t("btn_delete"))
-        self._del_set_btn.setFixedHeight(28)
-        self._del_set_btn.setFont(btn_font)
-        self._del_set_btn.setStyleSheet(ss_btn(danger=True))
+        configure_button(self._del_set_btn, danger=True, height=Size.COMPACT_CONTROL)
         self._del_set_btn.setEnabled(False)
         self._del_set_btn.clicked.connect(self._delete_set)
+        self._del_set_btn.setProperty("designAction", 'delete')
         al.addWidget(self._del_set_btn, 1)
 
         layout.addWidget(actions)
 
         # Scrollable set list
         self._set_scroll = QScrollArea()
-        self._set_scroll.setWidgetResizable(True)
-        self._set_scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+
         self._set_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._set_scroll.setStyleSheet(ss_scrollarea_transparent())
+        configure_scrollarea(self._set_scroll, transparent=True)
         self._set_list_widget = QWidget()
         self._set_list_widget.setMinimumWidth(0)
         self._set_list_widget.setStyleSheet(ss_transparent())
         self._set_list_layout = QVBoxLayout(self._set_list_widget)
         self._set_list_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self._set_list_layout.setContentsMargins(0, 0, 0, 0)
-        self._set_list_layout.setSpacing(1)
+        configure_layout(self._set_list_layout, LayoutRole.LIST)
         self._set_scroll.setWidget(self._set_list_widget)
         layout.addWidget(self._set_scroll, 1)
 
         return panel
 
     def _build_collision_tabs_bar(self):
-        bar = QFrame()
-        bar.setFixedHeight(48)
-        bar.setStyleSheet(ss_bg_panel())
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(8)
-
-        self._coll_header = QLabel(self.t("collisions_header"))
-        self._coll_header.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        self._coll_header.setStyleSheet(ss_accent_label())
-        layout.addWidget(self._coll_header)
+        bar = EditorToolbar()
+        layout = bar.content_layout
 
         self._coll_tab_widget = QTabBar()
-        self._coll_tab_widget.setFont(QFont("Segoe UI", 10))
+        self._coll_tab_widget.setFont(ui_font(TypeSize.CODE))
         self._coll_tab_widget.setExpanding(False)
         self._coll_tab_widget.setDrawBase(False)
         self._coll_tab_widget.setUsesScrollButtons(True)
@@ -777,101 +332,30 @@ class InfoEditor(QWidget):
         self._coll_tab_widget.currentChanged.connect(self._on_collision_tab_changed)
         layout.addWidget(self._coll_tab_widget, 1)
 
-        btn_font = QFont("Segoe UI", 10)
+        btn_font = ui_font(TypeSize.BODY)
 
         self._add_coll_btn = QPushButton(self.t("btn_new"))
-        self._add_coll_btn.setFixedHeight(28)
-        self._add_coll_btn.setFont(btn_font)
-        self._add_coll_btn.setStyleSheet(ss_btn())
+        configure_button(self._add_coll_btn, height=Size.COMPACT_CONTROL)
         self._add_coll_btn.setEnabled(False)
         self._add_coll_btn.clicked.connect(self._add_collision)
+        self._add_coll_btn.setProperty("designAction", 'new')
         layout.addWidget(self._add_coll_btn)
 
         self._dup_coll_btn = QPushButton(self.t("btn_duplicate"))
-        self._dup_coll_btn.setFixedHeight(28)
-        self._dup_coll_btn.setFont(btn_font)
-        self._dup_coll_btn.setStyleSheet(ss_btn())
+        configure_button(self._dup_coll_btn, height=Size.COMPACT_CONTROL)
         self._dup_coll_btn.setEnabled(False)
         self._dup_coll_btn.clicked.connect(self._duplicate_collision)
+        self._dup_coll_btn.setProperty("designAction", 'duplicate')
         layout.addWidget(self._dup_coll_btn)
 
         self._del_coll_btn = QPushButton(self.t("btn_delete"))
-        self._del_coll_btn.setFixedHeight(28)
-        self._del_coll_btn.setFont(btn_font)
-        self._del_coll_btn.setStyleSheet(ss_btn(danger=True))
+        configure_button(self._del_coll_btn, danger=True, height=Size.COMPACT_CONTROL)
         self._del_coll_btn.setEnabled(False)
         self._del_coll_btn.clicked.connect(self._delete_collision)
+        self._del_coll_btn.setProperty("designAction", 'delete')
         layout.addWidget(self._del_coll_btn)
 
         return bar
-
-    def _build_coll_list(self):
-        panel = QFrame()
-        panel.setFixedWidth(220)
-        panel.setStyleSheet(ss_sidebar_frame())
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(8, 8, 8, 4)
-        layout.setSpacing(4)
-
-        # Header
-        self._coll_header = QLabel(self.t("collisions_header"))
-        self._coll_header.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        self._coll_header.setStyleSheet(ss_accent_label())
-        layout.addWidget(self._coll_header)
-
-        # Search
-        self._coll_search_entry = QLineEdit()
-        self._coll_search_entry.setPlaceholderText(self.t("search_placeholder"))
-        self._coll_search_entry.setFixedHeight(32)
-        self._coll_search_entry.setFont(QFont("Segoe UI", 13))
-        self._coll_search_entry.setStyleSheet(ss_search())
-        self._coll_search_entry.textChanged.connect(self._filter_coll_list)
-        layout.addWidget(self._coll_search_entry)
-
-        # Actions — same as Character Stats
-        actions = QWidget()
-        actions.setStyleSheet(ss_transparent())
-        al = QHBoxLayout(actions)
-        al.setContentsMargins(0, 2, 0, 4)
-        al.setSpacing(4)
-
-        btn_font = QFont("Segoe UI", 10)
-
-        self._add_coll_btn = QPushButton(self.t("btn_new"))
-        self._add_coll_btn.setFixedHeight(28)
-        self._add_coll_btn.setFont(btn_font)
-        self._add_coll_btn.setStyleSheet(ss_btn())
-        self._add_coll_btn.setEnabled(False)
-        self._add_coll_btn.clicked.connect(self._add_collision)
-        al.addWidget(self._add_coll_btn, 1)
-
-        self._dup_coll_btn = QPushButton(self.t("btn_duplicate"))
-        self._dup_coll_btn.setFixedHeight(28)
-        self._dup_coll_btn.setFont(btn_font)
-        self._dup_coll_btn.setStyleSheet(ss_btn())
-        self._dup_coll_btn.setEnabled(False)
-        self._dup_coll_btn.clicked.connect(self._duplicate_collision)
-        al.addWidget(self._dup_coll_btn, 1)
-
-        self._del_coll_btn = QPushButton(self.t("btn_delete"))
-        self._del_coll_btn.setFixedHeight(28)
-        self._del_coll_btn.setFont(btn_font)
-        self._del_coll_btn.setStyleSheet(ss_btn(danger=True))
-        self._del_coll_btn.setEnabled(False)
-        self._del_coll_btn.clicked.connect(self._delete_collision)
-        al.addWidget(self._del_coll_btn, 1)
-
-        layout.addWidget(actions)
-
-        # Collision list tabs, grouped by collision name
-        self._coll_tab_widget = QTabWidget()
-        self._coll_tab_widget.setFont(QFont("Segoe UI", 10))
-        self._coll_tab_widget.setStyleSheet(ss_tab_widget())
-        self._coll_tab_widget.setDocumentMode(True)
-        self._coll_tab_widget.setUsesScrollButtons(True)
-        layout.addWidget(self._coll_tab_widget, 1)
-
-        return panel
 
     # File I/O
 
@@ -914,6 +398,10 @@ class InfoEditor(QWidget):
         set_file_label(self._file_label, self._filepath, dirty=True)
 
     def _on_load_done(self, path, raw_data, sets, meta):
+        self._fields = {}
+        self._original_collisions = {id(c): copy.deepcopy(c) for scene in sets for c in scene['collisions']}
+        self._view_state = None
+        self._geometry_undo, self._geometry_redo = [], []
         self._raw_data = raw_data
         self._sets = sets
         self._meta = meta
@@ -922,61 +410,81 @@ class InfoEditor(QWidget):
         self._current_set = None
         self._current_coll = None
         set_file_label(self._file_label, path)
-        self._info_label.setText(self.t("scenes_count", n=len(sets)))
         self._save_btn.setEnabled(True)
         self._add_set_btn.setEnabled(True)
         self._del_set_btn.setEnabled(True)
         self._populate_set_list()
+        if not sets:
+            _clear_layout(self._editor_layout)
+            self._interactive_canvas = None
+            self._add_coll_btn.setEnabled(False)
+            self._dup_coll_btn.setEnabled(False)
+            self._del_coll_btn.setEnabled(False)
 
-    def _save_file(self):
-        if not self._raw_data or not self._filepath:
+    def _save_file(self, target_path=None):
+        save_path = target_path or editor_path(self)
+        if not self._raw_data or not save_path:
             return
-        self._apply_fields()
+        if not self._apply_fields():
+            return False
         try:
-            save_info_xfbin(self._filepath, self._raw_data, self._sets, self._meta)
+            save_info_xfbin(save_path, self._raw_data, self._sets, self._meta)
+            commit_save_path(self, save_path)
             self._dirty = False
-            set_file_label(self._file_label, self._filepath)
+            set_file_label(self._file_label, save_path)
+            return True
         except Exception as e:
-            QMessageBox.critical(self, self.t("dlg_title_error"),
-                                 self.t("msg_save_error", error=e))
+            QMessageBox.critical(self, self.t('dlg_title_error'), self.t('msg_save_error', error=e))
+            return False
 
     # Set list
+
+    def _scene_description(self, name):
+        if name.startswith('ccSceneMainModePage'):
+            return self.t('info_main_page', page=name[len('ccSceneMainModePage'):])
+        if name in ('PresetWindowSelectionP1', 'PresetWindowSelectionP2'):
+            return self.t('info_preset_scene', player=name[-1])
+        key = 'info_scene_' + name
+        caption = self.t(key)
+        return get_scene_description(name) if caption == key else caption
 
     def _populate_set_list(self):
         _clear_layout(self._set_list_layout)
         self._set_buttons = []
 
         for s in self._sets:
-            desc = get_scene_description(s['name'])
-            num = len(s['collisions'])
-            sub_text = f"{s['name']}  ({num})"
+            desc = self._scene_description(s['name'])
+            sub_text = s["name"]
 
             btn = _SetButton(desc, sub_text, self._set_list_widget)
-            btn.clicked.connect(lambda ss=s: self._select_set(ss))
+            btn.clicked.connect(lambda _checked=False, ss=s: self._select_set(ss))
             self._set_list_layout.addWidget(btn)
             self._set_buttons.append((btn, s))
 
+        self._filter_set_list()
         if self._sets:
             self._select_set(self._sets[0])
 
     def _filter_set_list(self):
         query = self._set_search_entry.text().lower()
         for btn, s in self._set_buttons:
-            desc = get_scene_description(s['name']).lower()
-            match = query in s['name'].lower() or query in desc
+            desc = self._scene_description(s['name']).lower()
+            match = query in s['name'].lower() or query in desc or any(query in c['name'].lower() for c in s['collisions'])
             btn.setVisible(match)
 
     def _select_set(self, s):
-        self._apply_fields()
+        if not self._apply_fields():
+            return False
+        self._fields = {}
+        self._view_state = None
         self._current_set = s
         self._current_coll = None
         for btn, ss in self._set_buttons:
             btn.set_selected(ss is s)
 
-        self._coll_header.setText(self.t("collisions_header_count", n=len(s['collisions'])))
         self._add_coll_btn.setEnabled(True)
-        self._dup_coll_btn.setEnabled(True)
-        self._del_coll_btn.setEnabled(True)
+        self._dup_coll_btn.setEnabled(bool(s['collisions']))
+        self._del_coll_btn.setEnabled(bool(s['collisions']))
         self._populate_coll_list()
         if s['collisions']:
             self._select_collision(s['collisions'][0])
@@ -1017,78 +525,110 @@ class InfoEditor(QWidget):
     def _refresh_collision_tabs(self, preferred_coll=None):
         self._populate_coll_list(preferred_coll=preferred_coll or self._current_coll)
 
-    def _filter_coll_list(self):
-        pass
-
     def _on_collision_tab_changed(self, idx):
         if self._updating_coll_tabs or idx < 0 or idx >= len(self._coll_tabs):
             return
         self._select_collision(self._coll_tabs[idx])
 
     def _select_collision(self, coll):
-        self._apply_fields()
+        if not self._apply_fields():
+            self._updating_coll_tabs = True
+            self._coll_tab_widget.setCurrentIndex(identity_index(self._coll_tabs, self._current_coll))
+            self._updating_coll_tabs = False
+            return False
+        if self._current_coll is coll and 'type' in self._fields:
+            return True
+        if (self._interactive_canvas is not None and self._interactive_canvas.isVisible()
+                and identity_index(self._interactive_canvas._collisions, coll) >= 0):
+            self._view_state = self._interactive_canvas.view_state()
         self._current_coll = coll
-        if coll in self._coll_tabs:
-            idx = self._coll_tabs.index(coll)
-            if self._coll_tab_widget.currentIndex() != idx:
-                self._updating_coll_tabs = True
-                self._coll_tab_widget.setCurrentIndex(idx)
-                self._updating_coll_tabs = False
+        self._dup_coll_btn.setEnabled(True)
+        self._del_coll_btn.setEnabled(True)
+        idx = identity_index(self._coll_tabs, coll)
+        self._updating_coll_tabs = True
+        self._coll_tab_widget.setCurrentIndex(idx)
+        self._updating_coll_tabs = False
         self._build_collision_editor(coll)
+        return True
 
-    # Apply field changes
+    def _field_text(self, widget):
+        return widget.value_text() if isinstance(widget, EditorValueCombo) else widget.text()
 
     def _apply_fields(self):
-        if not self._current_coll or not self._fields:
-            return
-        coll = self._current_coll
-        for field in COLLISION_FIELDS:
-            if field in self._fields:
-                try:
-                    val = self._fields[field].text().strip()
-                    if field in INT_FIELDS:
-                        coll[field] = int(val)
-                    else:
-                        coll[field] = val
-                except (ValueError, KeyError, RuntimeError):
-                    pass
-
-        # Also apply set name if present
-        if '_set_name' in self._fields:
+        if not self._fields:
+            return True
+        pending, invalid = {}, []
+        for key, widget in self._fields.items():
             try:
-                new_name = self._fields['_set_name'].text().strip()
-                if self._current_set and new_name:
-                    self._current_set['name'] = new_name
-            except (KeyError, RuntimeError):
-                pass
-
-        self._update_coll_list_labels()
+                text = self._field_text(widget)
+                if key in INT_FIELDS:
+                    pending[key] = parse_integer(text)
+                else:
+                    if not xml_text_valid(text):
+                        raise ValueError('XML text')
+                    pending[key] = text
+                widget.setStyleSheet(ss_input_validation(False))
+            except ValueError:
+                widget.setStyleSheet(ss_input_validation(True))
+                invalid.append(key)
+        if hasattr(self, '_validation_label'):
+            self._validation_label.setText(self.t('info_invalid', fields=', '.join(invalid)) if invalid else '')
+            self._validation_label.setVisible(bool(invalid))
+        if invalid:
+            return False
+        changed = False
+        for key, value in pending.items():
+            target = self._current_set if key == '_set_name' else self._current_coll
+            field = 'name' if key == '_set_name' else key
+            if target is not None and target.get(field) != value:
+                target[field] = value
+                changed = True
+        if changed:
+            self._mark_dirty()
+            self._update_coll_list_labels()
+            for button, scene in self._set_buttons:
+                if scene is self._current_set:
+                    button.set_texts(self._scene_description(scene['name']), scene['name'])
+                    break
+        return True
 
     # Set overview (shown when set selected, no collision selected)
 
+    def _show_scene_overview(self):
+        if self._current_set is not None and self._apply_fields():
+            self._current_coll = None
+            self._dup_coll_btn.setEnabled(False)
+            self._del_coll_btn.setEnabled(False)
+            self._build_set_overview()
+
     def _build_set_overview(self):
-        if self._coord_timer is not None:
-            self._coord_timer.stop()
+        self._dup_coll_btn.setEnabled(False)
+        self._del_coll_btn.setEnabled(False)
         self._vis_coord_label = None
         self._interactive_canvas = None
         _clear_layout(self._editor_layout)
         self._fields = {}
+        self._validation_label = QLabel()
+        self._validation_label.setWordWrap(True)
+        self._validation_label.setStyleSheet(ss_dim_label())
+        self._validation_label.hide()
         self._pending_section_title = None
 
         s = self._current_set
         if not s:
             return
 
-        desc = get_scene_description(s['name'])
+        desc = self._scene_description(s['name'])
 
         # Set header
         hdr, hdr_layout = _make_info_card()
         add_editor_card_title(hdr_layout, self.t("label_scene_name"), "fa6s.object-group", desc)
+        hdr_layout.addWidget(self._validation_label)
 
         hdr_inner = QWidget()
         hdr_inner.setStyleSheet(ss_transparent())
         hdr_grid = QGridLayout(hdr_inner)
-        hdr_grid.setContentsMargins(0, 0, 0, 0)
+        hdr_grid.setContentsMargins(*Insets.NONE)
         hdr_grid.setColumnStretch(0, 1)
         hdr_grid.setColumnStretch(1, 1)
 
@@ -1096,18 +636,21 @@ class InfoEditor(QWidget):
         name_w, name_l = _field_shell(self.t("label_scene_name"))
         e_name = QLineEdit()
         e_name.setText(s['name'])
-        _style_entry(e_name, h=36, font=_make_font("Consolas", 16, bold=True))
+        _style_entry(e_name, h=Size.LARGE_CONTROL, font=_make_font("Consolas", 16, bold=True))
         _style_accent_entry(e_name)
         name_l.addWidget(e_name)
         self._fields['_set_name'] = e_name
+        e_name.textChanged.connect(self._apply_fields)
         hdr_grid.addWidget(name_w, 0, 0)
 
         # Description (read-only)
         desc_w, desc_l = _field_shell(self.t("label_description"))
         lbl3 = QLabel(desc)
+        lbl3.setWordWrap(True)
+        lbl3.setMinimumWidth(0)
         lbl3.setFont(_make_font("Segoe UI", 15, bold=True))
         lbl3.setStyleSheet(ss_main_label())
-        lbl3.setContentsMargins(0, 4, 0, 0)
+        lbl3.setContentsMargins(*Insets.GRID_TITLE)
         desc_l.addWidget(lbl3)
         hdr_grid.addWidget(desc_w, 0, 1)
 
@@ -1122,15 +665,12 @@ class InfoEditor(QWidget):
         sg = QWidget()
         sg.setStyleSheet(ss_transparent())
         sg_grid = QGridLayout(sg)
-        sg_grid.setContentsMargins(0, 0, 0, 0)
+        sg_grid.setContentsMargins(*Insets.NONE)
 
         collisions = s['collisions']
-        unique_names = set(c.get('name', '') for c in collisions)
         unique_types = set(str(c.get('type', 0)) for c in collisions)
 
         stats = [
-            (self.t("stats_total_collisions"), str(len(collisions))),
-            (self.t("stats_unique_names"), str(len(unique_names))),
             (self.t("stats_types_used"), ", ".join(sorted(unique_types)) if unique_types else self.t("stats_types_none")),
         ]
         for i, (label, value) in enumerate(stats):
@@ -1159,12 +699,7 @@ class InfoEditor(QWidget):
                 row_w.setStyleSheet(ss_transparent())
                 rl = QHBoxLayout(row_w)
                 rl.setContentsMargins(0, 1, 0, 1)
-                rl.setSpacing(8)
-                cl = QLabel(ui_text("ui_info_value_x", p0=count))
-                cl.setFont(_make_font("Consolas", 12, bold=True))
-                cl.setStyleSheet(ss_accent_label())
-                cl.setFixedWidth(40)
-                rl.addWidget(cl)
+                rl.setSpacing(Size.GAP)
                 nl = QLabel(n)
                 nl.setFont(_make_font("Consolas", 12))
                 nl.setStyleSheet(ss_main_label())
@@ -1191,15 +726,7 @@ class InfoEditor(QWidget):
         self._editor_layout.addWidget(spacer)
 
     def _build_visual_map(self, collisions):
-        """Draw a miniature visual representation of collision boxes."""
-        map_panel, mp_layout = _make_info_card(margins=(12, 12, 12, 12))
-        self._apply_pending_section_title(mp_layout)
-
-        canvas = _CollisionMapCanvas()
-        canvas.set_collisions(collisions)
-        mp_layout.addWidget(canvas)
-
-        self._editor_layout.addWidget(map_panel)
+        self._build_interactive_map(collisions, None)
 
     def _build_css_analysis(self):
         """Build character select screen analysis."""
@@ -1214,7 +741,7 @@ class InfoEditor(QWidget):
         inner = QWidget()
         inner.setStyleSheet(ss_transparent())
         ig = QGridLayout(inner)
-        ig.setContentsMargins(0, 0, 0, 0)
+        ig.setContentsMargins(*Insets.NONE)
 
         # Stats
         stats = [
@@ -1243,324 +770,249 @@ class InfoEditor(QWidget):
             ri_layout.addWidget(rl)
         ig.addWidget(row_info, 1, 0, 1, 3)
 
-        # Note
-        note_w = QWidget()
-        note_w.setStyleSheet(ss_transparent())
-        note_l = QVBoxLayout(note_w)
-        note_l.setContentsMargins(8, 10, 8, 0)
-        note_text = self.t("css_analysis_note", face_count=analysis['face_icon_count'])
-        nl = QLabel(note_text)
-        nl.setFont(_make_font("Segoe UI", 12))
-        nl.setStyleSheet(ss_accent_label())
-        nl.setWordWrap(True)
-        nl.setMaximumWidth(500)
-        note_l.addWidget(nl)
-        ig.addWidget(note_w, 2, 0, 1, 3)
-
         p_layout.addWidget(inner)
         self._editor_layout.addWidget(panel)
 
-    # Interactive visual map (collision editor)
+    # Authored geometry workspace
 
     def _build_interactive_map(self, collisions, selected_coll):
-        """Draw an interactive visual map where the selected collision can be
-        dragged to move and resized via corner handles."""
-        self._add_section(self.t("section_visual_layout_drag"))
-
-        map_panel, mp_layout = _make_info_card(margins=(12, 12, 12, 12))
-        self._apply_pending_section_title(mp_layout)
-
+        panel, layout = _make_info_card()
+        add_editor_card_title(layout, self.t('info_workspace'), 'fa6s.vector-square')
+        tools = QWidget()
+        tool_grid = configure_layout(QGridLayout(tools), LayoutRole.GRID)
+        tool_index = 0
+        for key, callback in (('info_fit', lambda: self._interactive_canvas.fit()),
+                              ('info_undo_drag', self._undo_geometry),
+                              ('info_redo_drag', self._redo_geometry)):
+            button = configure_button(QPushButton(self.t(key)), height=Size.COMPACT_CONTROL)
+            button.clicked.connect(callback)
+            tool_grid.addWidget(button, tool_index // 2, tool_index % 2)
+            tool_grid.setColumnStretch(tool_index % 2, 1)
+            tool_index += 1
+            if key == 'info_undo_drag': button.setProperty('designAction', 'undo')
+            if key == 'info_redo_drag': button.setProperty('designAction', 'redo')
+            if key == 'info_undo_drag': self._undo_btn = button
+            if key == 'info_redo_drag': self._redo_btn = button
+        layout.addWidget(tools)
+        options = EditorActionRow()
+        compare = configure_button(QPushButton(self.t('info_compare')), height=Size.COMPACT_CONTROL)
+        compare.setCheckable(True)
+        compare.setChecked(True)
+        # Checked captions use the common bold state; reserve their measured width.
+        compare.setMinimumWidth(QFontMetrics(ui_font(TypeSize.BODY, QFont.Weight.Bold)).horizontalAdvance(compare.text())
+                                + 2 * Padding.BUTTON_X)
+        compare.toggled.connect(lambda value: self._set_canvas_option('show_original', value))
+        options.content_layout.addWidget(compare)
+        snap = QComboBox()
+        configure_input(snap)
+        for value in (1, 5, 10):
+            snap.addItem(self.t('info_snap', value=value), value)
+        snap.currentIndexChanged.connect(lambda _: self._set_canvas_option('snap', snap.currentData()))
+        snap.setToolTip(self.t('info_snap_hint'))
+        options.content_layout.addWidget(snap)
+        options.content_layout.addStretch()
+        layout.addWidget(options)
         self._interactive_canvas = _InteractiveCollisionCanvas()
-        self._interactive_canvas.set_data(collisions, selected_coll)
+        self._interactive_canvas.setToolTip(self.t('info_canvas_help'))
+        self._interactive_canvas.set_data(collisions, selected_coll, self._original_collisions.get(id(selected_coll)))
+        if self._view_state:
+            self._interactive_canvas.restore_view(self._view_state)
+        self._interactive_canvas.can_edit = self._apply_fields
         self._interactive_canvas.fields_changed.connect(self._on_canvas_drag)
-        mp_layout.addWidget(self._interactive_canvas)
-
-        # Coordinate label
-        self._vis_coord_label = QLabel("")
-        self._vis_coord_label.setFont(_make_font("Consolas", 10))
+        self._interactive_canvas.selection_requested.connect(self._select_collision)
+        self._interactive_canvas.gesture_finished.connect(self._remember_geometry)
+        self._interactive_canvas.cursor_changed.connect(self._show_cursor)
+        layout.addWidget(self._interactive_canvas)
+        self._vis_coord_label = QLabel(self.t('info_canvas_help'))
+        self._vis_coord_label.setFont(ui_font(TypeSize.HINT))
         self._vis_coord_label.setStyleSheet(ss_dim_label())
-        mp_layout.addWidget(self._vis_coord_label)
+        self._vis_coord_label.setWordWrap(True)
+        layout.addWidget(self._vis_coord_label)
+        self._editor_layout.addWidget(panel)
+        self._refresh_history_buttons()
 
-        # Timer to update coord label — reuse existing timer if present
-        if self._coord_timer is None:
-            self._coord_timer = QTimer(self)
-            self._coord_timer.setInterval(100)
-            self._coord_timer.timeout.connect(self._update_coord_label)
-        self._coord_timer.start()
+    def _set_canvas_option(self, name, value):
+        setattr(self._interactive_canvas, name, value)
+        self._interactive_canvas.update()
 
-        self._editor_layout.addWidget(map_panel)
+    def _show_cursor(self, x, y, hits):
+        if self._current_coll is not None:
+            name = self._current_coll['name']
+            group = [c for c in self._current_set['collisions'] if c['name'] == name]
+            index = next((i for i, c in enumerate(group) if hit_score(c, x, y) >= 0), -1)
+            result = self.t('info_group_hit', name=name, index=index)
+        else:
+            result = ', '.join(f"#{i} {self._current_set['collisions'][i]['name']}" for i in hits) or self.t('info_no_hit')
+        self._vis_coord_label.setText(self.t('info_cursor_hits', x=x, y=y, hits=result))
 
-    def _update_coord_label(self):
-        try:
-            if self._interactive_canvas and self._vis_coord_label:
-                wx, wy = self._interactive_canvas.get_cursor_world()
-                self._vis_coord_label.setText(self.t("vis_cursor", x=int(wx), y=int(wy)))
-        except RuntimeError:
-            pass
+    def _remember_geometry(self, coll, before):
+        keys = ('type', *GEOMETRY_FIELDS)
+        if any(coll[k] != before[k] for k in keys):
+            self._geometry_undo.append((coll, {k: before[k] for k in keys}, {k: coll[k] for k in keys}))
+            self._geometry_redo.clear()
+        self._refresh_history_buttons()
+
+    def _refresh_history_buttons(self):
+        self._undo_btn.setEnabled(bool(self._geometry_undo))
+        self._redo_btn.setEnabled(bool(self._geometry_redo))
+
+    def _prune_geometry_history(self):
+        valid = {id(c) for scene in self._sets for c in scene['collisions']}
+        self._original_collisions = {key: value for key, value in self._original_collisions.items() if key in valid}
+        self._geometry_undo[:] = [item for item in self._geometry_undo if id(item[0]) in valid]
+        self._geometry_redo[:] = [item for item in self._geometry_redo if id(item[0]) in valid]
+
+    def _history_geometry(self, source, destination, index):
+        if not source or not self._apply_fields():
+            return
+        item = source.pop()
+        coll = item[0]
+        scene = next((s for s in self._sets if identity_index(s['collisions'], coll) >= 0), None)
+        if scene is None:
+            self._refresh_history_buttons()
+            return
+        destination.append(item)
+        coll.update(item[index])
+        # Clear the old form before navigating, so it cannot overwrite the undo.
+        self._fields = {}
+        if self._current_set is not scene:
+            self._select_set(scene)
+        self._select_collision(coll)
+        self._mark_dirty()
+
+    def _undo_geometry(self):
+        self._history_geometry(self._geometry_undo, self._geometry_redo, 1)
+
+    def _redo_geometry(self):
+        self._history_geometry(self._geometry_redo, self._geometry_undo, 2)
+
+    def _restore_original(self):
+        coll = self._current_coll
+        original = self._original_collisions.get(id(coll))
+        if coll is None or original is None or not self._apply_fields():
+            return
+        before = copy.deepcopy(coll)
+        coll.update({k: original[k] for k in ('type', *GEOMETRY_FIELDS)})
+        self._remember_geometry(coll, before)
+        self._on_canvas_drag()
+        if 'type' in self._fields:
+            self._fields = {}
+            self._select_collision(coll)
 
     def _on_canvas_drag(self):
-        """Called when the interactive canvas changes collision data via drag."""
         self._mark_dirty()
-        self._update_fields_from_coll()
-        self._update_computed_labels()
-        self._update_coll_list_labels()
-
-    def _update_fields_from_coll(self):
-        """Update form fields from the current collision data (after drag)."""
-        coll = self._current_coll
-        if not coll or not self._fields:
-            return
-        for key in ('x', 'y', 'w', 'h'):
+        for key in GEOMETRY_FIELDS:
             if key in self._fields:
-                entry = self._fields[key]
-                entry.blockSignals(True)
-                entry.setText(str(coll.get(key, 0)))
-                entry.blockSignals(False)
+                edit = self._fields[key]
+                edit.blockSignals(True)
+                edit.setText(str(self._current_coll[key]))
+                edit.blockSignals(False)
+        self._update_computed_labels()
 
     def _update_computed_labels(self):
-        """Update the computed info labels after position/size change."""
-        if not self._computed_labels:
-            return
         coll = self._current_coll
-        if not coll:
+        if coll is None or not self._computed_labels:
             return
-        x, y = coll.get('x', 0), coll.get('y', 0)
-        w, h = coll.get('w', 0), coll.get('h', 0)
-        rtoX, rtoY = coll.get(ui_text("ui_info_rtox"), 0), coll.get(ui_text("ui_info_rtoy"), 0)
-        lboX, lboY = coll.get(ui_text("ui_info_lbox"), 0), coll.get(ui_text("ui_info_lboy"), 0)
-        values = {
-            'center': f"({x + w // 2}, {y + h // 2})",
-            'br': f"({x + w}, {y + h})",
-            'eff': f"({x + lboX}, {y + rtoY}) to ({x + w + rtoX}, {y + h + lboY})",
-        }
-        for key, lbl in self._computed_labels.items():
-            if key in values:
-                try:
-                    lbl.setText(values[key])
-                except RuntimeError:
-                    pass
+        if coll['type'] == 1:
+            x, y, radius = circle(coll)
+            value = self.t('info_circle_geometry', x=x, y=y, radius=radius)
+        elif coll['type'] in (0, 2):
+            value = ' \u2192 '.join(f'({x}, {y})' for x, y in vertices(coll))
+        else:
+            value = self.t('info_unknown_shape')
+        self._computed_labels['geometry'].setText(value)
+        self._offset_panel.setEnabled(coll['type'] == 2 or coll['type'] not in (0, 1, 2))
+        self._interactive_canvas.update()
 
     def _update_coll_list_labels(self):
-        """Update the current collision tab label."""
-        coll = self._current_coll
-        if not coll or not self._current_set or coll not in self._current_set['collisions']:
+        if self._current_set is None or self._current_coll is None:
             return
-        idx = self._current_set['collisions'].index(coll)
-        if idx < self._coll_tab_widget.count():
-            self._coll_tab_widget.setTabText(idx, self._coll_tab_label(idx, coll))
+        idx = identity_index(self._current_set['collisions'], self._current_coll)
+        if 0 <= idx < self._coll_tab_widget.count():
+            self._coll_tab_widget.setTabText(idx, self._coll_tab_label(idx, self._current_coll))
 
-    def _update_vis_from_fields(self):
-        """Update the canvas visualization when form fields change."""
-        if not self._interactive_canvas or not self._current_coll or not self._fields:
-            return
-        coll = self._current_coll
-        changed = False
-        for key in ('x', 'y', 'w', 'h'):
-            if key in self._fields:
-                try:
-                    val = self._fields[key].text().strip()
-                    coll[key] = int(val)
-                    changed = True
-                except (ValueError, KeyError):
-                    pass
-        if changed:
-            self._mark_dirty()
-        self._interactive_canvas.update()
-        self._update_computed_labels()
-
-    # Collision editor
+    def _on_form_change(self):
+        if self._apply_fields():
+            self._update_computed_labels()
 
     def _build_collision_editor(self, coll):
-        if self._coord_timer is not None:
-            self._coord_timer.stop()
-        self._vis_coord_label = None
         _clear_layout(self._editor_layout)
-        self._fields = {}
-        self._pending_section_title = None
+        self._fields, self._computed_labels = {}, {}
         self._interactive_canvas = None
-        self._computed_labels = {}
-
-        idx = 0
-        if self._current_set:
-            try:
-                idx = self._current_set['collisions'].index(coll)
-            except ValueError:
-                pass
-
-        set_desc = get_scene_description(self._current_set['name']) if self._current_set else ''
-        coll_name = coll.get('name', '') or self.t("coll_unnamed")
-
-        # Header
-        hdr, hdr_layout = _make_info_card()
-        _row, title_lbl, _subtitle_lbl = add_editor_card_title(
-            hdr_layout,
-            self.t("coll_header_label", idx=idx, desc=coll_name),
-            "fa6s.vector-square",
-            set_desc,
-        )
-        title_lbl.setWordWrap(True)
-        self._editor_layout.addWidget(hdr)
-
-        # Interactive visual map
-        if self._current_set:
-            self._build_interactive_map(self._current_set['collisions'], coll)
-
-        # Identity fields
-        self._add_section(self.t("section_identity"))
-        id_panel, ip_layout = _make_info_card(margins=(12, 12, 12, 12))
-        self._apply_pending_section_title(ip_layout)
-
-        ig = QWidget()
-        ig.setStyleSheet(ss_transparent())
-        ig_grid = QGridLayout(ig)
-        ig_grid.setContentsMargins(0, 0, 0, 0)
-
-        # Type
-        type_w, type_l = _field_shell(self.t("label_coll_type"))
-        e_type = QLineEdit()
-        e_type.setText(str(coll.get('type', 0)))
-        _style_entry(e_type, h=34, font=_make_font("Consolas", 16, bold=True))
-        e_type.setFixedWidth(80)
-        type_l.addWidget(e_type)
-        self._fields['type'] = e_type
-        ig_grid.addWidget(type_w, 0, 0)
-        ig_grid.setColumnStretch(0, 0)
-
-        # Name
-        name_w, name_l = _field_shell(self.t("label_coll_name"))
-        e_name = QLineEdit()
-        e_name.setText(coll.get('name', ''))
-        _style_entry(e_name, h=34, font=_make_font("Consolas", 16))
-        name_l.addWidget(e_name)
-        self._fields['name'] = e_name
-        ig_grid.addWidget(name_w, 0, 1)
-        ig_grid.setColumnStretch(1, 1)
-
-        ip_layout.addWidget(ig)
-        self._editor_layout.addWidget(id_panel)
-
-        # Position & Size
-        self._add_section(self.t("section_pos_size"))
-        pos_panel, pp_layout = _make_info_card(margins=(12, 12, 12, 12))
-        self._apply_pending_section_title(pp_layout)
-
-        pg = QWidget()
-        pg.setStyleSheet(ss_transparent())
-        pg_grid = QGridLayout(pg)
-        pg_grid.setContentsMargins(0, 0, 0, 0)
-
-        pos_fields = [
-            ('x', self.t("pos_x"), self.t("pos_x_hint")),
-            ('y', self.t("pos_y"), self.t("pos_y_hint")),
-            ('w', self.t("pos_w"), self.t("pos_w_hint")),
-            ('h', self.t("pos_h"), self.t("pos_h_hint")),
-        ]
-        pos_cols = 2 if self.width() < 1000 else 4
-        for i, (key, label, hint) in enumerate(pos_fields):
-            fw, fl = _field_shell(label, hint)
-            e = QLineEdit()
-            e.setText(str(coll.get(key, 0)))
-            _style_entry(e, h=32, font=_make_font("Consolas", 14))
-            fl.addWidget(e)
-            self._fields[key] = e
-            row = i // pos_cols
-            col = i % pos_cols
-            pg_grid.addWidget(fw, row, col)
-            pg_grid.setColumnStretch(col, 1)
-
-        pp_layout.addWidget(pg)
-        self._editor_layout.addWidget(pos_panel)
-
-        # Margin / Padding (rto/lbo)
-        self._add_section(self.t("section_margins"))
-        margin_panel, mgp_layout = _make_info_card(margins=(12, 12, 12, 12))
-        self._apply_pending_section_title(mgp_layout)
-
-        mg = QWidget()
-        mg.setStyleSheet(ss_transparent())
-        mg_grid = QGridLayout(mg)
-        mg_grid.setContentsMargins(0, 0, 0, 0)
-
-        margin_fields = [
-            (ui_text("ui_info_rtox"), self.t(ui_text("ui_info_margin_rtox")), self.t(ui_text("ui_info_margin_rtox_hint"))),
-            (ui_text("ui_info_rtoy"), self.t(ui_text("ui_info_margin_rtoy")), self.t(ui_text("ui_info_margin_rtoy_hint"))),
-            (ui_text("ui_info_lbox"), self.t(ui_text("ui_info_margin_lbox")), self.t(ui_text("ui_info_margin_lbox_hint"))),
-            (ui_text("ui_info_lboy"), self.t(ui_text("ui_info_margin_lboy")), self.t(ui_text("ui_info_margin_lboy_hint"))),
-        ]
-        margin_cols = 2 if self.width() < 1000 else 4
-        for i, (key, label, hint) in enumerate(margin_fields):
-            fw, fl = _field_shell(label, hint)
-            e = QLineEdit()
-            e.setText(str(coll.get(key, 0)))
-            _style_entry(e, h=32, font=_make_font("Consolas", 14))
-            fl.addWidget(e)
-            self._fields[key] = e
-            row = i // margin_cols
-            col = i % margin_cols
-            mg_grid.addWidget(fw, row, col)
-            mg_grid.setColumnStretch(col, 1)
-
-        mgp_layout.addWidget(mg)
-        self._editor_layout.addWidget(margin_panel)
-
-        # Computed info
-        self._add_section(self.t("section_computed"))
-        comp_panel, cp_layout = _make_info_card()
-        self._apply_pending_section_title(cp_layout)
-
-        cg = QWidget()
-        cg.setStyleSheet(ss_transparent())
-        cg_grid = QGridLayout(cg)
-        cg_grid.setContentsMargins(0, 0, 0, 0)
-
-        x, y = coll.get('x', 0), coll.get('y', 0)
-        w, h = coll.get('w', 0), coll.get('h', 0)
-        rtoX, rtoY = coll.get(ui_text("ui_info_rtox"), 0), coll.get(ui_text("ui_info_rtoy"), 0)
-        lboX, lboY = coll.get(ui_text("ui_info_lbox"), 0), coll.get(ui_text("ui_info_lboy"), 0)
-
-        self._computed_labels = {}
-        computed = [
-            (self.t("computed_center"), "center", f"({x + w // 2}, {y + h // 2})"),
-            (self.t("computed_br"), "br", f"({x + w}, {y + h})"),
-            (self.t("computed_eff"), "eff", f"({x + lboX}, {y + rtoY}) to ({x + w + rtoX}, {y + h + lboY})"),
-        ]
-        computed_cols = 1 if self.width() < 900 else 3
-        for i, (label, key, value) in enumerate(computed):
-            fw, fl = _field_shell(label)
-            vl = _value_label(value, size=14)
-            fl.addWidget(vl)
-            self._computed_labels[key] = vl
-            row = i // computed_cols
-            col = i % computed_cols
-            cg_grid.addWidget(fw, row, col)
-            cg_grid.setColumnStretch(col, 1)
-
-        cp_layout.addWidget(cg)
-        self._editor_layout.addWidget(comp_panel)
-
-        # Bottom spacer
-        spacer = QWidget()
-        spacer.setFixedHeight(20)
-        spacer.setStyleSheet(ss_transparent())
-        self._editor_layout.addWidget(spacer)
-
-        # Bind position/size fields to update canvas on typing
-        for key in ('x', 'y', 'w', 'h'):
-            if key in self._fields:
-                self._fields[key].textChanged.connect(self._update_vis_from_fields)
+        header, hl = _make_info_card()
+        add_editor_card_title(hl, self.t('info_identity'), 'fa6s.object-group')
+        scene_name = QLineEdit(self._current_set['name'])
+        configure_input(scene_name)
+        scene_name.setToolTip(self.t('info_scene_hint'))
+        self._fields['_set_name'] = scene_name
+        hl.addWidget(scene_name)
+        self._validation_label = QLabel()
+        self._validation_label.setWordWrap(True)
+        self._validation_label.setStyleSheet(ss_dim_label())
+        self._validation_label.setVisible(False)
+        hl.addWidget(self._validation_label)
+        identity = QWidget()
+        grid = configure_layout(QGridLayout(identity), LayoutRole.GRID)
+        choices = [(i, self.t(f'info_shape_{i}')) for i in (0, 1, 2)]
+        type_edit = EditorValueCombo(choices, coll['type'])
+        names = sorted({c['name'] for s in self._sets for c in s['collisions']})
+        name_edit = EditorValueCombo([(name, name) for name in names], coll['name'])
+        self._fields.update(type=type_edit, name=name_edit)
+        for column, (label, widget, hint) in enumerate(((self.t('info_type_label'), type_edit, self.t('info_type_hint')),
+                                                       (self.t('label_coll_name'), name_edit, self.t('info_name_hint')))):
+            frame, fl = _field_shell(label)
+            widget.setToolTip(hint)
+            fl.addWidget(widget)
+            grid.addWidget(frame, 0, column)
+            grid.setColumnStretch(column, 1)
+        hl.addWidget(identity)
+        self._editor_layout.addWidget(header)
+        self._build_interactive_map(self._current_set['collisions'], coll)
+        for title, keys in (('section_pos_size', ('x', 'y', 'w', 'h')),
+                            ('info_corner_offsets', ('rtoX', 'rtoY', 'lboX', 'lboY'))):
+            panel, layout = _make_info_card()
+            add_editor_card_title(layout, self.t(title), 'fa6s.vector-square')
+            content = QWidget()
+            grid = configure_layout(QGridLayout(content), LayoutRole.GRID)
+            for i, key in enumerate(keys):
+                hint = self.t('info_hint_' + key)
+                field, fl = _field_shell(self.t('info_field_' + key), hint)
+                edit = configure_input(QLineEdit(str(coll[key])))
+                edit.setToolTip(hint)
+                fl.addWidget(IntegerStepper(edit, I32_MIN, I32_MAX))
+                self._fields[key] = edit
+                grid.addWidget(field, i // 2, i % 2)
+                grid.setColumnStretch(i % 2, 1)
+            layout.addWidget(content)
+            self._editor_layout.addWidget(panel)
+            if title == 'info_corner_offsets': self._offset_panel = panel
+        panel, layout = _make_info_card()
+        add_editor_card_title(layout, self.t('info_geometry'), 'fa6s.ruler-combined')
+        label = QLabel()
+        label.setFont(mono_font(TypeSize.CODE))
+        label.setStyleSheet(ss_main_label())
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(label)
+        self._computed_labels['geometry'] = label
+        self._editor_layout.addWidget(panel)
+        for widget in self._fields.values():
+            signal = widget.editTextChanged if isinstance(widget, EditorValueCombo) else widget.textChanged
+            signal.connect(self._on_form_change)
+        self._update_computed_labels()
 
     # Add / Duplicate / Delete
 
     def _add_new_set(self):
         if self._raw_data is None:
             return
-        self._apply_fields()
+        if not self._apply_fields():
+            return
         new_set = {
-            'name': ui_text("ui_info_ccnewscene"),
+            'name': 'ccNewScene',
             'collisions': [make_default_collision()],
         }
         self._sets.append(new_set)
-        self._info_label.setText(self.t("scenes_count", n=len(self._sets)))
         self._mark_dirty()
         self._populate_set_list()
         self._select_set(new_set)
@@ -1571,6 +1023,8 @@ class InfoEditor(QWidget):
         if len(self._sets) <= 1:
             QMessageBox.warning(self, self.t("dlg_title_warning"), self.t("msg_cannot_delete_last_scene"))
             return
+        if not self._apply_fields():
+            return
         name = self._current_set['name']
         reply = QMessageBox.question(self, self.t("dlg_title_confirm_delete"),
                                      self.t("msg_confirm_delete_scene", name=name),
@@ -1578,35 +1032,36 @@ class InfoEditor(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
         self._fields = {}
-        self._sets.remove(self._current_set)
+        self._sets.pop(identity_index(self._sets, self._current_set))
+        self._prune_geometry_history()
         self._current_set = None
         self._current_coll = None
-        self._info_label.setText(self.t("scenes_count", n=len(self._sets)))
         self._mark_dirty()
         self._populate_set_list()
 
     def _add_collision(self):
         if not self._current_set:
             return
-        self._apply_fields()
+        if not self._apply_fields():
+            return
         coll = make_default_collision()
 
         # Smart defaults: copy name from last collision in set
         if self._current_set['collisions']:
             last = self._current_set['collisions'][-1]
-            coll['name'] = last.get('name', ui_text("ui_info_newcollision"))
+            coll['name'] = last.get('name', 'NewCollision')
+            coll['type'] = last['type']
             # Position below the last one
             coll['x'] = last.get('x', 0)
-            coll['y'] = last.get('y', 0) + last.get('h', 50) + 6
+            coll['y'] = max(I32_MIN, min(I32_MAX, last['y'] + last['h'] + 6))
             coll['w'] = last.get('w', 100)
             coll['h'] = last.get('h', 50)
-            coll[ui_text("ui_info_rtox")] = last.get(ui_text("ui_info_rtox"), 10)
-            coll[ui_text("ui_info_rtoy")] = last.get(ui_text("ui_info_rtoy"), -10)
-            coll[ui_text("ui_info_lbox")] = last.get(ui_text("ui_info_lbox"), -10)
-            coll[ui_text("ui_info_lboy")] = last.get(ui_text("ui_info_lboy"), 10)
+            coll['rtoX'] = last.get('rtoX', 10)
+            coll['rtoY'] = last.get('rtoY', -10)
+            coll['lboX'] = last.get('lboX', -10)
+            coll['lboY'] = last.get('lboY', 10)
 
         self._current_set['collisions'].append(coll)
-        self._coll_header.setText(self.t("collisions_header_count", n=len(self._current_set['collisions'])))
         self._mark_dirty()
         self._populate_coll_list()
         self._select_collision(coll)
@@ -1614,13 +1069,13 @@ class InfoEditor(QWidget):
     def _duplicate_collision(self):
         if not self._current_set or not self._current_coll:
             return
-        self._apply_fields()
+        if not self._apply_fields():
+            return
         coll = copy.deepcopy(self._current_coll)
         # Offset slightly
-        coll['x'] = coll.get('x', 0) + 10
-        coll['y'] = coll.get('y', 0) + 10
+        coll['x'] = min(I32_MAX, coll['x'] + 10)
+        coll['y'] = min(I32_MAX, coll['y'] + 10)
         self._current_set['collisions'].append(coll)
-        self._coll_header.setText(self.t("collisions_header_count", n=len(self._current_set['collisions'])))
         self._mark_dirty()
         self._populate_coll_list()
         self._select_collision(coll)
@@ -1628,10 +1083,12 @@ class InfoEditor(QWidget):
     def _delete_collision(self):
         if not self._current_set or not self._current_coll:
             return
+        if not self._apply_fields():
+            return
         colls = self._current_set['collisions']
         if len(colls) <= 0:
             return
-        idx = colls.index(self._current_coll) if self._current_coll in colls else -1
+        idx = identity_index(colls, self._current_coll)
         cname = self._current_coll.get('name', '')
         reply = QMessageBox.question(self, self.t("dlg_title_confirm_delete"),
                                      self.t("msg_confirm_delete_coll", idx=idx, name=cname),
@@ -1639,9 +1096,9 @@ class InfoEditor(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
         self._fields = {}
-        colls.remove(self._current_coll)
+        colls.pop(idx)
+        self._prune_geometry_history()
         self._current_coll = None
-        self._coll_header.setText(self.t("collisions_header_count", n=len(colls)))
         self._mark_dirty()
         self._populate_coll_list()
         if colls:

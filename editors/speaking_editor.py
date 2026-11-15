@@ -1,28 +1,55 @@
 """editors/speaking_editor.py  –  Editor for SpeakingLineParam.bin.xfbin."""
 
+from core.design_tokens import (
+    LayoutRole,
+    Size,
+    TypeSize,
+    mono_font,
+    ui_font,
+)
+from core.style_helpers import (
+    make_editor_field_shell,
+    make_editor_grid_card,
+    make_empty_state,
+    ss_accent_label,
+    ss_bg_dark,
+    ss_dim_label,
+    ss_sidebar_btn,
+    ss_transparent,
+)
+from core.ui.editor_widgets import (
+    EditorActionRow,
+    EditorFilterCombo,
+    EditorListRow,
+    EditorSeparator,
+    EditorSidebar,
+    EditorToolbar,
+    configure_button,
+    configure_card,
+    configure_field,
+    configure_file_label,
+    configure_input,
+    configure_layout,
+    configure_scrollarea,
+    configure_search,
+)
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.editor_actions import commit_save_path, editor_path, install_file_actions
+from core.ui.message_preview import MessagePreview
+from core.message_text import MessageText
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QScrollArea,
     QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox,
-    QSizePolicy,
+    QSizePolicy, QComboBox, QCompleter,
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont
 
-from core.style_helpers import (
-    ss_btn, ss_sep, ss_accent_sep, ss_scrollarea, ss_scrollarea_transparent,
-    ss_search, ss_sidebar_btn, ss_input, ss_file_label, ss_transparent,
-    ss_bg_dark, ss_bg_panel, ss_sidebar_frame,
-    ss_accent_label, ss_dim_label, ss_main_label,
-    make_empty_state, make_editor_field_shell, make_editor_grid_card,
-    TOOLBAR_H, TOOLBAR_BTN_H,
-)
 from parsers.speaking_parser import (
     parse_speaking_xfbin, save_speaking_xfbin,
-    INTERACTION_NAMES,
 )
-from core.translations import ui_text
+from core.translations import current_language, ui_text
 from core.editor_file_state import set_file_label
-from core.settings import create_backup_on_open, game_files_dialog_dir
+from core.settings import create_backup_on_open, game_files_dialog_dir, load_settings
 
 
 def _clear_layout(layout):
@@ -83,6 +110,12 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:max(1, limit - 1)] + "..."
 
 
+def _character_name(code):
+    if code not in _CHAR_NAMES or code == '3dio01':
+        return _CHAR_NAMES.get(code, code)
+    return ui_text('char_' + code)
+
+
 class SpeakingEditor(QWidget):
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
@@ -97,119 +130,111 @@ class SpeakingEditor(QWidget):
         self._selected_pair: tuple[str, str] | None = None
         self._pair_buttons:  list[tuple[QPushButton, str, str]] = []
         self._last_compact: bool | None = None
+        self._fields = {}
+        self._texts = MessageText()
+        self._pair_search = {}
+        self._rebuilding = False
         self._build_ui()
+        install_file_actions(self, self._btn_save, save_to=lambda path: self._on_save(target_path=path))
+        install_editor_chrome(self)
 
     # UI construction
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        configure_layout(root, LayoutRole.ROOT)
 
         # Toolbar
-        top = QFrame()
-        top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(ss_bg_panel())
-        top_layout = QHBoxLayout(top)
-        top_layout.setContentsMargins(12, 8, 12, 8)
-        top_layout.setSpacing(4)
+        top = EditorToolbar()
+        top_layout = top.content_layout
 
         self._btn_open = QPushButton(ui_text("btn_open_file"))
-        self._btn_open.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_open.setFont(QFont("Segoe UI", 10))
-        self._btn_open.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._btn_open, accent=True)
         self._btn_open.clicked.connect(self._on_open)
+        self._btn_open.setProperty("designAction", 'open')
         top_layout.addWidget(self._btn_open)
 
         self._btn_save = QPushButton(ui_text("btn_save_file"))
-        self._btn_save.setFixedHeight(TOOLBAR_BTN_H)
-        self._btn_save.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self._btn_save.setEnabled(False)
-        self._btn_save.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._btn_save, accent=True)
         self._btn_save.clicked.connect(self._on_save)
         top_layout.addWidget(self._btn_save)
 
         self._file_lbl = QLabel(ui_text("xfa_no_file"))
-        self._file_lbl.setFont(QFont("Consolas", 12))
-        self._file_lbl.setStyleSheet(ss_file_label())
+
+        configure_file_label(self._file_lbl)
         top_layout.addWidget(self._file_lbl)
         top_layout.addStretch()
 
         root.addWidget(top)
 
         # Separator
-        sep = QFrame()
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
+        sep = EditorSeparator(accent=True)
+
+
         root.addWidget(sep)
 
         # Main area
         main = QWidget()
         main_layout = QHBoxLayout(main)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        configure_layout(main_layout, LayoutRole.ROOT)
 
         # Left sidebar
-        list_frame = QFrame()
-        list_frame.setFixedWidth(260)
-        list_frame.setStyleSheet(ss_sidebar_frame())
-        list_vlayout = QVBoxLayout(list_frame)
-        list_vlayout.setContentsMargins(8, 8, 8, 4)
-        list_vlayout.setSpacing(4)
+        list_frame = EditorSidebar()
+
+
+        list_vlayout = list_frame.content_layout
+
 
         self._search = QLineEdit()
-        self._search.setPlaceholderText(ui_text("ui_speaking_search_characters"))
-        self._search.setFixedHeight(32)
-        self._search.setFont(QFont("Segoe UI", 13))
-        self._search.setStyleSheet(ss_search())
+        configure_search(self._search)
         self._search.textChanged.connect(self._filter_list)
         list_vlayout.addWidget(self._search)
+        self._type_filter = EditorFilterCombo()
+        self._type_filter.addItem(ui_text('dialogue_filter_type'), None)
+        for value in _TYPE_ORDER:
+            self._type_filter.addItem(self._type_name(value), value)
+        self._type_filter.currentIndexChanged.connect(self._filter_list)
+        list_vlayout.addWidget(self._type_filter)
 
-        actions_frame = QWidget()
-        actions_frame.setStyleSheet(ss_transparent())
-        actions_layout = QHBoxLayout(actions_frame)
-        actions_layout.setContentsMargins(0, 2, 0, 4)
-        actions_layout.setSpacing(4)
+        actions_frame = EditorActionRow()
 
-        btn_font = QFont("Segoe UI", 10)
+        actions_layout = actions_frame.content_layout
+
 
         self._btn_add = QPushButton(ui_text("ui_messageinfo_add"))
-        self._btn_add.setFixedHeight(28)
-        self._btn_add.setFont(btn_font)
         self._btn_add.setEnabled(False)
-        self._btn_add.setStyleSheet(ss_btn())
+        configure_button(self._btn_add, height=Size.COMPACT_CONTROL)
         self._btn_add.clicked.connect(self._on_add)
+        self._btn_add.setProperty("designAction", 'new')
         actions_layout.addWidget(self._btn_add, 1)
 
         self._btn_dup = QPushButton(ui_text("btn_dup_short"))
-        self._btn_dup.setFixedHeight(28)
-        self._btn_dup.setFont(btn_font)
         self._btn_dup.setEnabled(False)
-        self._btn_dup.setStyleSheet(ss_btn())
+        configure_button(self._btn_dup, height=Size.COMPACT_CONTROL)
         self._btn_dup.clicked.connect(self._on_dup)
+        self._btn_dup.setProperty("designAction", 'duplicate')
         actions_layout.addWidget(self._btn_dup, 1)
 
         self._btn_del = QPushButton(ui_text("btn_delete"))
-        self._btn_del.setFixedHeight(28)
-        self._btn_del.setFont(btn_font)
         self._btn_del.setEnabled(False)
-        self._btn_del.setStyleSheet(ss_btn(danger=True))
+        configure_button(self._btn_del, danger=True, height=Size.COMPACT_CONTROL)
         self._btn_del.clicked.connect(self._on_delete)
+        self._btn_del.setProperty("designAction", 'delete')
         actions_layout.addWidget(self._btn_del, 1)
 
         list_vlayout.addWidget(actions_frame)
 
         self._pair_scroll = QScrollArea()
-        self._pair_scroll.setWidgetResizable(True)
-        self._pair_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._pair_scroll.setStyleSheet(ss_scrollarea_transparent())
+
+
+        configure_scrollarea(self._pair_scroll, transparent=True)
         self._pair_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._pair_list_widget = QWidget()
         self._pair_list_widget.setMinimumWidth(0)
         self._pair_list_widget.setStyleSheet(ss_transparent())
         self._pair_list_layout = QVBoxLayout(self._pair_list_widget)
-        self._pair_list_layout.setContentsMargins(0, 0, 0, 0)
-        self._pair_list_layout.setSpacing(1)
+        configure_layout(self._pair_list_layout, LayoutRole.LIST)
         self._pair_list_layout.addStretch()
         self._pair_scroll.setWidget(self._pair_list_widget)
         list_vlayout.addWidget(self._pair_scroll)
@@ -217,22 +242,21 @@ class SpeakingEditor(QWidget):
         main_layout.addWidget(list_frame)
 
         # Thin vertical divider
-        divider = QFrame()
-        divider.setFixedWidth(1)
-        divider.setStyleSheet(ss_sep())
+        divider = EditorSeparator(orientation=Qt.Orientation.Vertical)
+
+
         main_layout.addWidget(divider)
 
         # Right editor panel
         self._editor_scroll = QScrollArea()
-        self._editor_scroll.setWidgetResizable(True)
-        self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+
         self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._editor_scroll.setStyleSheet(ss_scrollarea())
+        configure_scrollarea(self._editor_scroll)
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(12, 12, 12, 12)
-        self._editor_layout.setSpacing(10)
+        configure_layout(self._editor_layout, LayoutRole.PAGE)
         self._editor_scroll.setWidget(self._editor_widget)
 
         self._show_placeholder(ui_text("ui_speaking_open_a_file_to_get_started"))
@@ -244,6 +268,7 @@ class SpeakingEditor(QWidget):
 
     def _show_placeholder(self, text: str):
         _clear_layout(self._editor_layout)
+        self._fields = {}
         title = ui_text("no_file_loaded") if self._filepath is None else ui_text("ui_model_viewer_select_item")
         card = make_empty_state(
             self._editor_widget,
@@ -272,17 +297,8 @@ class SpeakingEditor(QWidget):
                 if e["char1"] == c1 and e["char2"] == c2]
 
     def _populate_list(self, select: tuple[str, str] | None = None):
-        _clear_layout(self._pair_list_layout)
-        self._pair_buttons = []
-        self._pair_list_layout.addStretch()
-
+        self._rebuild_pair_buttons()
         pairs = self._get_pairs()
-        for c1, c2 in pairs:
-            btn = self._make_pair_button(c1, c2)
-            self._pair_list_layout.insertWidget(
-                self._pair_list_layout.count() - 1, btn
-            )
-            self._pair_buttons.append((btn, c1, c2))
 
         if not pairs:
             self._selected_pair = None
@@ -293,56 +309,76 @@ class SpeakingEditor(QWidget):
 
         target = select if (select and select in pairs) else pairs[0]
         self._select_pair(*target)
+        self._filter_list()
+
+    def _rebuild_pair_buttons(self):
+        _clear_layout(self._pair_list_layout)
+        self._pair_buttons = []
+        self._pair_search = {}
+        self._pair_list_layout.addStretch()
+
+        pairs = self._get_pairs()
+        for c1, c2 in pairs:
+            btn = self._make_pair_button(c1, c2)
+            self._pair_list_layout.insertWidget(
+                self._pair_list_layout.count() - 1, btn
+            )
+            self._pair_buttons.append((btn, c1, c2))
 
     def _make_pair_button(self, c1: str, c2: str) -> QPushButton:
-        btn = QPushButton()
-        btn.setFixedHeight(44)
+        btn = EditorListRow()
+
         btn.setMinimumWidth(0)
         btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet(ss_sidebar_btn())
-        layout = QVBoxLayout(btn)
-        layout.setContentsMargins(10, 3, 10, 3)
-        layout.setSpacing(0)
 
-        n1 = _CHAR_NAMES.get(c1, c1)
-        n2 = _CHAR_NAMES.get(c2, c2)
+
+        n1 = _character_name(c1)
+        n2 = _character_name(c2)
 
         pair_text = ui_text("ui_speaking_value_vs_value", p0=n1, p1=n2)
-        pair_lbl = QLabel(_truncate(pair_text, 24))
-        pair_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        pair_lbl.setStyleSheet(ss_main_label())
-        pair_lbl.setMinimumWidth(0)
-        pair_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        pair_lbl = btn.add_title(_truncate(pair_text, 24))
+
+
         pair_lbl.setToolTip(pair_text)
-        pair_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        layout.addWidget(pair_lbl)
+
 
         id_text = ui_text("ui_sound_value_value_2", p0=c1, p1=c2)
-        id_lbl = QLabel(_truncate(id_text, 28))
-        id_lbl.setFont(QFont("Consolas", 10))
-        id_lbl.setStyleSheet(ss_dim_label())
-        id_lbl.setMinimumWidth(0)
-        id_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        id_lbl = btn.add_subtitle(_truncate(id_text, 28), value_font=mono_font(TypeSize.CODE))
+
+
         id_lbl.setToolTip(id_text)
-        id_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        layout.addWidget(id_lbl)
+
 
         btn.clicked.connect(
             lambda checked=False, _c1=c1, _c2=c2: self._select_pair(_c1, _c2)
         )
+        entries = self._entries_for_pair(c1, c2)
+        parts = [c1, c2, n1, n2]
+        for _, entry in entries:
+            parts.append(self._type_name(entry['interaction_type']))
+            for key in ('dialogue1', 'dialogue2'):
+                value = entry[key]
+                result = self._texts.resolve(value)
+                parts.extend((value, result.description() if result else ''))
+        self._pair_search[(c1, c2)] = '\n'.join(parts).casefold()
+        btn.setToolTip('\n'.join(parts))
         return btn
 
     def _filter_list(self):
-        query = self._search.text().lower()
+        query = self._search.text().casefold().strip()
+        itype = self._type_filter.currentData()
         for btn, c1, c2 in self._pair_buttons:
-            n1 = _CHAR_NAMES.get(c1, "").lower()
-            n2 = _CHAR_NAMES.get(c2, "").lower()
-            match = (query in c1.lower() or query in c2.lower() or
-                     query in n1 or query in n2)
+            match = query in self._pair_search.get((c1, c2), '')
+            if itype is not None:
+                match = match and any(e['interaction_type'] == itype for _, e in self._entries_for_pair(c1, c2))
             btn.setVisible(match)
 
     def _select_pair(self, c1: str, c2: str):
+        old = self._selected_pair
+        if not self._flush_characters():
+            return
+        if old == (c1, c2) and self._selected_pair != old:
+            c1, c2 = self._selected_pair
         self._selected_pair = (c1, c2)
         for btn, bc1, bc2 in self._pair_buttons:
             selected = (bc1 == c1 and bc2 == c2)
@@ -351,30 +387,49 @@ class SpeakingEditor(QWidget):
         self._btn_del.setEnabled(True)
         self._build_editor(c1, c2)
 
+    @staticmethod
+    def _type_name(value):
+        return ui_text('dialogue_type_' + str(value)) if value in _TYPE_ORDER else ui_text('duel_unknown_type', value=value)
+
+    def _flush_characters(self):
+        if not self._selected_pair or 'char1' not in self._fields:
+            return True
+        pair = tuple(self._fields[key].text() for key in ('char1', 'char2'))
+        if any(not code or '\x00' in code for code in pair):
+            QMessageBox.warning(self, ui_text('dlg_title_error'), ui_text('dialogue_invalid_character'))
+            return False
+        if pair != self._selected_pair:
+            for _, entry in self._entries_for_pair(*self._selected_pair):
+                entry['char1'], entry['char2'] = pair
+            self._selected_pair = pair
+            self._mark_dirty()
+            self._rebuild_pair_buttons()
+            for btn, c1, c2 in self._pair_buttons:
+                btn.set_selected((c1, c2) == pair)
+            self._filter_list()
+        return True
+
     # Editor
 
     def _is_compact_editor(self) -> bool:
         if not hasattr(self, "_editor_scroll"):
             return False
-        return self._editor_scroll.viewport().width() < 780
+        return self._editor_scroll.viewport().width() < Size.COMPACT_BREAKPOINT
 
     def _grid_columns(self, max_columns: int) -> int:
         width = self._editor_scroll.viewport().width()
-        if width < 780:
+        if width < Size.COMPACT_BREAKPOINT:
             return 1
         if width < 1080:
             return min(2, max_columns)
         return max_columns
 
     def _prep_card(self, card: QFrame):
-        card.setMinimumWidth(0)
-        card.setMaximumWidth(980)
-        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        configure_card(card)
         return card
 
     def _prep_field_widget(self, widget: QWidget):
-        widget.setMinimumWidth(0)
-        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        configure_field(widget)
         return widget
 
     def _add_editor_card(self, card: QFrame):
@@ -383,13 +438,11 @@ class SpeakingEditor(QWidget):
     def _field_position(self, index: int, columns: int) -> tuple[int, int]:
         return divmod(index, max(1, columns))
 
-    def _make_text_field(self, label_text: str, value: str, *, font=None, accent=False, height=30):
+    def _make_text_field(self, label_text: str, value: str, *, font=None, accent=False, height=Size.CONTROL):
         frame, layout, _label, _hint = make_editor_field_shell(label_text)
         self._prep_field_widget(frame)
         edit = QLineEdit(value)
-        edit.setFixedHeight(height)
-        edit.setFont(font or QFont("Consolas", 13))
-        edit.setStyleSheet(ss_input())
+        configure_input(edit, height=height, monospace=True, font=font)
         edit.setMinimumWidth(0)
         edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         edit.setCursorPosition(0)
@@ -399,21 +452,16 @@ class SpeakingEditor(QWidget):
         return frame, edit
 
     def _build_editor(self, c1: str, c2: str):
+        self._rebuilding = True
         _clear_layout(self._editor_layout)
+        self._fields = {}
         self._last_compact = self._is_compact_editor()
         columns = self._grid_columns(2)
 
         pair_entries = self._entries_for_pair(c1, c2)
 
         # Character header
-        hdr, hdr_grid = make_editor_grid_card(
-            self._editor_widget,
-            title=ui_text("ui_speaking_value_vs_value", p0=c1, p1=c2),
-            icon_name="fa6s.comments",
-            subtitle=ui_text("ui_sound_value_value_2", p0=c1, p1=c2),
-            grid_margins=(0, 2, 0, 0),
-            vertical_spacing=8,
-        )
+        hdr, hdr_grid = make_editor_grid_card(self._editor_widget, title=ui_text('ui_speaking_value_vs_value', p0=_character_name(c1), p1=_character_name(c2)), icon_name='fa6s.comments', subtitle=ui_text('dialogue_pair_help'))
         self._prep_card(hdr)
 
         for col, (field, code, label_text) in enumerate([
@@ -422,15 +470,17 @@ class SpeakingEditor(QWidget):
         ]):
             frame, edit = self._make_text_field(
                 label_text, code,
-                font=QFont("Consolas", 16),
+                font=mono_font(TypeSize.LARGE),
                 accent=True,
-                height=36,
+                height=Size.LARGE_CONTROL,
             )
 
-            edit.editingFinished.connect(
-                lambda _field=field, _edit=edit, _c1=c1, _c2=c2:
-                    self._on_char_changed(_c1, _c2, _field, _edit.text().strip())
-            )
+            self._fields[field] = edit
+            edit.setObjectName('dialogue_' + field)
+            edit.textChanged.connect(self._mark_dirty)
+            completer = QCompleter(sorted(set(_CHAR_NAMES) | {e[field] for e in self._entries}), edit)
+            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            edit.setCompleter(completer)
 
             row, mapped_col = self._field_position(col, columns)
             hdr_grid.addWidget(frame, row, mapped_col)
@@ -439,61 +489,75 @@ class SpeakingEditor(QWidget):
         self._add_editor_card(hdr)
 
         # Three dialogue cards
-        for itype in _TYPE_ORDER:
-            type_name = INTERACTION_NAMES[itype]
+        types = list(dict.fromkeys((*_TYPE_ORDER, *(e['interaction_type'] for _, e in pair_entries))))
+        for itype in types:
+            type_name = self._type_name(itype)
 
             typed = [(i, e) for i, e in pair_entries if e["interaction_type"] == itype]
 
-            card, card_grid = make_editor_grid_card(
-                self._editor_widget,
-                title=type_name,
-                icon_name="fa6s.quote-left",
-                grid_margins=(0, 2, 0, 0),
-                vertical_spacing=8,
-            )
+            card, card_grid = make_editor_grid_card(self._editor_widget, title=type_name, icon_name='fa6s.quote-left')
             self._prep_card(card)
 
             if not typed:
                 empty_lbl = QLabel(ui_text("ui_speaking_no_entry_for_this_interaction_type"))
-                empty_lbl.setFont(QFont("Segoe UI", 11))
+                empty_lbl.setFont(ui_font(TypeSize.CODE))
                 empty_lbl.setStyleSheet(ss_dim_label())
                 empty_lbl.setMinimumWidth(0)
                 empty_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
                 card_grid.addWidget(empty_lbl, 0, 0)
 
                 add_btn = QPushButton(ui_text("ui_speaking_add_entry"))
-                add_btn.setFixedHeight(28)
-                add_btn.setFont(QFont("Segoe UI", 10))
-                add_btn.setStyleSheet(ss_btn())
+                configure_button(add_btn, height=Size.COMPACT_CONTROL)
                 add_btn.clicked.connect(
                     lambda checked=False, _c1=c1, _c2=c2, _itype=itype:
                         self._add_type_entry(_c1, _c2, _itype)
                 )
-                card_grid.addWidget(add_btn, 0, 1, Qt.AlignmentFlag.AlignRight)
+                add_btn.setProperty("designAction", 'new')
+                card_grid.addWidget(add_btn, 1, 0, 1, columns, Qt.AlignmentFlag.AlignLeft)
             else:
                 for row_idx, (entry_idx, entry) in enumerate(typed):
+                    base_row = row_idx * (3 if columns == 1 else 2)
                     for col_idx, (dkey, dlabel) in enumerate([
                         ("dialogue1", ui_text("ui_speaking_dialogue_1")),
                         ("dialogue2", ui_text("ui_speaking_dialogue_2")),
                     ]):
                         f, edit = self._make_text_field(dlabel, entry[dkey])
+                        self._fields[(entry_idx, dkey)] = edit
+                        edit.setObjectName(f'dialogue_{entry_idx}_{dkey}')
+                        f.layout().addWidget(MessagePreview(edit, self._texts, f))
                         edit.textChanged.connect(
                             lambda text, _idx=entry_idx, _key=dkey:
                                 self._update_entry_field(_idx, _key, text)
                         )
 
-                        field_index = row_idx * 2 + col_idx
-                        row, mapped_col = self._field_position(field_index, columns)
+                        row, mapped_col = base_row + col_idx // columns, col_idx % columns
                         card_grid.addWidget(f, row, mapped_col)
                         card_grid.setColumnStretch(mapped_col, 1)
+                    controls = EditorActionRow()
+                    flag_frame, flag_layout, _, _ = make_editor_field_shell(ui_text('dialogue_flag'))
+                    flag_frame.setMaximumWidth(240)
+                    flag = configure_input(QComboBox(), monospace=False)
+                    for value in dict.fromkeys((0, 1, entry['is_round_win'])):
+                        flag.addItem(str(value), value)
+                    flag.setCurrentIndex(flag.findData(entry['is_round_win']))
+                    flag.setToolTip(ui_text('dialogue_flag_help'))
+                    flag.currentIndexChanged.connect(lambda _, idx=entry_idx, combo=flag: self._update_entry_field(idx, 'is_round_win', combo.currentData()))
+                    self._fields[(entry_idx, 'is_round_win')] = flag
+                    flag_layout.addWidget(flag)
+                    controls.content_layout.addWidget(flag_frame)
+                    controls.content_layout.addStretch()
+                    remove = configure_button(QPushButton(ui_text('btn_delete')), danger=True, height=Size.COMPACT_CONTROL)
+                    remove.clicked.connect(lambda _, idx=entry_idx: self._delete_entry(idx))
+                    controls.content_layout.addWidget(remove, 0, Qt.AlignmentFlag.AlignBottom)
+                    card_grid.addWidget(controls, base_row + (2 if columns == 1 else 1), 0, 1, columns)
+                add_btn = configure_button(QPushButton(ui_text('ui_speaking_add_entry')), height=Size.COMPACT_CONTROL)
+                add_btn.clicked.connect(lambda _, value=itype: self._add_type_entry(c1, c2, value))
+                card_grid.addWidget(add_btn, len(typed) * (3 if columns == 1 else 2), 0, 1, columns, Qt.AlignmentFlag.AlignLeft)
 
             self._add_editor_card(card)
 
-        spacer = QWidget()
-        spacer.setFixedHeight(20)
-        spacer.setStyleSheet(ss_transparent())
-        self._editor_layout.addWidget(spacer)
         self._editor_layout.addStretch()
+        self._rebuilding = False
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -501,12 +565,17 @@ class SpeakingEditor(QWidget):
             QTimer.singleShot(0, self._maybe_rebuild_for_compact)
 
     def _maybe_rebuild_for_compact(self):
-        if self._selected_pair is None:
+        if self._selected_pair is None or self._rebuilding:
             return
         compact = self._is_compact_editor()
         if compact == self._last_compact:
             return
+        pending = {key: (self._fields[key].text(), self._fields[key].cursorPosition())
+                   for key in ('char1', 'char2') if key in self._fields}
         self._build_editor(*self._selected_pair)
+        for key, (text, cursor) in pending.items():
+            self._fields[key].setText(text)
+            self._fields[key].setCursorPosition(cursor)
 
     # Field update helpers
 
@@ -517,15 +586,27 @@ class SpeakingEditor(QWidget):
             set_file_label(self._file_lbl, self._filepath, dirty=True)
 
     def _update_entry_field(self, idx: int, key: str, value: str):
-        if 0 <= idx < len(self._entries):
+        if 0 <= idx < len(self._entries) and self._entries[idx].get(key) != value:
             self._entries[idx][key] = value
             self._mark_dirty()
+            pair = (self._entries[idx]['char1'], self._entries[idx]['char2'])
+            parts = [*pair, *(_character_name(c) for c in pair)]
+            for _, entry in self._entries_for_pair(*pair):
+                parts.append(self._type_name(entry['interaction_type']))
+                for dkey in ('dialogue1', 'dialogue2'):
+                    result = self._texts.resolve(entry[dkey])
+                    parts.extend((entry[dkey], result.description() if result else ''))
+            self._pair_search[pair] = '\n'.join(parts).casefold()
+            self._filter_list()
 
     def _add_type_entry(self, c1: str, c2: str, itype: int):
         """Add a new entry for the given interaction type to the current pair."""
+        if not self._flush_characters():
+            return
+        c1, c2 = self._selected_pair or (c1, c2)
         new_e = {
             "interaction_type": itype,
-            "is_round_win": 0,
+            "is_round_win": int(itype == 2),
             "char1": c1, "char2": c2,
             "dialogue1": "", "dialogue2": "",
         }
@@ -534,46 +615,54 @@ class SpeakingEditor(QWidget):
         self._mark_dirty()
         self._build_editor(c1, c2)
 
-    def _on_char_changed(self, old_c1: str, old_c2: str, field: str, new_val: str):
-        if not new_val:
+    def _delete_entry(self, idx):
+        if not self._flush_characters():
             return
-        changed = False
-        for e in self._entries:
-            if e["char1"] == old_c1 and e["char2"] == old_c2:
-                e[field] = new_val
-                changed = True
-        if not changed:
+        if QMessageBox.question(self, ui_text('ui_speaking_delete_interaction'), ui_text('dialogue_delete_entry'),
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
+        del self._entries[idx]
+        self._fields = {}
         self._mark_dirty()
-        new_c1 = new_val if field == "char1" else old_c1
-        new_c2 = new_val if field == "char2" else old_c2
-        self._selected_pair = (new_c1, new_c2)
-        self._populate_list(select=(new_c1, new_c2))
+        self._populate_list(select=self._selected_pair)
 
     # CRUD
 
     def _on_add(self):
-        new_c1, new_c2 = "new_chr", "new_chr"
+        if self._original_data is None or not self._flush_characters():
+            return
+        new_c1, new_c2 = self._new_pair()
         for itype in _TYPE_ORDER:
             e = {
                 "interaction_type": itype,
-                "is_round_win": 0,
+                "is_round_win": int(itype == 2),
                 "char1": new_c1, "char2": new_c2,
                 "dialogue1": "", "dialogue2": "",
             }
             self._entries.append(e)
             self._orig_entries.append(dict(e))
         self._mark_dirty()
+        self._fields = {}
         self._populate_list(select=(new_c1, new_c2))
 
+    def _new_pair(self):
+        pairs = set(self._get_pairs())
+        index = 1
+        while True:
+            code = 'new_chr' if index == 1 else f'new_chr_{index}'
+            if (code, code) not in pairs:
+                return code, code
+            index += 1
+
     def _on_dup(self):
-        if not self._selected_pair:
+        if not self._selected_pair or not self._flush_characters():
             return
         c1, c2 = self._selected_pair
         pair_entries = self._entries_for_pair(c1, c2)
         if not pair_entries:
             return
-        new_c1, new_c2 = "new_chr", "new_chr"
+        new_c1, new_c2 = self._new_pair()
         for _, e in pair_entries:
             new_e = dict(e)
             new_e["char1"] = new_c1
@@ -581,14 +670,15 @@ class SpeakingEditor(QWidget):
             self._entries.append(new_e)
             self._orig_entries.append(dict(new_e))
         self._mark_dirty()
+        self._fields = {}
         self._populate_list(select=(new_c1, new_c2))
 
     def _on_delete(self):
-        if not self._selected_pair:
+        if not self._selected_pair or not self._flush_characters():
             return
         c1, c2 = self._selected_pair
-        n1 = _CHAR_NAMES.get(c1, c1)
-        n2 = _CHAR_NAMES.get(c2, c2)
+        n1 = _character_name(c1)
+        n2 = _character_name(c2)
         reply = QMessageBox.question(
             self, ui_text("ui_speaking_delete_interaction"),
             ui_text("ui_speaking_delete_all_entries_for_value_vs_value_value_valu", p0=n1, p1=n2, p2=c1, p3=c2),
@@ -607,17 +697,25 @@ class SpeakingEditor(QWidget):
                 del self._orig_entries[i]
         self._mark_dirty()
         self._selected_pair = None
+        self._fields = {}
         self._populate_list()
 
     # File I/O
 
     def _load_file(self, filepath: str):
-        create_backup_on_open(filepath)
         try:
             data, version, entries = parse_speaking_xfbin(filepath)
         except Exception as exc:
             QMessageBox.critical(self, ui_text("dlg_title_error"), ui_text("ui_assist_failed_to_open_file_value", p0=exc))
             return
+
+        if self._dirty and QMessageBox.question(
+            self, ui_text('unsaved_changes_title'), ui_text('dialogue_discard'),
+            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        ) != QMessageBox.StandardButton.Discard:
+            return
+        create_backup_on_open(filepath)
 
         self._filepath      = filepath
         self._original_data = data
@@ -625,6 +723,15 @@ class SpeakingEditor(QWidget):
         self._entries       = entries
         self._orig_entries  = [dict(e) for e in entries]
         self._dirty         = False
+        self._selected_pair = None
+        self._fields = {}
+        self._texts = MessageText(filepath, current_language(), load_settings().get('game_files_dir', ''))
+        self._type_filter.blockSignals(True)
+        self._type_filter.clear()
+        self._type_filter.addItem(ui_text('dialogue_filter_type'), None)
+        for value in dict.fromkeys((*_TYPE_ORDER, *(e['interaction_type'] for e in entries))):
+            self._type_filter.addItem(self._type_name(value), value)
+        self._type_filter.blockSignals(False)
 
         set_file_label(self._file_lbl, filepath)
         self._btn_save.setEnabled(True)
@@ -640,24 +747,23 @@ class SpeakingEditor(QWidget):
         if path:
             self._load_file(path)
 
-    def _on_save(self):
-        if not self._filepath:
+    def _on_save(self, target_path=None):
+        if self._original_data is None or not self._flush_characters():
+            return
+        save_path = target_path or editor_path(self)
+        if not save_path:
             return
         try:
-            save_speaking_xfbin(
-                self._filepath, self._original_data,
-                self._version, self._entries,
-            )
+            save_speaking_xfbin(save_path, self._original_data, self._version, self._entries)
         except Exception as exc:
-            QMessageBox.critical(self, ui_text("dlg_title_error"), ui_text("ui_customcardparam_failed_to_save_file_value", p0=exc))
+            QMessageBox.critical(self, ui_text('dlg_title_error'), ui_text('ui_customcardparam_failed_to_save_file_value', p0=exc))
             return
-
+        commit_save_path(self, save_path)
         self._dirty = False
         try:
-            self._original_data, self._version, saved = parse_speaking_xfbin(self._filepath)
+            self._original_data, self._version, saved = parse_speaking_xfbin(save_path)
             self._orig_entries = [dict(e) for e in saved]
         except Exception:
             self._orig_entries = [dict(e) for e in self._entries]
-
-        set_file_label(self._file_lbl, self._filepath)
-        QMessageBox.information(self, ui_text("ui_assist_saved"), ui_text("ui_assist_file_saved_value", p0=self._filepath))
+        set_file_label(self._file_lbl, save_path)
+        QMessageBox.information(self, ui_text('ui_assist_saved'), ui_text('ui_assist_file_saved_value', p0=save_path))

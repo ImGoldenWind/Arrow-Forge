@@ -1,6 +1,8 @@
 from PyQt6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QWidget
 from PyQt6.QtCore import QTimer
 from core.themes import P
+from core.design_tokens import SkeletonMetrics, Size
+from core.style_helpers import ss_skeleton_bar, ss_skeleton_card, ss_transparent
 
 
 # Shared animation clock
@@ -48,7 +50,7 @@ def _tick():
     for bar in _SUBSCRIBERS:
         try:
             if bar.isVisible():
-                bar.setStyleSheet(f"background-color: {color}; border-radius: {bar._corner_radius}px;")
+                bar.setStyleSheet(ss_skeleton_bar(color, corner_radius=bar._corner_radius))
                 alive.append(bar)
         except (RuntimeError, AttributeError):
             pass
@@ -75,13 +77,13 @@ def _subscribe(bar):
 class SkeletonBar(QFrame):
     """Smoothly pulsing placeholder bar (shares one global timer)."""
 
-    def __init__(self, parent=None, height=14, corner_radius=6, width=0):
+    def __init__(self, parent=None, height=SkeletonMetrics.BAR_HEIGHT, corner_radius=SkeletonMetrics.BAR_RADIUS, width=0):
         super().__init__(parent)
         self._corner_radius = corner_radius
         self.setFixedHeight(height)
         if width > 0:
             self.setFixedWidth(width)
-        self.setStyleSheet(f"background-color: {P['bg_card']}; border-radius: {corner_radius}px;")
+        self.setStyleSheet(ss_skeleton_bar(corner_radius=corner_radius))
         _subscribe(self)
 
 
@@ -90,10 +92,7 @@ class SkeletonCard(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet(
-            f"SkeletonCard {{ background-color: {P['bg_card']}; border-radius: 8px; "
-            f"border: 1px solid {P['border']}; }}"
-        )
+        self.setStyleSheet(ss_skeleton_card())
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
 
@@ -116,17 +115,15 @@ class SkeletonListRow(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(44)
-        self.setStyleSheet("background-color: transparent;")
+        self.setFixedHeight(Size.LIST_ROW)
+        self.setStyleSheet(ss_transparent())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 1, 2, 1)
         layout.setSpacing(0)
 
         inner = QFrame(self)
-        inner.setStyleSheet(
-            f"background-color: {P['bg_card']}; border-radius: 6px;"
-        )
+        inner.setStyleSheet(ss_skeleton_bar())
         layout.addWidget(inner)
 
         inner_layout = QVBoxLayout(inner)

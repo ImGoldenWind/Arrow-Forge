@@ -14,7 +14,7 @@ Each entry:
   +12  float LE   value_2
   +16  float LE   value_3
   +20  float LE   value_4
-  +24  uint32 LE  reserved_24
+  +24  float LE   value_5 (fifth argument in native effect packet)
   +28  uint32 LE  reserved_28
   +32  uint64 LE  self-relative pointer to title text key
   +40  uint64 LE  self-relative pointer to hidden title text key
@@ -109,14 +109,13 @@ def parse_duelsettingparam_xfbin(filepath: str) -> tuple[bytearray, dict]:
     for idx in range(count):
         base = entries_base + idx * ENTRY_SIZE
         type_id, sequence_id = struct.unpack_from("<II", data, base)
-        values = list(struct.unpack_from("<ffff", data, base + 8))
-        reserved_24, reserved_28 = struct.unpack_from("<II", data, base + 24)
+        values = list(struct.unpack_from("<5f", data, base + 8))
+        reserved_28 = struct.unpack_from("<I", data, base + 28)[0]
 
         entry = {
             "type_id": type_id,
             "sequence_id": sequence_id,
             "values": values,
-            "reserved_24": reserved_24,
             "reserved_28": reserved_28,
         }
         for key, rel_off in POINTER_FIELDS:
@@ -131,13 +130,21 @@ def parse_duelsettingparam_xfbin(filepath: str) -> tuple[bytearray, dict]:
     }
 
 
+def argument_values(entry: dict) -> list[float]:
+    """Read all five arguments, accepting dictionaries from the former layout."""
+    values = list(entry.get("values", ()))[:5]
+    if len(values) < 5:
+        values += [0.0] * (4 - len(values))
+        values.append(struct.unpack("<f", struct.pack("<I", int(entry.get("reserved_24", 0)) & 0xFFFFFFFF))[0])
+    return values
+
+
 def make_default_entry(source: dict | None = None) -> dict:
     if source is not None:
         entry = {
             "type_id": int(source.get("type_id", 1)) & 0xFFFFFFFF,
             "sequence_id": int(source.get("sequence_id", 0)) & 0xFFFFFFFF,
-            "values": list(source.get("values", [0.0, 0.0, 0.0, 0.0]))[:4],
-            "reserved_24": int(source.get("reserved_24", 0)) & 0xFFFFFFFF,
+            "values": argument_values(source),
             "reserved_28": int(source.get("reserved_28", 0)) & 0xFFFFFFFF,
             "title_key": str(source.get("title_key", "")),
             "hidden_title_key": str(source.get("hidden_title_key", "")),
@@ -145,14 +152,12 @@ def make_default_entry(source: dict | None = None) -> dict:
             "condition_id": str(source.get("condition_id", "")),
             "target_names": str(source.get("target_names", "")),
         }
-        entry["values"] += [0.0] * (4 - len(entry["values"]))
         return entry
 
     return {
         "type_id": 1,
         "sequence_id": 0,
-        "values": [0.0, 0.0, 0.0, 0.0],
-        "reserved_24": 0,
+        "values": [0.0] * 5,
         "reserved_28": 0,
         "title_key": "btl_s_mission_t_new",
         "hidden_title_key": "btl_s_mission_t_new_hide",
@@ -195,12 +200,11 @@ def _build_inner(version: int, notes: bytes, entries: list[dict]) -> bytes:
     for idx, entry in enumerate(entries):
         entry_abs = INNER_SIZE_FIELD + entries_base_inner + idx * ENTRY_SIZE
         row = bytearray(ENTRY_SIZE)
-        values = list(entry.get("values", [0.0, 0.0, 0.0, 0.0]))[:4]
-        values += [0.0] * (4 - len(values))
+        values = argument_values(entry)
 
         struct.pack_into("<II", row, 0, int(entry.get("type_id", 0)) & 0xFFFFFFFF, int(entry.get("sequence_id", 0)) & 0xFFFFFFFF)
-        struct.pack_into("<ffff", row, 8, *(float(value) for value in values))
-        struct.pack_into("<II", row, 24, int(entry.get("reserved_24", 0)) & 0xFFFFFFFF, int(entry.get("reserved_28", 0)) & 0xFFFFFFFF)
+        struct.pack_into("<5f", row, 8, *(float(value) for value in values))
+        struct.pack_into("<I", row, 28, int(entry.get("reserved_28", 0)) & 0xFFFFFFFF)
 
         for key, rel_off in POINTER_FIELDS:
             string_off = string_offsets[idx][key]

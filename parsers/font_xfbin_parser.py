@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import struct
+import tempfile
 from dataclasses import dataclass, field
 
 from PIL import Image
@@ -14,7 +15,7 @@ from parsers.xfbin_lib import BinaryReader, BrNut, Endian, Nut, NuccChunkBinary,
 NFH_HEADER_OFFSET = 8
 NFH_FIXED_TABLE_SIZE = 1104
 NFH_GLYPH_RECORD_SIZE = 32
-ICONFONT_HEADER_SIZE = 0x20
+ICONFONT_HEADER_SIZE = 12
 ICONFONT_RECORD_SIZE = 44
 
 
@@ -29,6 +30,7 @@ class FontAtlas:
     texture_data_offset: int = 0
     texture_data_size: int = 0
     pil_image: Image.Image | None = None
+    edit_error: str = ""
 
 
 @dataclass
@@ -153,8 +155,17 @@ def save_font_xfbin(document: FontDocument, path: str | None = None) -> None:
         end = offset + len(document.original_payload)
 
     raw[offset:end] = document.payload
-    with open(target, "wb") as fh:
-        fh.write(raw)
+    directory = os.path.dirname(os.path.abspath(target))
+    fd, temporary = tempfile.mkstemp(prefix='.arrowforge-font-', dir=directory)
+    try:
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(raw)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
     document.path = target
     document.raw_file = raw
@@ -186,6 +197,14 @@ def replace_nfh_atlas_same_size(document: FontDocument, data: bytes) -> None:
     if len(data) != len(document.atlas.data):
         raise ValueError("Safe v1 atlas replacement requires the exact same NTP3 byte length")
     atlas = _parse_atlas(document.atlas.offset, bytearray(data))
+    if atlas.pil_image is None:
+        raise ValueError("Replacement NTP3 atlas could not be decoded")
+    if (atlas.width, atlas.height) != (document.atlas.width, document.atlas.height):
+        raise ValueError("Replacement atlas dimensions must stay unchanged")
+    if any(r.has_atlas_rect and (r.atlas_x + r.atlas_width > atlas.width or
+                                r.atlas_y + r.atlas_height > atlas.height)
+           for r in document.glyph_records):
+        raise ValueError("A glyph rectangle exceeds the replacement atlas")
     document.payload[document.atlas.offset:document.atlas.offset + len(data)] = data
     document.atlas = atlas
 
@@ -195,6 +214,9 @@ def crop_nfh_glyph_image(document: FontDocument, index: int) -> Image.Image | No
         return None
     record = document.glyph_records[index]
     if not record.has_atlas_rect:
+        return None
+    if (record.atlas_x + record.atlas_width > document.atlas.width or
+            record.atlas_y + record.atlas_height > document.atlas.height):
         return None
     box = (
         record.atlas_x,
@@ -211,6 +233,10 @@ def replace_nfh_glyph_image(document: FontDocument, index: int, image: Image.Ima
     record = document.glyph_records[index]
     if not record.has_atlas_rect:
         raise ValueError("The selected glyph has no atlas rectangle")
+    if document.atlas.edit_error:
+        raise ValueError(document.atlas.edit_error)
+    if crop_nfh_glyph_image(document, index) is None:
+        raise ValueError("Glyph rectangle exceeds atlas dimensions")
 
     atlas_img = document.atlas.pil_image.copy().convert("RGBA")
     glyph_img = image.convert("RGBA")
@@ -313,15 +339,16 @@ def _parse_nfh_document(path: str, raw_file: bytearray, payload: bytearray, file
 def _parse_iconfont_document(path: str, raw_file: bytearray, payload: bytearray, file_path: str, name: str) -> FontDocument:
     if len(payload) < ICONFONT_HEADER_SIZE:
         raise ValueError("iconfontParam payload is too small")
-    header = list(struct.unpack_from(">8I", payload, 0))
+    header = list(struct.unpack_from(">3I", payload, 0))
     count = header[1]
-    expected_end = ICONFONT_HEADER_SIZE + count * ICONFONT_RECORD_SIZE
-    if expected_end > len(payload):
+    table_start = 8 + header[2]
+    expected_end = table_start + count * ICONFONT_RECORD_SIZE
+    if (count and table_start < ICONFONT_HEADER_SIZE) or expected_end > len(payload):
         raise ValueError("iconfontParam record table exceeds payload length")
 
     records = []
     for index in range(count):
-        offset = ICONFONT_HEADER_SIZE + index * ICONFONT_RECORD_SIZE
+        offset = table_start + index * ICONFONT_RECORD_SIZE
         records.append(IconfontRecord(index, offset, bytearray(payload[offset:offset + ICONFONT_RECORD_SIZE])))
 
     return FontDocument(
@@ -352,10 +379,21 @@ def _parse_atlas(offset: int, data: bytearray) -> FontAtlas:
             atlas.pixel_format = tex.pixel_format
             atlas.mipmap_count = tex.mipmap_count
             atlas.texture_data_size = len(tex.texture_data)
-            atlas.texture_data_offset = len(data) - atlas.texture_data_size
+            # First record starts after the 16-byte NTP3 header. Tails and
+            # neighboring records are not texture data.
+            atlas.texture_data_offset = 16 + br_nut.textures[0].header_size
             atlas.pil_image = nut_tex_to_pil(tex)
-    except Exception:
+            if len(nut.textures) != 1 or tex.mipmap_count != 1 or tex.is_cube_map:
+                atlas.edit_error = "Glyph editing requires one 2D texture with one mip level"
+            elif br_nut.version != 0x100 or tex.pixel_format not in (2, 17):
+                atlas.edit_error = "Glyph editing supports NTP3 v0x100 DXT5 or RGBA8888 only"
+            expected = atlas.width * atlas.height * (4 if atlas.pixel_format == 17 else 1)
+            if (atlas.texture_data_size != expected or
+                    atlas.texture_data_offset + atlas.texture_data_size > len(data)):
+                atlas.edit_error = "Atlas texture data has an unsupported or truncated layout"
+    except Exception as exc:
         atlas.pil_image = None
+        atlas.edit_error = str(exc)
     return atlas
 
 
@@ -367,6 +405,8 @@ def _replace_nfh_atlas_image(
     atlas = document.atlas
     if atlas is None:
         raise ValueError("No atlas is available")
+    if atlas.edit_error:
+        raise ValueError(atlas.edit_error)
     if image.size != (atlas.width, atlas.height):
         raise ValueError("Atlas image size must stay unchanged")
     if atlas.texture_data_offset <= 0 or atlas.texture_data_size <= 0:
@@ -392,7 +432,9 @@ def _replace_nfh_atlas_image(
     document.payload[
         atlas.offset + atlas.texture_data_offset:atlas.offset + atlas.texture_data_offset + atlas.texture_data_size
     ] = encoded
-    atlas.pil_image = image.convert("RGBA")
+    # Preview the pixels actually saved after lossy block compression.
+    decoded = _parse_atlas(atlas.offset, atlas.data)
+    atlas.pil_image = decoded.pil_image
 
 
 def _encode_dxt5(image: Image.Image) -> bytes:

@@ -1,8 +1,8 @@
 """
 ASBR Texture Editor
 Full-featured XFBIN texture editor with:
-  • Thumbnail grid with filter / search
-  • Large zoomable preview
+  • Virtualized texture catalog with thumbnails / search / batch selection
+  • Native pixel / channel / mip / cubemap-face inspection and comparison
   • Live quick-edit adjustments (brightness / contrast / saturation / hue)
   • Flip, rotate
   • Export single texture as DDS or PNG
@@ -12,35 +12,75 @@ Full-featured XFBIN texture editor with:
   • Save modified XFBIN
 """
 
+from core.design_tokens import (
+    HUE_GRADIENT,
+    IconButtonRole,
+    Insets,
+    LIGHTNESS_GRADIENT,
+    LayoutRole,
+    Size,
+    TypeSize,
+    mono_font,
+    ui_font,
+)
+from core.style_helpers import (
+    add_editor_card_title,
+    make_editor_card,
+    make_editor_field_shell,
+    ss_accent_label,
+    ss_bg_dark,
+    ss_bg_panel,
+    ss_check,
+    ss_dialog,
+    ss_dim_label,
+    ss_error_label,
+    ss_field_label,
+    ss_gradient_slider,
+    ss_listwidget,
+    ss_main_label,
+    ss_radio,
+    ss_scrollarea_card,
+    ss_scrollarea_panel_edge,
+    ss_section_label,
+    ss_slider,
+    ss_transparent,
+)
+from core.ui.editor_widgets import (
+    EditorActionRow,
+    EditorSeparator,
+    EditorSidebar,
+    EditorToolbar,
+    configure_button,
+    configure_file_label,
+    configure_icon_button,
+    configure_input,
+    configure_layout,
+    configure_scrollarea,
+    configure_search,
+    configure_table,
+    configure_textedit,
+    fit_scroll_page,
+)
+from core.ui.editor_chrome import install_editor_chrome, EditorSidebarPane
+from core.ui.editor_actions import install_file_actions
 import os
 import copy
+import threading
 
 import qtawesome as qta
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QScrollArea,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QSlider,
+    QVBoxLayout, QHBoxLayout, QGridLayout,
     QFileDialog, QMessageBox, QDialog, QListWidget, QListWidgetItem,
     QAbstractItemView, QCheckBox, QSizePolicy, QProgressDialog,
-    QTableWidget, QTableWidgetItem, QHeaderView, QRadioButton, QColorDialog,
+    QTableWidget, QTableWidgetItem, QHeaderView, QRadioButton, QColorDialog, QLayout,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize, QThread, QObject, QPoint
-from PyQt6.QtGui import QFont, QPixmap, QImage, QCursor, QColor, QPainter
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize, QObject, QRunnable, QThreadPool, QRegularExpression
+from PyQt6.QtGui import QFont, QPixmap, QCursor, QColor, QRegularExpressionValidator
 
-from PIL import Image, ImageEnhance, ImageOps, ImageFilter
+from PIL import Image, ImageOps
 
 from core.themes import P
-from core.style_helpers import (
-    TOOLBAR_BTN_H, TOOLBAR_H,
-    add_editor_card_title, make_editor_card, make_editor_field_shell,
-    ss_accent_label, ss_bg_dark, ss_bg_panel, ss_btn, ss_accent_sep, ss_dim_label,
-    ss_check, ss_field_label, ss_gradient_slider, ss_input,
-    ss_dialog, ss_error_label, ss_file_label, ss_main_label,
-    ss_listwidget, ss_scrollarea, ss_scrollarea_card, ss_scrollarea_panel_edge,
-    ss_scrollarea_transparent, ss_section_label, ss_slider,
-    ss_search, ss_sep, ss_sidebar_btn, ss_sidebar_frame, ss_textedit,
-    ss_icon_tool_btn,
-    ss_toggle_btn, ss_transparent,
-)
 from core.editor_file_state import set_file_label
 from core.icons import _pil_to_qpixmap
 from core.undo_redo import EditorHistory
@@ -51,27 +91,27 @@ from parsers.texture_xfbin_parser import (
     load_xfbin_for_port, port_entries_into_xfbin,
     add_texture_from_file, duplicate_texture_entry,
     delete_texture_entry, refresh_texture_entries,
+    entry_image, entry_editable,
 )
 from core.translations import ui_text
 from core.settings import create_backup_on_open, game_files_dialog_dir, load_settings
-from core.texture_batch import match_texture_files
+from core.texture_batch import match_texture_files, export_filename
+from core.ui.number_input import SliderInput
+from core.ui.record_list import RecordListModel, EditorRecordList
+from core.texture_tools import apply_adjustments as _apply_adjustments
+from editors.texture_preview import TexturePreview as _PreviewPanel
 
-THUMB_SIZE    = 100
-THUMB_PADDING = 6
-THUMB_COLS    = 2
 DEFAULT_COLORIZE_HEX = "#FFFFFF"
 
 
 def _icon_button(icon_name: str, tooltip: str, *, checkable: bool = False,
-                 size: int = 30, icon_size: int = 14) -> QPushButton:
+                 inline_picker: bool = False) -> QPushButton:
     btn = QPushButton()
-    btn.setFixedSize(size, size)
     btn.setToolTip(tooltip)
     btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
     btn.setCheckable(checkable)
-    btn.setStyleSheet(ss_icon_tool_btn())
+    configure_icon_button(btn, IconButtonRole.INLINE_PICKER if inline_picker else IconButtonRole.TOOLBAR)
     btn.setIcon(qta.icon(icon_name, color=P.get("button_text", P["text_main"])))
-    btn.setIconSize(QSize(icon_size, icon_size))
     return btn
 
 
@@ -93,6 +133,17 @@ def _hex_to_rgb(text: str) -> tuple[int, int, int]:
     )
 
 
+def _checkerboard(w: int, h: int, block: int = 8) -> Image.Image:
+    from PIL import ImageDraw
+    image = Image.new('RGBA', (w, h), P['bg_dark'])
+    draw = ImageDraw.Draw(image)
+    for y in range(0, h, block):
+        for x in range(0, w, block):
+            if (x // block + y // block) % 2:
+                draw.rectangle((x, y, x + block - 1, y + block - 1), fill=P['border'])
+    return image
+
+
 def _texture_thumb_pixmap(entry: TextureEntry, size: int = 24) -> QPixmap:
     if entry.pil_image is None:
         pm = QPixmap(size, size)
@@ -111,25 +162,7 @@ def _texture_thumb_pixmap(entry: TextureEntry, size: int = 24) -> QPixmap:
 
 
 def _texture_slider_ss(track_background: str | None = None) -> str:
-    track = track_background or P["mid"]
-    sub_page = "transparent" if track_background else P["accent_dim"]
-    add_page = "transparent" if track_background else P.get("input_bg", P["bg_card"])
-    return (
-        "QSlider { background: transparent; border: none; }"
-        f"QSlider::groove:horizontal {{ height: 6px; background: {track}; border-radius: 3px; }}"
-        f"QSlider::sub-page:horizontal {{ background: {sub_page}; border-radius: 3px; }}"
-        f"QSlider::add-page:horizontal {{ background: {add_page}; border-radius: 3px; }}"
-        f"QSlider::handle:horizontal {{ background: {P['accent']}; width: 12px; height: 12px; "
-        f"margin: -4px 0; border-radius: 6px; }}"
-        f"QSlider::handle:horizontal:hover {{ background: {P['accent']}; border: 1px solid {P['text_main']}; }}"
-    )
-
-
-def _value_box_ss() -> str:
-    return (
-        f"color: {P['text_main']}; background: {P.get('input_bg', P['bg_card'])}; "
-        f"border: 1px solid {P['border']}; border-radius: 4px; padding: 2px 4px;"
-    )
+    return ss_gradient_slider(track_background) if track_background else ss_slider()
 
 
 def _texture_open_dir() -> str:
@@ -148,10 +181,10 @@ def _texture_open_dir() -> str:
 
 
 def _make_sep():
-    sep = QFrame()
+    sep = EditorSeparator()
     sep.setFrameShape(QFrame.Shape.HLine)
-    sep.setFixedHeight(1)
-    sep.setStyleSheet(ss_sep())
+
+
     return sep
 
 
@@ -160,200 +193,6 @@ def _swatch_style(color: tuple[int, int, int]) -> str:
         f"QPushButton {{background: rgb{color}; border:1px solid {P['border']}; "
         f"border-radius:3px;}} QPushButton:hover {{border:1px solid {P['accent']};}}"
     )
-
-
-# Thumbnail widget
-class _Thumb(QFrame):
-    clicked = pyqtSignal(object)   # emits TextureEntry
-
-    _NORMAL = None
-    _SELECT = None
-
-    def _style_normal(self):
-        return (
-            f"_Thumb {{background:{P['bg_card']}; border:2px solid {P['border']}; border-radius:6px;}}"
-            f"_Thumb:hover {{background:{P['bg_card_hov']}; border:2px solid {P['secondary']};}}"
-        )
-
-    def _style_select(self):
-        return (
-            f"_Thumb {{background:{P['bg_card_hov']}; border:2px solid {P['accent']}; border-radius:6px;}}"
-        )
-
-    def __init__(self, entry: TextureEntry, parent=None):
-        super().__init__(parent)
-        self._entry    = entry
-        self._selected = False
-        self.setFixedSize(THUMB_SIZE + THUMB_PADDING * 2,
-                          THUMB_SIZE + THUMB_PADDING * 2 + 28)
-        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.setStyleSheet(self._style_normal())
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(THUMB_PADDING, THUMB_PADDING, THUMB_PADDING, 3)
-        lay.setSpacing(2)
-
-        self._img_lbl = QLabel()
-        self._img_lbl.setFixedSize(THUMB_SIZE, THUMB_SIZE)
-        self._img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._img_lbl.setStyleSheet(ui_text("ui_texture_background_transparent_border_none"))
-        self._img_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        lay.addWidget(self._img_lbl)
-
-        self._name_lbl = QLabel(_truncate(entry.name, 14))
-        self._name_lbl.setFont(QFont("Consolas", 8))
-        self._name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._name_lbl.setStyleSheet(ss_main_label() + "border:none;")
-        self._name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        lay.addWidget(self._name_lbl)
-
-        # Build pixmap in background so the grid appears quickly
-        if entry.pil_image:
-            QTimer.singleShot(0, self._set_thumb)
-        else:
-            self._img_lbl.setText("?")
-            self._img_lbl.setStyleSheet(
-                ss_dim_label() + "font-size:24px; border:none;"
-            )
-
-    def _set_thumb(self):
-        if self._entry.pil_image is None:
-            return
-        thumb = self._entry.pil_image.copy()
-        thumb.thumbnail((THUMB_SIZE, THUMB_SIZE), Image.LANCZOS)
-        # Checkerboard background for alpha
-        bg = _checkerboard(THUMB_SIZE, THUMB_SIZE)
-        bg.paste(thumb, ((THUMB_SIZE - thumb.width) // 2, (THUMB_SIZE - thumb.height) // 2),
-                 thumb if thumb.mode == 'RGBA' else None)
-        self._img_lbl.setPixmap(_pil_to_qpixmap(bg))
-
-    def set_selected(self, v: bool):
-        self._selected = v
-        self.setStyleSheet(self._style_select() if v else self._style_normal())
-
-    def update_image(self):
-        self._set_thumb()
-
-    def mousePressEvent(self, ev):
-        self.clicked.emit(self._entry)
-        super().mousePressEvent(ev)
-
-
-def _checkerboard(w: int, h: int, block: int = 8) -> Image.Image:
-    img = Image.new('RGBA', (w, h))
-    c1, c2 = (180, 180, 180, 255), (120, 120, 120, 255)
-    px = img.load()
-    for y in range(h):
-        for x in range(w):
-            px[x, y] = c1 if ((x // block + y // block) % 2 == 0) else c2
-    return img
-
-
-def _truncate(s: str, n: int) -> str:
-    return s if len(s) <= n else s[:n - 1] + '…'
-
-
-# Thumbnail grid
-class _ThumbnailGrid(QWidget):
-    texture_selected = pyqtSignal(object)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._entries: list[TextureEntry] = []
-        self._thumbs:  list[_Thumb]       = []
-        self._active:  _Thumb | None      = None
-        self._filter   = ''
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        # Filter bar
-        fbar = QWidget()
-        fbar.setFixedHeight(38)
-        fbar.setStyleSheet(ss_bg_panel())
-        fl   = QHBoxLayout(fbar)
-        fl.setContentsMargins(8, 4, 8, 4)
-        self._filter_edit = QLineEdit()
-        self._filter_edit.setPlaceholderText(ui_text("ui_texture_filter_textures"))
-        self._filter_edit.setFont(QFont("Consolas", 10))
-        self._filter_edit.setStyleSheet(ss_search())
-        self._filter_edit.textChanged.connect(self._on_filter)
-        fl.addWidget(self._filter_edit)
-        root.addWidget(fbar)
-
-        root.addWidget(_make_sep())
-
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._scroll.setStyleSheet(ss_scrollarea())
-
-        self._container = QWidget()
-        self._container.setStyleSheet(ss_bg_dark())
-        self._grid_lay  = QGridLayout(self._container)
-        self._grid_lay.setContentsMargins(8, 8, 8, 8)
-        self._grid_lay.setSpacing(6)
-        self._scroll.setWidget(self._container)
-        root.addWidget(self._scroll, 1)
-
-        self._count_lbl = QLabel(ui_text("ui_texture_0_textures"))
-        self._count_lbl.setFont(QFont("Segoe UI", 9))
-        self._count_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._count_lbl.setStyleSheet(
-            ss_dim_label() + "padding:3px;"
-        )
-        root.addWidget(self._count_lbl)
-
-    def load(self, entries: list[TextureEntry]):
-        self._entries = entries
-        self._active  = None
-        self._rebuild()
-
-    def refresh_active_thumb(self):
-        if self._active:
-            self._active.update_image()
-
-    def _on_filter(self, text: str):
-        self._filter = text.lower()
-        self._rebuild()
-
-    def _rebuild(self):
-        # Clear old thumbs
-        for th in self._thumbs:
-            th.setParent(None)
-        self._thumbs.clear()
-        self._active = None
-
-        visible = [
-            e for e in self._entries
-            if not self._filter or self._filter in e.name.lower()
-            or self._filter in e.format_name.lower()
-        ]
-
-        for idx, entry in enumerate(visible):
-            th = _Thumb(entry, self._container)
-            th.clicked.connect(self._on_thumb_click)
-            self._grid_lay.addWidget(th, idx // THUMB_COLS, idx % THUMB_COLS)
-            self._thumbs.append(th)
-
-        self._count_lbl.setText(
-            ui_text("ui_texture_value_value_textures", p0=len(visible), p1=len(self._entries))
-        )
-
-    def _on_thumb_click(self, entry: TextureEntry):
-        for th in self._thumbs:
-            th.set_selected(th._entry is entry)
-            if th._entry is entry:
-                self._active = th
-        self.texture_selected.emit(entry)
-
-    def select_entry(self, entry: TextureEntry):
-        for th in self._thumbs:
-            if th._entry is entry:
-                self._on_thumb_click(entry)
-                break
 
 
 class _TextureList(QWidget):
@@ -372,31 +211,25 @@ class _TextureList(QWidget):
         self._file_loaded = False
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 4)
-        root.setSpacing(4)
+        configure_layout(root, LayoutRole.SIDEBAR)
         self.setStyleSheet(ss_bg_panel())
 
         self._search_entry = QLineEdit()
-        self._search_entry.setPlaceholderText(ui_text("search_placeholder"))
-        self._search_entry.setFixedHeight(32)
-        self._search_entry.setFont(QFont("Segoe UI", 13))
-        self._search_entry.setStyleSheet(ss_search())
+        configure_search(self._search_entry)
         self._search_entry.textChanged.connect(self._filter_list)
         root.addWidget(self._search_entry)
 
-        btn_row = QWidget()
-        btn_row.setStyleSheet(ss_transparent())
-        btn_layout = QHBoxLayout(btn_row)
-        btn_layout.setContentsMargins(0, 2, 0, 4)
-        btn_layout.setSpacing(4)
-        btn_font = QFont("Segoe UI", 10)
+        btn_row = EditorActionRow()
+
+        btn_layout = btn_row.content_layout
+
+
+        btn_font = ui_font(TypeSize.BODY)
 
         self._new_btn = QPushButton(ui_text("btn_new"))
         self._new_btn.setIcon(qta.icon("fa6s.plus", color=P.get("button_text", P["text_main"])))
         self._new_btn.setIconSize(QSize(12, 12))
-        self._new_btn.setFixedHeight(28)
-        self._new_btn.setFont(btn_font)
-        self._new_btn.setStyleSheet(ss_btn())
+        configure_button(self._new_btn, height=Size.COMPACT_CONTROL)
         self._new_btn.setEnabled(False)
         self._new_btn.clicked.connect(self.sig_new)
         btn_layout.addWidget(self._new_btn, 1)
@@ -404,9 +237,7 @@ class _TextureList(QWidget):
         self._dup_btn = QPushButton(ui_text("btn_dup_short"))
         self._dup_btn.setIcon(qta.icon("fa6s.copy", color=P.get("button_text", P["text_main"])))
         self._dup_btn.setIconSize(QSize(12, 12))
-        self._dup_btn.setFixedHeight(28)
-        self._dup_btn.setFont(btn_font)
-        self._dup_btn.setStyleSheet(ss_btn())
+        configure_button(self._dup_btn, height=Size.COMPACT_CONTROL)
         self._dup_btn.setEnabled(False)
         self._dup_btn.clicked.connect(self.sig_duplicate)
         btn_layout.addWidget(self._dup_btn, 1)
@@ -414,9 +245,7 @@ class _TextureList(QWidget):
         self._del_btn = QPushButton(ui_text("btn_delete"))
         self._del_btn.setIcon(qta.icon("fa6s.trash-can", color=P.get("button_text", P["text_main"])))
         self._del_btn.setIconSize(QSize(12, 12))
-        self._del_btn.setFixedHeight(28)
-        self._del_btn.setFont(btn_font)
-        self._del_btn.setStyleSheet(ss_btn(danger=True))
+        configure_button(self._del_btn, danger=True, height=Size.COMPACT_CONTROL)
         self._del_btn.setEnabled(False)
         self._del_btn.clicked.connect(self.sig_delete)
         btn_layout.addWidget(self._del_btn, 1)
@@ -427,20 +256,16 @@ class _TextureList(QWidget):
         batch_row.setStyleSheet(ss_transparent())
         batch_layout = QHBoxLayout(batch_row)
         batch_layout.setContentsMargins(0, 0, 0, 4)
-        batch_layout.setSpacing(4)
+        batch_layout.setSpacing(Size.GAP_SM)
 
         self._select_all_btn = QPushButton(ui_text("ui_texture_select_all"))
-        self._select_all_btn.setFixedHeight(26)
-        self._select_all_btn.setFont(btn_font)
-        self._select_all_btn.setStyleSheet(ss_btn())
+        configure_button(self._select_all_btn, height=Size.INSPECTOR_CONTROL)
         self._select_all_btn.setEnabled(False)
         self._select_all_btn.clicked.connect(lambda: self.set_all_checked(True))
         batch_layout.addWidget(self._select_all_btn, 1)
 
         self._deselect_all_btn = QPushButton(ui_text("ui_texture_deselect_all"))
-        self._deselect_all_btn.setFixedHeight(26)
-        self._deselect_all_btn.setFont(btn_font)
-        self._deselect_all_btn.setStyleSheet(ss_btn())
+        configure_button(self._deselect_all_btn, height=Size.INSPECTOR_CONTROL)
         self._deselect_all_btn.setEnabled(False)
         self._deselect_all_btn.clicked.connect(lambda: self.set_all_checked(False))
         batch_layout.addWidget(self._deselect_all_btn, 1)
@@ -450,9 +275,7 @@ class _TextureList(QWidget):
         self._batch_btn = QPushButton(ui_text("ui_texture_batch_replace"))
         self._batch_btn.setIcon(qta.icon("fa6s.arrows-rotate", color=P.get("button_text", P["text_main"])))
         self._batch_btn.setIconSize(QSize(13, 13))
-        self._batch_btn.setFixedHeight(30)
-        self._batch_btn.setFont(btn_font)
-        self._batch_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._batch_btn, accent=True)
         self._batch_btn.setEnabled(False)
         self._batch_btn.clicked.connect(self.sig_batch_replace)
         root.addWidget(self._batch_btn)
@@ -460,41 +283,70 @@ class _TextureList(QWidget):
         self._export_checked_btn = QPushButton(ui_text("ui_texture_export_checked_png"))
         self._export_checked_btn.setIcon(qta.icon("fa6s.file-export", color=P.get("button_text", P["text_main"])))
         self._export_checked_btn.setIconSize(QSize(13, 13))
-        self._export_checked_btn.setFixedHeight(28)
-        self._export_checked_btn.setFont(btn_font)
-        self._export_checked_btn.setStyleSheet(ss_btn())
+        configure_button(self._export_checked_btn, height=Size.COMPACT_CONTROL)
         self._export_checked_btn.setEnabled(False)
         self._export_checked_btn.clicked.connect(self.sig_export_checked_png)
         root.addWidget(self._export_checked_btn)
 
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll.setStyleSheet(ss_scrollarea_transparent())
-
-        self._list_widget = QWidget()
-        self._list_widget.setStyleSheet(ss_transparent())
-        self._list_layout = QVBoxLayout(self._list_widget)
-        self._list_layout.setContentsMargins(0, 0, 0, 0)
-        self._list_layout.setSpacing(1)
-        self._list_layout.addStretch()
-        self._scroll.setWidget(self._list_widget)
+        self._model = RecordListModel(self)
+        self._checked = set()
+        self._thumb_cache = {}
+        self._scroll = EditorRecordList(self._model, self._describe, bind_row=self._bind_row)
+        self._scroll.selectionModel().currentRowChanged.connect(self._selected_index)
         root.addWidget(self._scroll, 1)
 
-        self._count_lbl = QLabel(ui_text("ui_texture_0_textures"))
-        self._count_lbl.setFont(QFont("Segoe UI", 9))
-        self._count_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._count_lbl.setStyleSheet(ss_dim_label())
-        root.addWidget(self._count_lbl)
+    def _describe(self, index):
+        entry = self._model.rows[index.row()][1]
+        return entry.name, self._meta(entry), entry.name + '\n' + entry.file_path
 
-    def load(self, entries: list[TextureEntry]):
+    def _bind_row(self, row, index):
+        entry = self._model.rows[index.row()][1]
+        row._entry = entry
+        if not hasattr(row, '_batch_check'):
+            holder = QWidget(row)
+            layout = configure_layout(QHBoxLayout(holder), LayoutRole.FIELD)
+            check = row._batch_check = QCheckBox()
+            check.setStyleSheet(ss_check())
+            check.setToolTip(ui_text('ui_texture_batch_checkbox_tip'))
+            check.toggled.connect(lambda checked, r=row: self._check(r._entry, checked))
+            layout.addWidget(check)
+            row._thumb_lbl = QLabel()
+            row._thumb_lbl.setFixedSize(26, 26)
+            row._thumb_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            layout.addWidget(row._thumb_lbl)
+            labels = QWidget()
+            labels.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            text_layout = configure_layout(QVBoxLayout(labels), LayoutRole.ROOT)
+            for label in (row.title_label, row.subtitle_label):
+                row.content_layout.removeWidget(label)
+                text_layout.addWidget(label)
+            layout.addWidget(labels, 1)
+            row.content_layout.addWidget(holder)
+        row._batch_check.blockSignals(True)
+        row._batch_check.setChecked(id(entry) in self._checked)
+        row._batch_check.blockSignals(False)
+        key = id(entry)
+        if key not in self._thumb_cache:
+            if len(self._thumb_cache) >= 256:
+                self._thumb_cache.pop(next(iter(self._thumb_cache)))
+            self._thumb_cache[key] = _texture_thumb_pixmap(entry, 26)
+        row._thumb_lbl.setPixmap(self._thumb_cache[key])
+
+    def _check(self, entry, checked):
+        if checked:
+            self._checked.add(id(entry))
+        else:
+            self._checked.discard(id(entry))
+
+    def _selected_index(self, current, previous):
+        if current.isValid():
+            self._select(self._model.rows[current.row()][1], emit=True, update_index=False)
+
+    def load(self, entries):
         self._entries = entries
         self._active_entry = None
-        self._clear()
-        for entry in entries:
-            row = self._make_row(entry)
-            self._list_layout.insertWidget(self._list_layout.count() - 1, row)
-            self._thumbs.append(row)
+        self._checked.clear()
+        self._thumb_cache.clear()
         self._filter_list()
         self._update_action_state()
 
@@ -502,83 +354,25 @@ class _TextureList(QWidget):
         if self._active_entry is not None:
             self._refresh_row(self._active_entry)
 
-    def set_file_loaded(self, loaded: bool):
+    def set_file_loaded(self, loaded):
         self._file_loaded = loaded
         self._update_action_state()
 
-    def select_entry(self, entry: TextureEntry):
+    def select_entry(self, entry):
         self._select(entry, emit=True)
+        self._scroll.scrollTo(self._scroll.currentIndex())
 
-    def _clear(self):
-        while self._list_layout.count():
-            item = self._list_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self._list_layout.addStretch()
-        self._thumbs.clear()
+    def _meta(self, entry):
+        return f'{entry.format_name} / {entry.size_str}'
 
-    def _make_row(self, entry: TextureEntry) -> QPushButton:
-        btn = QPushButton()
-        btn._entry = entry
-        btn.setFixedHeight(44)
-        btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        btn.setStyleSheet(ss_sidebar_btn(False))
-
-        lay = QHBoxLayout(btn)
-        lay.setContentsMargins(10, 3, 10, 3)
-        lay.setSpacing(7)
-
-        check = QCheckBox()
-        check.setToolTip(ui_text("ui_texture_batch_checkbox_tip"))
-        check.setStyleSheet(ss_check())
-        btn._batch_check = check
-        lay.addWidget(check)
-
-        thumb_lbl = QLabel()
-        thumb_lbl.setFixedSize(26, 26)
-        thumb_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        thumb_lbl.setPixmap(_texture_thumb_pixmap(entry, 26))
-        thumb_lbl.setStyleSheet(
-            f"background: {P.get('input_bg', P['bg_card'])}; border: 1px solid {P['border']}; "
-            "border-radius: 4px;"
-        )
-        thumb_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        btn._thumb_lbl = thumb_lbl
-        lay.addWidget(thumb_lbl)
-
-        labels = QWidget()
-        labels.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        labels.setStyleSheet(ss_transparent())
-        labels_lay = QVBoxLayout(labels)
-        labels_lay.setContentsMargins(0, 0, 0, 0)
-        labels_lay.setSpacing(0)
-
-        name_lbl = QLabel(_truncate(entry.name or "<unnamed>", 16))
-        name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        name_lbl.setStyleSheet(ss_main_label())
-        name_lbl.setToolTip(entry.name or "<unnamed>")
-        name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        btn._name_lbl = name_lbl
-        labels_lay.addWidget(name_lbl)
-
-        meta_lbl = QLabel(self._meta(entry))
-        meta_lbl.setFont(QFont("Consolas", 11))
-        meta_lbl.setStyleSheet(ss_dim_label())
-        meta_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        btn._meta_lbl = meta_lbl
-        labels_lay.addWidget(meta_lbl)
-        lay.addWidget(labels, 1)
-
-        btn.clicked.connect(lambda checked=False, e=entry: self._select(e, emit=True))
-        return btn
-
-    def _meta(self, entry: TextureEntry) -> str:
-        return f"{entry.format_name} / {entry.size_str}"
-
-    def _select(self, entry: TextureEntry, emit: bool):
+    def _select(self, entry, emit, update_index=True):
         self._active_entry = entry
-        for row in self._thumbs:
-            row.setStyleSheet(ss_sidebar_btn(row._entry is entry))
+        if update_index:
+            row = next((n for n, item in enumerate(self._model.rows) if item[1] is entry), -1)
+            selection = self._scroll.selectionModel()
+            selection.blockSignals(True)
+            self._scroll.setCurrentIndex(self._model.index(row, 0))
+            selection.blockSignals(False)
         self._update_action_state()
         if emit:
             self.texture_selected.emit(entry)
@@ -589,370 +383,53 @@ class _TextureList(QWidget):
         self._dup_btn.setEnabled(has_selection)
         self._del_btn.setEnabled(has_selection)
         has_entries = self._file_loaded and bool(self._entries)
-        self._batch_btn.setEnabled(has_entries)
-        self._export_checked_btn.setEnabled(has_entries)
-        self._select_all_btn.setEnabled(has_entries)
-        self._deselect_all_btn.setEnabled(has_entries)
+        for button in (self._batch_btn, self._export_checked_btn, self._select_all_btn, self._deselect_all_btn):
+            button.setEnabled(has_entries)
 
-    def set_all_checked(self, checked: bool):
-        for row in self._thumbs:
-            row._batch_check.setChecked(checked)
+    def set_all_checked(self, checked):
+        self._checked = {id(entry) for entry in self._entries} if checked else set()
+        self._scroll.refresh()
 
-    def checked_entries(self) -> list[TextureEntry]:
-        return [
-            row._entry for row in self._thumbs
-            if row._batch_check.isChecked()
-        ]
+    def checked_entries(self):
+        return [entry for entry in self._entries if id(entry) in self._checked]
 
-    def _refresh_row(self, entry: TextureEntry):
-        for row in self._thumbs:
-            if row._entry is entry:
-                row._thumb_lbl.setPixmap(_texture_thumb_pixmap(entry, 26))
-                row._name_lbl.setText(_truncate(entry.name or "<unnamed>", 16))
-                row._name_lbl.setToolTip(entry.name or "<unnamed>")
-                row._meta_lbl.setText(self._meta(entry))
-                break
+    def _refresh_row(self, entry):
+        self._thumb_cache.pop(id(entry), None)
         self._filter_list()
 
     def _filter_list(self):
-        query = self._search_entry.text().lower().strip()
-        shown = 0
-        for row in self._thumbs:
-            entry = row._entry
-            haystack = " ".join([
-                entry.name,
-                entry.file_path,
-                entry.format_name,
-                entry.size_str,
-            ]).lower()
-            visible = not query or query in haystack
-            row.setVisible(visible)
-            if visible:
-                shown += 1
-        total = len(self._entries)
-        self._count_lbl.setText(ui_text("ui_texture_value_value_textures", p0=shown, p1=total))
+        query = self._search_entry.text().casefold().strip()
+        rows = [(entry.name, entry) for entry in self._entries if not query or query in ' '.join((
+            entry.name, entry.file_path, entry.format_name, entry.size_str)).casefold()]
+        selection = self._scroll.selectionModel()
+        selection.blockSignals(True)
+        self._model.reset_rows(rows)
+        self._select(self._active_entry, emit=False)
+        selection.blockSignals(False)
 
 
-# Preview panel
-class _PreviewImageLabel(QLabel):
-    clicked_at = pyqtSignal(object)
-    dragged = pyqtSignal(object)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._last_pos: QPoint | None = None
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._last_pos = event.position().toPoint()
-            self.clicked_at.emit(self._last_pos)
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self._last_pos is not None and event.buttons() & Qt.MouseButton.LeftButton:
-            pos = event.position().toPoint()
-            self.dragged.emit(pos - self._last_pos)
-            self._last_pos = pos
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        self._last_pos = None
-        super().mouseReleaseEvent(event)
+# Reuse the exact shared slider/input for image authoring and text overlays.
+class _SliderRow(SliderInput):
+    pass
 
 
-class _PreviewPanel(QWidget):
-    color_picked = pyqtSignal(str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._pil: Image.Image | None = None
-        self._zoom = 1.0
-        self._color_pick_enabled = False
-        self._pan_enabled = False
-        self.setStyleSheet(ss_bg_dark())
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 8, 8, 8)
-        lay.setSpacing(8)
-
-        # Zoom controls
-        zbar = QWidget()
-        zbar.setFixedHeight(34)
-        zbar.setStyleSheet(ss_bg_dark())
-        zl = QHBoxLayout(zbar)
-        zl.setContentsMargins(0, 0, 0, 0)
-        zl.setSpacing(4)
-
-        zoom_out = _icon_button("fa6s.minus", ui_text("ui_texture_zoom_out"))
-        zoom_out.clicked.connect(lambda: self._change_zoom(-0.25))
-        zl.addWidget(zoom_out)
-
-        zoom_reset = _icon_button("fa6s.rotate-right", ui_text("ui_texture_refit"))
-        zoom_reset.clicked.connect(self._fit)
-        zl.addWidget(zoom_reset)
-
-        zoom_in = _icon_button("fa6s.magnifying-glass-plus", ui_text("ui_texture_zoom_in"))
-        zoom_in.clicked.connect(lambda: self._change_zoom(0.25))
-        zl.addWidget(zoom_in)
-
-        self._zoom_lbl = QLabel("100%")
-        self._zoom_lbl.setFont(QFont("Segoe UI", 10))
-        self._zoom_lbl.setMinimumWidth(52)
-        self._zoom_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._zoom_lbl.setStyleSheet(
-            f"color: {P['text_main']}; background: {P['mid']}; "
-            f"border: 1px solid {P['border']}; border-radius: 6px; padding: 4px 8px;"
-        )
-        zl.addWidget(self._zoom_lbl)
-
-        fit_btn = QPushButton(ui_text("ui_texture_fit"))
-        fit_btn.setFixedHeight(30)
-        fit_btn.setMinimumWidth(50)
-        fit_btn.setFont(QFont("Segoe UI", 10))
-        fit_btn.setStyleSheet(ss_btn())
-        fit_btn.clicked.connect(self._fit)
-        zl.addWidget(fit_btn)
-
-        orig_btn = QPushButton("1:1")
-        orig_btn.setFixedHeight(30)
-        orig_btn.setMinimumWidth(50)
-        orig_btn.setFont(QFont("Segoe UI", 10))
-        orig_btn.setStyleSheet(ss_btn())
-        orig_btn.clicked.connect(lambda: self._set_zoom(1.0))
-        zl.addWidget(orig_btn)
-        self._pan_btn = _icon_button("fa6s.hand", ui_text("ui_texture_pan"), checkable=True)
-        self._pan_btn.toggled.connect(self._set_pan_enabled)
-        zl.addWidget(self._pan_btn)
-        zl.addStretch()
-        lay.addWidget(zbar)
-
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(False)
-        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll.setStyleSheet(ss_scrollarea())
-        self._img_lbl = _PreviewImageLabel()
-        self._img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._img_lbl.setStyleSheet("background: transparent;")
-        self._img_lbl.clicked_at.connect(self._on_image_clicked)
-        self._img_lbl.dragged.connect(self._on_image_dragged)
-        self._scroll.setWidget(self._img_lbl)
-        lay.addWidget(self._scroll, 1)
-
-        info_frame = QFrame()
-        info_frame.setFixedHeight(38)
-        info_frame.setStyleSheet(
-            f"QFrame {{ background: {P.get('bg_panel', P['bg_dark'])}; "
-            f"border: 1px solid {P['border']}; border-radius: 6px; }}"
-        )
-        info_lay = QHBoxLayout(info_frame)
-        info_lay.setContentsMargins(10, 4, 10, 4)
-        self._info_lbl = QLabel(ui_text("ui_texture_no_texture_selected"))
-        self._info_lbl.setFont(QFont("Consolas", 9))
-        self._info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._info_lbl.setStyleSheet(ss_dim_label())
-        info_lay.addWidget(self._info_lbl, 1)
-        lay.addWidget(info_frame)
-
-    def show_image(self, img: Image.Image | None, info: str = ''):
-        self._pil = img
-        self._info_lbl.setText(info)
-        self._fit()
-
-    def _fit(self):
-        if self._pil is None:
-            self._img_lbl.clear()
-            return
-        vp = self._scroll.viewport()
-        vw, vh = vp.width() - 4, vp.height() - 4
-        iw, ih = self._pil.size
-        if iw == 0 or ih == 0:
-            return
-        ratio = min(vw / iw, vh / ih, 1.0)
-        self._set_zoom(ratio)
-
-    def _change_zoom(self, delta: float):
-        self._set_zoom(max(0.1, min(8.0, self._zoom + delta)))
-
-    def _set_zoom(self, z: float):
-        self._zoom = z
-        self._zoom_lbl.setText(ui_text("ui_texture_value", p0=int(z * 100)))
-        self._render()
-
-    def set_color_pick_enabled(self, enabled: bool):
-        self._color_pick_enabled = bool(enabled)
-        if self._color_pick_enabled:
-            self._img_lbl.setCursor(QCursor(Qt.CursorShape.CrossCursor))
-        elif self._pan_enabled:
-            self._img_lbl.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
-        else:
-            self._img_lbl.unsetCursor()
-
-    def _set_pan_enabled(self, enabled: bool):
-        self._pan_enabled = bool(enabled)
-        self.set_color_pick_enabled(False)
-
-    def _on_image_clicked(self, pos: QPoint):
-        if not self._color_pick_enabled or self._pil is None or self._zoom <= 0:
-            return
-        x = int(pos.x() / self._zoom)
-        y = int(pos.y() / self._zoom)
-        if 0 <= x < self._pil.width and 0 <= y < self._pil.height:
-            r, g, b, *_ = self._pil.convert("RGBA").getpixel((x, y))
-            self.color_picked.emit(f"#{r:02X}{g:02X}{b:02X}")
-        self.set_color_pick_enabled(False)
-
-    def _on_image_dragged(self, delta: QPoint):
-        if not self._pan_enabled:
-            return
-        hbar = self._scroll.horizontalScrollBar()
-        vbar = self._scroll.verticalScrollBar()
-        hbar.setValue(hbar.value() - delta.x())
-        vbar.setValue(vbar.value() - delta.y())
-
-    def _render(self):
-        if self._pil is None:
-            self._img_lbl.clear()
-            return
-        w = max(1, int(self._pil.width  * self._zoom))
-        h = max(1, int(self._pil.height * self._zoom))
-        resized = self._pil.resize((w, h), Image.NEAREST if self._zoom > 1 else Image.LANCZOS)
-        bg = _checkerboard(w, h)
-        if resized.mode == 'RGBA':
-            bg.paste(resized, (0, 0), resized)
-        else:
-            bg.paste(resized.convert('RGBA'), (0, 0))
-        pm = _pil_to_qpixmap(bg)
-        self._img_lbl.setPixmap(pm)
-        self._img_lbl.setFixedSize(w, h)
-
-    def resizeEvent(self, ev):
-        super().resizeEvent(ev)
-        if self._pil:
-            QTimer.singleShot(50, self._fit)
-
-
-# Slider row helper
-class _SliderRow(QWidget):
-    value_changed = pyqtSignal(int)
-
-    def __init__(self, label: str, lo: int, hi: int, default: int, parent=None):
-        super().__init__(parent)
-        self._default = default
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(4)
-
-        lbl = QLabel(label)
-        lbl.setFont(QFont("Segoe UI", 10))
-        lbl.setMinimumWidth(0)
-        lbl.setMaximumWidth(100)
-        lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        lbl.setStyleSheet(ss_field_label())
-        if not label:
-            lbl.setVisible(False)
-            lbl.setMaximumWidth(0)
-        lay.addWidget(lbl)
-
-        self._slider = QSlider(Qt.Orientation.Horizontal)
-        self._slider.setRange(lo, hi)
-        self._slider.setValue(default)
-        self._slider.setFixedHeight(24)
-        self._slider.setStyleSheet(_texture_slider_ss())
-        self._slider.valueChanged.connect(self._on_change)
-        lay.addWidget(self._slider, 1)
-
-        self._val_lbl = QLabel(str(default))
-        self._val_lbl.setFont(QFont("Consolas", 9))
-        self._val_lbl.setFixedWidth(28)
-        self._val_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._val_lbl.setStyleSheet(_value_box_ss())
-        lay.addWidget(self._val_lbl)
-
-    def _on_change(self, v: int):
-        self._val_lbl.setText(str(v))
-        self.value_changed.emit(v)
-
-    @property
-    def value(self) -> int:
-        return self._slider.value()
-
-    def reset(self):
-        self._slider.setValue(self._default)
-
-
-# Gradient slider row (hue / saturation / lightness)
 def _sat_gradient_css(hue_val: int) -> str:
-    """Gray → vivid color at the given hue (–180..180)."""
     import colorsys
     r, g, b = colorsys.hsv_to_rgb(((hue_val + 180) % 360) / 360.0, 1.0, 1.0)
     vivid = f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
-    return (f"qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-            f"stop:0 #808080, stop:1 {vivid})")
+    return f"qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #808080, stop:1 {vivid})"
 
 
-class _GradSliderRow(QWidget):
-    """Slider whose groove shows a CSS gradient (hue rainbow / sat / lightness)."""
-    value_changed = pyqtSignal(int)
+class _GradSliderRow(_SliderRow):
+    HUE_CSS = HUE_GRADIENT
+    LIGHT_CSS = LIGHTNESS_GRADIENT
 
-    # Static gradient strings
-    HUE_CSS = (
-        ui_text("ui_texture_qlineargradient_x1_0_y1_0_x2_1_y2_0_stop_0_ff0000_stop_")
-    )
-    LIGHT_CSS = (
-        ui_text("ui_texture_qlineargradient_x1_0_y1_0_x2_1_y2_0_stop_0_000000_stop_")
-    )
-
-    def __init__(self, label: str, lo: int, hi: int, default: int,
-                 gradient_css: str = '', parent=None):
-        super().__init__(parent)
-        self._default = default
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(4)
-
-        lbl = QLabel(label)
-        lbl.setFont(QFont("Segoe UI", 10))
-        lbl.setMinimumWidth(0)
-        lbl.setMaximumWidth(100)
-        lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        lbl.setStyleSheet(ss_field_label())
-        if not label:
-            lbl.setVisible(False)
-            lbl.setMaximumWidth(0)
-        lay.addWidget(lbl)
-
-        self._slider = QSlider(Qt.Orientation.Horizontal)
-        self._slider.setRange(lo, hi)
-        self._slider.setValue(default)
-        self._slider.setFixedHeight(24)
-        self._slider.valueChanged.connect(self._on_change)
-        lay.addWidget(self._slider, 1)
-
-        self._val_lbl = QLabel(str(default))
-        self._val_lbl.setFont(QFont("Consolas", 9))
-        self._val_lbl.setFixedWidth(28)
-        self._val_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._val_lbl.setStyleSheet(_value_box_ss())
-        lay.addWidget(self._val_lbl)
-
+    def __init__(self, label, lo, hi, default, gradient_css='', parent=None):
+        super().__init__(label, lo, hi, default, parent)
         self.set_gradient(gradient_css)
 
-    def _make_ss(self, bg: str) -> str:
-        return _texture_slider_ss(bg)
-
-    def set_gradient(self, gradient_css: str):
-        self._slider.setStyleSheet(self._make_ss(gradient_css or P['mid']))
-
-    def _on_change(self, v: int):
-        self._val_lbl.setText(str(v))
-        self.value_changed.emit(v)
-
-    @property
-    def value(self) -> int:
-        return self._slider.value()
-
-    def reset(self):
-        self._slider.setValue(self._default)
+    def set_gradient(self, gradient_css):
+        self._slider.setStyleSheet(_texture_slider_ss(gradient_css))
 
 
 # Right panel: info + quick-edit + operations
@@ -981,16 +458,17 @@ class _RightPanel(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self.setStyleSheet(ss_bg_dark())
 
+        self._document_loaded = False
+        self._entry_buttons, self._document_buttons = [], []
+
         scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll = scroll
+
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet(ss_scrollarea())
+        configure_scrollarea(scroll)
         inner = QWidget()
         inner.setStyleSheet(ss_bg_dark())
-        lay = QVBoxLayout(inner)
-        lay.setContentsMargins(12, 10, 12, 12)
-        lay.setSpacing(10)
+        lay = configure_layout(QVBoxLayout(inner), LayoutRole.PAGE)
 
         # Texture Info
         info_card, info_lay = self._card(inner, ui_text("ui_texture_texture_info"), "fa6s.circle-info")
@@ -999,9 +477,7 @@ class _RightPanel(QWidget):
         name_field, name_lay, _, _ = make_editor_field_shell(ui_text("ui_texture_name"))
         self._name_edit = QLineEdit()
         self._name_edit.setPlaceholderText(ui_text("ui_texture_texture_name"))
-        self._name_edit.setFont(QFont("Consolas", 13))
-        self._name_edit.setStyleSheet(ss_input())
-        self._name_edit.setFixedHeight(30)
+        configure_input(self._name_edit, monospace=True)
         name_lay.addWidget(self._name_edit)
         info_lay.addWidget(name_field)
 
@@ -1009,9 +485,7 @@ class _RightPanel(QWidget):
         path_field, path_lay, _, _ = make_editor_field_shell(ui_text("ui_texture_path"))
         self._path_edit = QLineEdit()
         self._path_edit.setPlaceholderText(ui_text("ui_texture_file_path"))
-        self._path_edit.setFont(QFont("Consolas", 13))
-        self._path_edit.setStyleSheet(ss_input())
-        self._path_edit.setFixedHeight(30)
+        configure_input(self._path_edit, monospace=True)
         path_lay.addWidget(self._path_edit)
         info_lay.addWidget(path_field)
 
@@ -1022,22 +496,19 @@ class _RightPanel(QWidget):
             info_lay.addWidget(w)
 
         # Copy + Rename buttons
-        cr_row = QHBoxLayout(); cr_row.setSpacing(6)
+        cr_row = configure_layout(QVBoxLayout(), LayoutRole.FIELD)
         copy_btn = QPushButton(ui_text("ui_texture_copy_name"))
         copy_btn.setIcon(qta.icon("fa6s.copy", color=P.get("button_text", P["text_main"])))
         copy_btn.setIconSize(QSize(12, 12))
-        copy_btn.setFixedHeight(28)
-        copy_btn.setFont(QFont("Segoe UI", 10))
-        copy_btn.setStyleSheet(ss_btn())
+        configure_button(copy_btn, height=Size.COMPACT_CONTROL)
         copy_btn.clicked.connect(self.sig_copy_name)
+        self._entry_buttons.append(copy_btn)
         cr_row.addWidget(copy_btn)
 
         self._rename_btn = QPushButton(ui_text("ui_texture_rename"))
         self._rename_btn.setIcon(qta.icon("fa6s.pen", color=P.get("button_text", P["text_main"])))
         self._rename_btn.setIconSize(QSize(12, 12))
-        self._rename_btn.setFixedHeight(28)
-        self._rename_btn.setFont(QFont("Segoe UI", 10))
-        self._rename_btn.setStyleSheet(ss_btn())
+        configure_button(self._rename_btn, height=Size.COMPACT_CONTROL)
         self._rename_btn.setEnabled(False)
         self._rename_btn.clicked.connect(self._emit_rename)
         cr_row.addWidget(self._rename_btn)
@@ -1062,6 +533,11 @@ class _RightPanel(QWidget):
         self._saturation = _GradSliderRow(ui_text("ui_texture_saturation"),  -100, 100, 0, _sat_gradient_css(0))
         self._lightness  = _GradSliderRow(ui_text("ui_texture_lightness"),   -100, 100, 0, _GradSliderRow.LIGHT_CSS)
 
+        for control, key in ((self._brightness, 'brightness'), (self._contrast, 'contrast'),
+                             (self._sharpness, 'sharpness'), (self._hue, 'hue'),
+                             (self._saturation, 'saturation'), (self._lightness, 'lightness')):
+            control.setToolTip(ui_text('texture_adjust_' + key))
+
         for sl in (self._hue, self._saturation, self._lightness):
             sl.value_changed.connect(self._on_slider_changed)
             edit_lay.addWidget(sl)
@@ -1070,10 +546,10 @@ class _RightPanel(QWidget):
         colorize_row = QHBoxLayout()
         colorize_row.setSpacing(6)
         self._colorize_chk = QCheckBox(ui_text("ui_texture_colorize"))
-        self._colorize_chk.setFont(QFont("Segoe UI", 10))
+        self._colorize_chk.setFont(ui_font(TypeSize.BODY))
         self._colorize_chk.setStyleSheet(ss_check())
         self._colorize_chk.stateChanged.connect(self._on_slider_changed)
-        colorize_row.addWidget(self._colorize_chk)
+        edit_lay.addWidget(self._colorize_chk)
 
         self._color_swatch = QPushButton()
         self._color_swatch.setFixedSize(32, 24)
@@ -1082,14 +558,13 @@ class _RightPanel(QWidget):
         colorize_row.addWidget(self._color_swatch)
 
         self._hex_edit = QLineEdit(DEFAULT_COLORIZE_HEX)
-        self._hex_edit.setFixedHeight(24)
+        self._hex_edit.setValidator(QRegularExpressionValidator(QRegularExpression('#?[0-9a-fA-F]{6}'), self._hex_edit))
         self._hex_edit.setMaximumWidth(92)
-        self._hex_edit.setFont(QFont("Consolas", 10))
-        self._hex_edit.setStyleSheet(ss_input())
+        configure_input(self._hex_edit, height=Size.CONTROL, monospace=True)
         self._hex_edit.editingFinished.connect(self._apply_hex_edit)
         colorize_row.addWidget(self._hex_edit)
 
-        pick_btn = _icon_button("fa6s.eye-dropper", ui_text("ui_texture_pick_color"), size=26, icon_size=12)
+        pick_btn = _icon_button("fa6s.eye-dropper", ui_text("ui_texture_pick_color"), inline_picker=True)
         pick_btn.clicked.connect(self.sig_pick_color)
         colorize_row.addWidget(pick_btn)
         colorize_row.addStretch()
@@ -1097,8 +572,7 @@ class _RightPanel(QWidget):
         self.set_colorize_hex(DEFAULT_COLORIZE_HEX, update_sliders=False)
 
         # Flip / Rotate row
-        frow = QHBoxLayout()
-        frow.setSpacing(4)
+        frow = configure_layout(QVBoxLayout(), LayoutRole.FIELD)
         for lbl, icon_name, sig in (
             (ui_text("ui_texture_flip_h"), "fa6s.arrows-left-right", self.sig_flip_h),
             (ui_text("ui_texture_flip_v"), "fa6s.arrows-up-down", self.sig_flip_v),
@@ -1106,15 +580,14 @@ class _RightPanel(QWidget):
             b = QPushButton(lbl)
             b.setIcon(qta.icon(icon_name, color=P.get("button_text", P["text_main"])))
             b.setIconSize(QSize(12, 12))
-            b.setFixedHeight(28)
-            b.setFont(QFont("Segoe UI", 10))
-            b.setStyleSheet(ss_btn())
+            configure_button(b)
             b.clicked.connect(sig)
             frow.addWidget(b)
         edit_lay.addLayout(frow)
 
         rrow = QHBoxLayout()
-        rrow.setSpacing(4)
+        self._rotation_row = rrow
+        rrow.setSpacing(Size.GAP_SM)
         for deg, lbl, icon_name in (
             (90, "90°", "fa6s.rotate-right"),
             (180, "180°", "fa6s.rotate"),
@@ -1123,9 +596,7 @@ class _RightPanel(QWidget):
             b = QPushButton(lbl)
             b.setIcon(qta.icon(icon_name, color=P.get("button_text", P["text_main"])))
             b.setIconSize(QSize(12, 12))
-            b.setFixedHeight(28)
-            b.setFont(QFont("Segoe UI", 10))
-            b.setStyleSheet(ss_btn())
+            configure_button(b)
             b.clicked.connect(lambda _, d=deg: self.sig_rotate.emit(d))
             rrow.addWidget(b)
         edit_lay.addLayout(rrow)
@@ -1134,21 +605,16 @@ class _RightPanel(QWidget):
         add_text_btn = QPushButton(ui_text("ui_texture_add_text"))
         add_text_btn.setIcon(qta.icon("fa6s.font", color=P.get("button_text", P["text_main"])))
         add_text_btn.setIconSize(QSize(12, 12))
-        add_text_btn.setFixedHeight(30)
-        add_text_btn.setFont(QFont("Segoe UI", 10))
-        add_text_btn.setStyleSheet(ss_btn())
+        configure_button(add_text_btn)
         add_text_btn.clicked.connect(self.sig_add_text)
         edit_lay.addWidget(add_text_btn)
 
         # Apply / Reset
-        ar_row = QHBoxLayout()
-        ar_row.setSpacing(6)
+        ar_row = configure_layout(QVBoxLayout(), LayoutRole.FIELD)
         self._apply_btn = QPushButton(ui_text("ui_texture_apply"))
         self._apply_btn.setIcon(qta.icon("fa6s.check", color=P.get("button_text", P["text_main"])))
         self._apply_btn.setIconSize(QSize(12, 12))
-        self._apply_btn.setFixedHeight(30)
-        self._apply_btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        self._apply_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._apply_btn, accent=True)
         self._apply_btn.setEnabled(False)
         self._apply_btn.clicked.connect(self._emit_apply)
         ar_row.addWidget(self._apply_btn)
@@ -1156,12 +622,21 @@ class _RightPanel(QWidget):
         reset_btn = QPushButton(ui_text("ui_texture_reset"))
         reset_btn.setIcon(qta.icon("fa6s.rotate-left", color=P.get("button_text", P["text_main"])))
         reset_btn.setIconSize(QSize(12, 12))
-        reset_btn.setFixedHeight(30)
-        reset_btn.setFont(QFont("Segoe UI", 10))
-        reset_btn.setStyleSheet(ss_btn())
+        configure_button(reset_btn)
         reset_btn.clicked.connect(self._reset_sliders)
         ar_row.addWidget(reset_btn)
+        reset_btn.hide()
         edit_lay.addLayout(ar_row)
+        self._rebuild_mips = QCheckBox(ui_text('texture_rebuild_mips'))
+        self._rebuild_mips.setChecked(True)
+        self._rebuild_mips.setStyleSheet(ss_check())
+        self._rebuild_mips.setToolTip(ui_text('texture_rebuild_hint'))
+        edit_lay.addWidget(self._rebuild_mips)
+        impact = QLabel(ui_text('texture_edit_impact'))
+        impact.setWordWrap(True)
+        impact.setStyleSheet(ss_dim_label())
+        edit_lay.addWidget(impact)
+        self._edit_card = edit_card
         lay.addWidget(edit_card)
 
         # Operations
@@ -1177,10 +652,12 @@ class _RightPanel(QWidget):
             b = QPushButton(lbl)
             b.setIcon(qta.icon(icon_name, color=P.get("button_text", P["text_main"])))
             b.setIconSize(QSize(12, 12))
-            b.setFixedHeight(30)
-            b.setFont(QFont("Segoe UI", 10))
-            b.setStyleSheet(ss_btn(accent=acc))
+            configure_button(b, accent=acc)
             b.clicked.connect(sig)
+            if sig in (self.sig_export_all, self.sig_port):
+                self._document_buttons.append(b)
+            else:
+                self._entry_buttons.append(b)
             ops_lay.addWidget(b)
         lay.addWidget(ops_card)
 
@@ -1188,8 +665,7 @@ class _RightPanel(QWidget):
         scroll.setWidget(inner)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        configure_layout(root, LayoutRole.ROOT)
         root.addWidget(scroll)
 
         self._preview_timer = QTimer(self)
@@ -1197,15 +673,24 @@ class _RightPanel(QWidget):
         self._preview_timer.setInterval(16)   # ~1 frame — smooth live preview
         self._preview_timer.timeout.connect(self._emit_apply_preview)
         self._pending_entry: TextureEntry | None = None
+        self._resetting = False
+        self.set_entry(None)
 
     # Helpers
     def set_panel_width(self, width: int):
         width = max(260, min(self.WIDTH, int(width)))
         self.setMinimumWidth(width)
         self.setMaximumWidth(width)
+        self._rotation_row.setDirection(QHBoxLayout.Direction.TopToBottom if width < 300 else QHBoxLayout.Direction.LeftToRight)
+        fit_scroll_page(self._scroll)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_scroll'):
+            fit_scroll_page(self._scroll)
 
     def _card(self, parent, title: str, icon_name: str):
-        card, layout = make_editor_card(parent, margins=(14, 12, 14, 12), spacing=8)
+        card, layout = make_editor_card(parent)
         card.setMinimumWidth(0)
         card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         add_editor_card_title(layout, title, icon_name)
@@ -1213,7 +698,7 @@ class _RightPanel(QWidget):
 
     def _section_label(self, text: str) -> QLabel:
         lbl = QLabel(text)
-        lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        lbl.setFont(ui_font(TypeSize.CODE, QFont.Weight.Bold))
         lbl.setStyleSheet(ss_section_label())
         lbl.setContentsMargins(0, 6, 0, 0)
         return lbl
@@ -1222,16 +707,19 @@ class _RightPanel(QWidget):
         w   = QWidget()
         w.setStyleSheet(ss_transparent())
         row = QHBoxLayout(w)
-        row.setContentsMargins(0, 0, 0, 0)
+        row.setContentsMargins(*Insets.NONE)
         row.setSpacing(6)
         klbl = QLabel(key + ":")
-        klbl.setFont(QFont("Segoe UI", 12))
-        klbl.setFixedWidth(76)
+        klbl.setFont(ui_font(TypeSize.LABEL))
+        klbl.setFixedWidth(92)
+        klbl.setWordWrap(True)
         klbl.setStyleSheet(ss_dim_label())
         vlbl = QLabel(val)
-        vlbl.setFont(QFont("Consolas", 12))
+        vlbl.setFont(mono_font(TypeSize.LABEL))
         vlbl.setStyleSheet(ss_main_label())
         vlbl.setWordWrap(True)
+        vlbl.setMinimumWidth(0)
+        vlbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         row.addWidget(klbl)
         row.addWidget(vlbl, 1)
         w._val = vlbl
@@ -1240,6 +728,11 @@ class _RightPanel(QWidget):
     # Public API
     def set_entry(self, entry: TextureEntry | None):
         self._pending_entry = entry
+        for control in (*self._entry_buttons, self._name_edit, self._path_edit):
+            control.setEnabled(entry is not None)
+        for control in self._document_buttons:
+            control.setEnabled(self._document_loaded)
+        self._edit_card.setEnabled(entry is not None and entry_editable(entry))
         if entry is None:
             self._name_edit.setText("")
             self._path_edit.setText("")
@@ -1252,10 +745,16 @@ class _RightPanel(QWidget):
         self._name_edit.setText(entry.name)
         self._path_edit.setText(entry.file_path)
         self._size_lbl._val.setText(entry.size_str)
-        self._fmt_lbl._val.setText(ui_text("ui_texture_value_id_value", p0=entry.format_name, p1=entry.pixel_format))
+        self._fmt_lbl._val.setText(entry.format_name)
+        self._fmt_lbl._val.setToolTip(ui_text("ui_texture_value_id_value", p0=entry.format_name, p1=entry.pixel_format))
         self._mip_lbl._val.setText(str(entry.mipmap_count))
         self._apply_btn.setEnabled(entry.pil_image is not None)
         self._rename_btn.setEnabled(True)
+
+    def set_document_loaded(self, loaded):
+        self._document_loaded = loaded
+        for control in self._document_buttons:
+            control.setEnabled(loaded)
 
     def _emit_rename(self):
         name = self._name_edit.text().strip()
@@ -1274,7 +773,8 @@ class _RightPanel(QWidget):
             self.set_colorize_hex(color.name().upper())
 
     def _apply_hex_edit(self):
-        self.set_colorize_hex(self._hex_edit.text())
+        if self._hex_edit.hasAcceptableInput():
+            self.set_colorize_hex(self._hex_edit.text())
 
     def set_colorize_hex(self, hex_color: str, *, update_sliders: bool = True):
         normalized = _normalize_hex(hex_color)
@@ -1285,7 +785,7 @@ class _RightPanel(QWidget):
         self._hex_edit.blockSignals(False)
         self._color_swatch.setStyleSheet(
             f"QPushButton {{ background: {normalized}; border: 1px solid {P['border']}; "
-            "border-radius: 4px; }}"
+            "border-radius: 4px; }"
         )
         if update_sliders:
             import colorsys
@@ -1296,7 +796,11 @@ class _RightPanel(QWidget):
             self._colorize_chk.setChecked(True)
             self._on_slider_changed(0)
 
-    def get_adjustments(self) -> dict:
+    def get_adjustments(self, *, commit=False) -> dict:
+        if commit:
+            for row in (self._brightness, self._contrast, self._sharpness,
+                        self._hue, self._saturation, self._lightness):
+                row.input.interpretText()
         return {
             'brightness': self._brightness.value,
             'contrast':   self._contrast.value,
@@ -1309,6 +813,8 @@ class _RightPanel(QWidget):
 
     # Slider interaction
     def _on_slider_changed(self, _):
+        if getattr(self, '_resetting', False):
+            return
         # Keep saturation gradient in sync with the current hue
         self._saturation.set_gradient(_sat_gradient_css(self._hue.value))
         self._preview_timer.start()
@@ -1317,15 +823,21 @@ class _RightPanel(QWidget):
         self.sig_apply_edits.emit({'preview': True, **self.get_adjustments()})
 
     def _emit_apply(self):
-        self.sig_apply_edits.emit({'preview': False, **self.get_adjustments()})
+        self.sig_apply_edits.emit({'preview': False, **self.get_adjustments(commit=True)})
 
-    def _reset_sliders(self):
+    def _reset_sliders(self, *_):
+        self.reset_adjustments()
+        self.sig_reset_edits.emit()
+
+    def reset_adjustments(self):
+        self._resetting = True
         for sl in (self._brightness, self._contrast, self._sharpness,
                    self._hue, self._saturation, self._lightness):
             sl.reset()
         self._colorize_chk.setChecked(False)
         self.set_colorize_hex(DEFAULT_COLORIZE_HEX, update_sliders=False)
-        self.sig_reset_edits.emit()
+        self._preview_timer.stop()
+        self._resetting = False
 
 
 # Port dialog
@@ -1339,24 +851,21 @@ class _PortDialog(QDialog):
         self._selected: list[TextureEntry] = []
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 12, 12, 12)
-        lay.setSpacing(8)
+        configure_layout(lay, LayoutRole.PAGE)
 
         hdr = QLabel(ui_text("ui_texture_select_textures_to_port_into_the_current_xfbin"))
-        hdr.setFont(QFont("Segoe UI", 11))
+        hdr.setFont(ui_font(TypeSize.CODE))
         hdr.setStyleSheet(ss_field_label())
         lay.addWidget(hdr)
 
         filt = QLineEdit()
-        filt.setPlaceholderText(ui_text("ui_texture_filter"))
-        filt.setFont(QFont("Consolas", 10))
-        filt.setStyleSheet(ss_search())
+        configure_search(filt)
         filt.textChanged.connect(self._filter)
         lay.addWidget(filt)
 
         self._list = QListWidget()
         self._list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self._list.setFont(QFont("Consolas", 10))
+        self._list.setFont(mono_font(TypeSize.BODY))
         self._list.setStyleSheet(ss_listwidget())
         self._populate(entries)
         lay.addWidget(self._list, 1)
@@ -1364,21 +873,18 @@ class _PortDialog(QDialog):
         # Buttons
         brow = QHBoxLayout()
         sel_all = QPushButton(ui_text("ui_texture_select_all"))
-        sel_all.setFont(QFont("Segoe UI", 10))
-        sel_all.setStyleSheet(ss_btn())
+        configure_button(sel_all)
         sel_all.clicked.connect(self._list.selectAll)
         brow.addWidget(sel_all)
         brow.addStretch()
 
         ok_btn = QPushButton(ui_text("ui_texture_port_selected"))
-        ok_btn.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        ok_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(ok_btn, accent=True)
         ok_btn.clicked.connect(self._accept)
         brow.addWidget(ok_btn)
 
         cancel_btn = QPushButton(ui_text("ui_texture_cancel"))
-        cancel_btn.setFont(QFont("Segoe UI", 11))
-        cancel_btn.setStyleSheet(ss_btn())
+        configure_button(cancel_btn)
         cancel_btn.clicked.connect(self.reject)
         brow.addWidget(cancel_btn)
         lay.addLayout(brow)
@@ -1429,7 +935,7 @@ class _BatchReplaceDialog(QDialog):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(10)
+        root.setSpacing(Size.CARD_GAP)
 
         intro = QLabel(ui_text("ui_texture_batch_replace_intro"))
         intro.setWordWrap(True)
@@ -1439,12 +945,12 @@ class _BatchReplaceDialog(QDialog):
         source_row = QHBoxLayout()
         source_row.setSpacing(6)
         folder_btn = QPushButton(ui_text("ui_texture_choose_folder"))
-        folder_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(folder_btn, accent=True)
         folder_btn.clicked.connect(self._choose_folder)
         source_row.addWidget(folder_btn)
 
         files_btn = QPushButton(ui_text("ui_texture_choose_files"))
-        files_btn.setStyleSheet(ss_btn())
+        configure_button(files_btn)
         files_btn.clicked.connect(self._choose_files)
         source_row.addWidget(files_btn)
 
@@ -1454,28 +960,23 @@ class _BatchReplaceDialog(QDialog):
         root.addLayout(source_row)
 
         scope_row = QHBoxLayout()
-        scope_row.setSpacing(8)
+        scope_row.setSpacing(Size.GAP)
         scope_lbl = QLabel(ui_text("ui_texture_batch_replace_scope"))
         scope_lbl.setStyleSheet(ss_field_label())
         scope_row.addWidget(scope_lbl)
-        radio_ss = (
-            f"QRadioButton {{ color: {P['text_main']}; spacing: 6px; background: transparent; }}"
-            f"QRadioButton::indicator {{ width: 15px; height: 15px; border: 1px solid {P['border']}; "
-            f"border-radius: 8px; background: {P.get('input_bg', P['bg_card'])}; }}"
-            f"QRadioButton::indicator:checked {{ background: {P['accent']}; border-color: {P['accent']}; }}"
-        )
+
 
         self._checked_radio = QRadioButton(
             ui_text("ui_texture_checked_textures_value", p0=len(self._checked_entries))
         )
-        self._checked_radio.setStyleSheet(radio_ss)
+        self._checked_radio.setStyleSheet(ss_radio())
         self._checked_radio.setEnabled(bool(self._checked_entries))
         self._checked_radio.setChecked(bool(self._checked_entries))
         self._checked_radio.toggled.connect(self._refresh_preview)
         scope_row.addWidget(self._checked_radio)
 
         self._all_radio = QRadioButton(ui_text("ui_texture_all_matched_textures"))
-        self._all_radio.setStyleSheet(radio_ss)
+        self._all_radio.setStyleSheet(ss_radio())
         self._all_radio.setChecked(not self._checked_entries)
         self._all_radio.toggled.connect(self._refresh_preview)
         scope_row.addWidget(self._all_radio)
@@ -1504,23 +1005,18 @@ class _BatchReplaceDialog(QDialog):
         self._table.horizontalHeader().setSectionResizeMode(
             2, QHeaderView.ResizeMode.Stretch
         )
-        self._table.setStyleSheet(
-            f"QTableWidget {{ background: {P['bg_card']}; color: {P['text_main']}; "
-            f"gridline-color: {P['border']}; border: 1px solid {P['border']}; }}"
-            f"QHeaderView::section {{ background: {P['bg_panel']}; color: {P['text_dim']}; "
-            f"border: none; padding: 4px 6px; }}"
-        )
+        configure_table(self._table)
         root.addWidget(self._table, 1)
 
         buttons = QHBoxLayout()
         buttons.addStretch()
         cancel = QPushButton(ui_text("ui_texture_cancel"))
-        cancel.setStyleSheet(ss_btn())
+        configure_button(cancel)
         cancel.clicked.connect(self.reject)
         buttons.addWidget(cancel)
 
         self._replace_btn = QPushButton(ui_text("ui_texture_replace_matched_textures"))
-        self._replace_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._replace_btn, accent=True)
         self._replace_btn.setEnabled(False)
         self._replace_btn.clicked.connect(self.accept)
         buttons.addWidget(self._replace_btn)
@@ -1620,20 +1116,26 @@ class _BatchReplaceDialog(QDialog):
 
 
 # Export-all worker
-class _ExportWorker(QObject):
+class _ExportSignals(QObject):
     progress = pyqtSignal(int)
     done     = pyqtSignal(int, str)   # count, errors
 
-    def __init__(self, entries: list[TextureEntry], folder: str, fmt: str):
+
+class _ExportWorker(QRunnable):
+    def __init__(self, entries: list[TextureEntry], folder: str, fmt: str, signals, cancel):
         super().__init__()
         self._entries = entries
         self._folder  = folder
         self._fmt     = fmt   # 'dds' or 'png'
+        self.signals, self.cancel = signals, cancel
 
     def run(self):
         ok = 0
         errs = []
+        used = set()
         for i, e in enumerate(self._entries):
+            if self.cancel.is_set():
+                break
             try:
                 if self._fmt == 'dds':
                     data = export_entry_dds(e)
@@ -1642,7 +1144,7 @@ class _ExportWorker(QObject):
                     data = export_entry_png(e)
                     ext  = '.png'
                 if data:
-                    out = os.path.join(self._folder, f"{e.name}{ext}")
+                    out = os.path.join(self._folder, export_filename(e.name, ext, used))
                     with open(out, 'wb') as f:
                         f.write(data)
                     ok += 1
@@ -1650,11 +1152,45 @@ class _ExportWorker(QObject):
                     errs.append(e.name)
             except Exception as ex:
                 errs.append(f"{e.name}: {ex}")
-            self.progress.emit(i + 1)
-        self.done.emit(ok, '\n'.join(errs[:5]) if errs else '')
+            self.signals.progress.emit(i + 1)
+        self.signals.done.emit(ok, '\n'.join(errs[:5]) if errs else '')
 
 
 # Main Texture Editor widget
+class _AdjustmentSignals(QObject):
+    finished = pyqtSignal(int, object, str)
+
+
+class _AdjustmentJob(QRunnable):
+    def __init__(self, token, image, adjustments, signals):
+        super().__init__()
+        self.token, self.image, self.adjustments, self.signals = token, image, adjustments, signals
+
+    def run(self):
+        try:
+            image = _apply_adjustments(self.image, self.adjustments)
+            self.signals.finished.emit(self.token, image, '')
+        except Exception as exc:
+            self.signals.finished.emit(self.token, None, str(exc))
+
+
+class _TextureLoadSignals(QObject):
+    finished = pyqtSignal(int, str, object, object, str)
+
+
+class _TextureLoadJob(QRunnable):
+    def __init__(self, token, path, signals):
+        super().__init__()
+        self.token, self.path, self.signals = token, path, signals
+
+    def run(self):
+        try:
+            xfbin, entries = load_xfbin(self.path, decode_images=False)
+            self.signals.finished.emit(self.token, self.path, xfbin, entries, '')
+        except Exception as exc:
+            self.signals.finished.emit(self.token, self.path, None, None, str(exc))
+
+
 class TextureEditor(QWidget):
     def __init__(self, parent=None, t=None, embedded=False):
         super().__init__(parent)
@@ -1667,122 +1203,47 @@ class TextureEditor(QWidget):
         self._orig_pil: Image.Image | None = None   # cached original for live preview
         self._last_compact_shell = None
         self._history = EditorHistory(limit=80)
+        self._history_revision = 0
         self._undo_btn: QPushButton | None = None
         self._redo_btn: QPushButton | None = None
+        self._baseline = {}
+        self._preview_image = None
+        self._preview_token = 0
+        self._preview_running = False
+        self._preview_pending = None
+        self._preview_signals = _AdjustmentSignals()
+        self._preview_signals.finished.connect(self._preview_finished)
+        self._load_token = 0
+        self._load_signals = _TextureLoadSignals()
+        self._load_signals.finished.connect(self._load_finished)
+        self._export_state = None
 
         self._build_ui()
+        install_file_actions(self, self._save_btn, native=self._save_xfbin_as, existing_button=getattr(self, "_saveas_btn", None))
+        install_editor_chrome(self)
 
     # UI construction
-    def _build_ui_legacy(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-        self.setStyleSheet(ss_bg_dark())
-
-        # Top bar
-        bar = QFrame()
-        bar.setFixedHeight(46)
-        bar.setStyleSheet(ss_bg_panel() + f"border-bottom:1px solid {P['border']};")
-        bl = QHBoxLayout(bar)
-        bl.setContentsMargins(12, 6, 12, 6)
-        bl.setSpacing(8)
-
-        open_btn = QPushButton(ui_text("xfa_btn_open"))
-        open_btn.setFixedHeight(32)
-        open_btn.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        open_btn.setStyleSheet(ss_btn(accent=True))
-        open_btn.clicked.connect(self._open_xfbin)
-        bl.addWidget(open_btn)
-
-        self._save_btn = QPushButton(ui_text("xfa_btn_save"))
-        self._save_btn.setFixedHeight(32)
-        self._save_btn.setFont(QFont("Segoe UI", 11))
-        self._save_btn.setStyleSheet(ss_btn(accent=True))
-        self._save_btn.setEnabled(False)
-        self._save_btn.clicked.connect(self._save_xfbin)
-        bl.addWidget(self._save_btn)
-
-        self._saveas_btn = QPushButton(ui_text("ui_texture_save_as"))
-        self._saveas_btn.setFixedHeight(32)
-        self._saveas_btn.setFont(QFont("Segoe UI", 11))
-        self._saveas_btn.setStyleSheet(ss_btn())
-        self._saveas_btn.setEnabled(False)
-        self._saveas_btn.clicked.connect(self._save_xfbin_as)
-        bl.addWidget(self._saveas_btn)
-
-        bl.addWidget(_make_sep())
-
-        self._status_lbl = QLabel(ui_text("ui_texture_open_an_xfbin_file_to_get_started"))
-        self._status_lbl.setFont(QFont("Segoe UI", 10))
-        self._status_lbl.setStyleSheet(ss_dim_label())
-        bl.addWidget(self._status_lbl, 1)
-
-        root.addWidget(bar)
-
-        # Three-column splitter
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setHandleWidth(3)
-        splitter.setStyleSheet(
-            f"QSplitter::handle {{background:{P['border']};}}"
-        )
-
-        # Left: thumbnail grid
-        self._grid = _ThumbnailGrid()
-        self._grid.setMinimumWidth(230)
-        self._grid.texture_selected.connect(self._on_select)
-        splitter.addWidget(self._grid)
-
-        # Centre: preview
-        self._preview = _PreviewPanel()
-        self._preview.setMinimumWidth(300)
-        splitter.addWidget(self._preview)
-
-        # Right: info + controls
-        self._right = _RightPanel()
-        self._right.sig_export_dds.connect(self._export_dds)
-        self._right.sig_export_png.connect(self._export_png)
-        self._right.sig_export_all.connect(self._export_all)
-        self._right.sig_replace.connect(self._replace)
-        self._right.sig_port.connect(self._port)
-        self._right.sig_add_text.connect(self._add_text)
-        self._right.sig_rename.connect(self._rename)
-        self._right.sig_apply_edits.connect(self._apply_edits)
-        self._right.sig_reset_edits.connect(self._reset_edits)
-        self._right.sig_flip_h.connect(self._flip_h)
-        self._right.sig_flip_v.connect(self._flip_v)
-        self._right.sig_rotate.connect(self._rotate)
-        self._right.sig_copy_name.connect(self._copy_name)
-        self._right.sig_pick_color.connect(lambda: self._preview.set_color_pick_enabled(True))
-        self._preview.color_picked.connect(self._right.set_colorize_hex)
-        splitter.addWidget(self._right)
-
-        splitter.setSizes([240, 470, _RightPanel.WIDTH])
-        root.addWidget(splitter, 1)
-
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        configure_layout(root, LayoutRole.ROOT)
+        # A wide-layout minimum must not prevent the resize event that switches
+        # to the compact layout. Child controls retain their normal constraints.
+        root.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        self.setMinimumWidth(Size.COMPACT_BREAKPOINT)
         self.setStyleSheet(ss_bg_dark())
 
-        top = QFrame()
-        top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(ss_bg_panel())
-        top_layout = QHBoxLayout(top)
-        top_layout.setContentsMargins(12, 8, 12, 8)
-        top_layout.setSpacing(4)
+        top = EditorToolbar()
+        top_layout = top.content_layout
 
         open_btn = QPushButton(ui_text("btn_open_file"))
-        open_btn.setFixedHeight(TOOLBAR_BTN_H)
-        open_btn.setFont(QFont("Segoe UI", 10))
-        open_btn.setStyleSheet(ss_btn(accent=True))
+        self._open_btn = open_btn
+        configure_button(open_btn, accent=True)
         open_btn.clicked.connect(self._open_xfbin)
+        open_btn.setProperty("designAction", 'open')
         top_layout.addWidget(open_btn)
 
         self._save_btn = QPushButton(ui_text("btn_save_file"))
-        self._save_btn.setFixedHeight(TOOLBAR_BTN_H)
-        self._save_btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        self._save_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._save_btn, accent=True)
         self._save_btn.setEnabled(False)
         self._save_btn.clicked.connect(self._save_xfbin)
         top_layout.addWidget(self._save_btn)
@@ -1790,46 +1251,47 @@ class TextureEditor(QWidget):
         self._file_label = QLabel(ui_text("ui_btladjprm_no_file_loaded"))
         self._file_label.setMinimumWidth(0)
         self._file_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self._file_label.setFont(QFont("Consolas", 12))
-        self._file_label.setStyleSheet(ss_file_label())
+
+        configure_file_label(self._file_label)
         top_layout.addWidget(self._file_label, 1)
 
         self._status_lbl = QLabel("")
         self._status_lbl.setMinimumWidth(0)
         self._status_lbl.setMaximumWidth(320)
         self._status_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self._status_lbl.setFont(QFont("Segoe UI", 10))
+        self._status_lbl.setFont(ui_font(TypeSize.BODY))
         self._status_lbl.setStyleSheet(ss_dim_label())
         top_layout.addWidget(self._status_lbl)
 
         self._undo_btn = _icon_button("fa6s.arrow-rotate-left", ui_text("ui_texture_undo"))
         self._undo_btn.clicked.connect(self._undo)
+        self._undo_btn.setProperty("designAction", 'undo')
         self._undo_btn.setEnabled(False)
         top_layout.addWidget(self._undo_btn)
 
         self._redo_btn = _icon_button("fa6s.arrow-rotate-right", ui_text("ui_texture_redo"))
         self._redo_btn.clicked.connect(self._redo)
+        self._redo_btn.setProperty("designAction", 'redo')
         self._redo_btn.setEnabled(False)
         top_layout.addWidget(self._redo_btn)
         root.addWidget(top)
 
-        sep = QFrame()
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
+        sep = EditorSeparator(accent=True)
+
+
         root.addWidget(sep)
 
         main = QWidget()
+        self._workspace = main
         main.setStyleSheet(ss_bg_dark())
         main_layout = QHBoxLayout(main)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        configure_layout(main_layout, LayoutRole.ROOT)
 
-        self._list_frame = QFrame()
-        self._list_frame.setFixedWidth(260)
-        self._list_frame.setStyleSheet(ss_sidebar_frame())
-        list_layout = QVBoxLayout(self._list_frame)
-        list_layout.setContentsMargins(0, 0, 0, 0)
-        list_layout.setSpacing(0)
+        self._list_frame = EditorSidebar()
+
+
+        list_layout = self._list_frame.content_layout
+
 
         self._grid = _TextureList()
         self._grid.texture_selected.connect(self._on_select)
@@ -1841,24 +1303,25 @@ class TextureEditor(QWidget):
         list_layout.addWidget(self._grid)
         main_layout.addWidget(self._list_frame)
 
-        divider = QFrame()
-        divider.setFixedWidth(1)
-        divider.setStyleSheet(ss_sep())
+        divider = EditorSeparator(orientation=Qt.Orientation.Vertical)
+
+
         main_layout.addWidget(divider)
 
         content = QWidget()
         content.setStyleSheet(ss_bg_dark())
         content_layout = QHBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
+        configure_layout(content_layout, LayoutRole.ROOT)
 
         self._preview = _PreviewPanel()
+        self._preview.level_changed.connect(lambda _: self._show_preview(self._preview_image))
+        self._preview.face_changed.connect(lambda _: self._show_preview(self._preview_image))
         self._preview.setMinimumWidth(300)
         content_layout.addWidget(self._preview, 1)
 
-        right_divider = QFrame()
-        right_divider.setFixedWidth(1)
-        right_divider.setStyleSheet(ss_sep())
+        right_divider = EditorSeparator(orientation=Qt.Orientation.Vertical)
+
+
         content_layout.addWidget(right_divider)
 
         self._right = _RightPanel()
@@ -1877,7 +1340,8 @@ class TextureEditor(QWidget):
         self._right.sig_copy_name.connect(self._copy_name)
         self._right.sig_pick_color.connect(lambda: self._preview.set_color_pick_enabled(True))
         self._preview.color_picked.connect(self._right.set_colorize_hex)
-        content_layout.addWidget(self._right)
+        self._inspector_pane = EditorSidebarPane(self._right, self, edge='right', label='texture_inspector')
+        content_layout.addWidget(self._inspector_pane)
 
         main_layout.addWidget(content, 1)
         root.addWidget(main, 1)
@@ -1906,6 +1370,15 @@ class TextureEditor(QWidget):
         super().resizeEvent(event)
         self._apply_responsive_shell()
 
+    def closeEvent(self, event):
+        self._right._preview_timer.stop()
+        self._preview_token += 1
+        self._load_token += 1
+        self._preview_pending = None
+        if self._export_state:
+            self._export_state[3].set()
+        super().closeEvent(event)
+
     # Open / Save
     def _open_xfbin(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1913,28 +1386,67 @@ class TextureEditor(QWidget):
         )
         if not path:
             return
+        if self._unsaved or any(self._right.get_adjustments().values()) or (self._cur_entry is not None and (
+                self._right._name_edit.text().strip(), self._right._path_edit.text().strip()) != (
+                    self._cur_entry.name, self._cur_entry.file_path)):
+            choice = QMessageBox.question(self, ui_text('ui_texture_save_as'), ui_text('texture_unsaved_open'),
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save)
+            if choice == QMessageBox.StandardButton.Cancel:
+                return
+            if choice == QMessageBox.StandardButton.Save:
+                self._save_xfbin()
+                if self._unsaved or any(self._right.get_adjustments().values()):
+                    return
         create_backup_on_open(path)
         self._status(ui_text("ui_effect_loading"))
-        QTimer.singleShot(30, lambda: self._do_load(path))
+        self._load_token += 1
+        self._open_btn.setEnabled(False)
+        self._workspace.setEnabled(False)
+        QThreadPool.globalInstance().start(_TextureLoadJob(self._load_token, path, self._load_signals))
+
+    def _load_finished(self, token, path, xfbin, entries, error):
+        if token != self._load_token:
+            return
+        self._open_btn.setEnabled(True)
+        self._workspace.setEnabled(True)
+        if error:
+            self._status(error, error=True)
+            QMessageBox.critical(self, ui_text('ui_charviewer_load_error'), error)
+            return
+        self._accept_loaded(path, xfbin, entries)
 
     def _do_load(self, path: str):
         try:
-            xfbin, entries = load_xfbin(path)
+            xfbin, entries = load_xfbin(path, decode_images=False)
         except Exception as exc:
             self._status(f"Error loading: {exc}", error=True)
             QMessageBox.critical(self, ui_text("ui_charviewer_load_error"), str(exc))
             return
+        self._accept_loaded(path, xfbin, entries)
 
+    def _accept_loaded(self, path, xfbin, entries):
         self._xfbin      = xfbin
         self._entries    = entries
         self._xfbin_path = path
         self._cur_entry  = None
         self._unsaved    = False
+        import uuid
+        self._baseline = {}
+        for entry in entries:
+            entry.chunk._texture_identity = uuid.uuid4().hex
+            snapshot = copy.copy(entry)
+            snapshot.chunk = copy.deepcopy(entry.chunk)
+            self._baseline[entry.chunk._texture_identity] = snapshot
+        self._preview_token += 1
+        self._preview_pending = None
+        self._right.reset_adjustments()
         self._history.clear()
         self._update_history_buttons()
 
         self._grid.load(entries)
         self._grid.set_file_loaded(True)
+        self._right.set_document_loaded(True)
         self._preview.show_image(None)
         self._right.set_entry(None)
         self._save_btn.setEnabled(True)
@@ -1943,9 +1455,13 @@ class TextureEditor(QWidget):
         set_file_label(self._file_label, path)
         n_tex = len(entries)
         self._status(f"Loaded  {fname}  —  {n_tex} texture{'s' if n_tex != 1 else ''}")
+        if entries:
+            self._grid.select_entry(entries[0])
 
     def _save_xfbin(self):
         if self._xfbin is None or self._xfbin_path is None:
+            return
+        if not self._flush_adjustments():
             return
         try:
             save_xfbin(self._xfbin, self._xfbin_path)
@@ -1963,6 +1479,8 @@ class TextureEditor(QWidget):
             "XFBIN Files (*.xfbin);;All Files (*)"
         )
         if not path:
+            return
+        if not self._flush_adjustments():
             return
         try:
             save_xfbin(self._xfbin, path)
@@ -1988,7 +1506,10 @@ class TextureEditor(QWidget):
     def _push_history(self):
         if self._xfbin is None:
             return
-        self._history.push(self._xfbin.pages)
+        # NuccChunk equality compares names/paths, not pixels. A revision keeps
+        # distinct image edits from being discarded by generic history dedup.
+        self._history.push((self._history_revision, self._xfbin.pages))
+        self._history_revision += 1
         self._update_history_buttons()
 
     def _current_entry_key(self):
@@ -1999,8 +1520,12 @@ class TextureEditor(QWidget):
     def _restore_history_state(self, pages, preferred_key=None):
         if self._xfbin is None:
             return
+        self._right.reset_adjustments()
+        self._cur_entry = None
+        self._preview_token += 1
+        self._preview_pending = None
         self._xfbin.pages = copy.deepcopy(pages)
-        self._entries = refresh_texture_entries(self._xfbin)
+        self._entries = refresh_texture_entries(self._xfbin, decode_images=False)
         self._grid.load(self._entries)
         self._grid.set_file_loaded(True)
 
@@ -2028,25 +1553,31 @@ class TextureEditor(QWidget):
     def _undo(self):
         if self._xfbin is None:
             return
-        state = self._history.undo(self._xfbin.pages)
+        if any(self._right.get_adjustments().values()):
+            self._right.reset_adjustments()
+            self._reset_edits()
+            return
+        state = self._history.undo((self._history_revision, self._xfbin.pages))
         if state is None:
             return
-        self._restore_history_state(state, self._current_entry_key())
+        self._history_revision = state[0]
+        self._restore_history_state(state[1], self._current_entry_key())
         self._status(ui_text("ui_texture_undo_done"))
 
     def _redo(self):
         if self._xfbin is None:
             return
-        state = self._history.redo(self._xfbin.pages)
+        state = self._history.redo((self._history_revision, self._xfbin.pages))
         if state is None:
             return
-        self._restore_history_state(state, self._current_entry_key())
+        self._history_revision = state[0]
+        self._restore_history_state(state[1], self._current_entry_key())
         self._status(ui_text("ui_texture_redo_done"))
 
     def _reload_entries(self, select_entry: TextureEntry | None = None):
         if self._xfbin is None:
             return
-        self._entries = refresh_texture_entries(self._xfbin)
+        self._entries = refresh_texture_entries(self._xfbin, decode_images=False)
         self._grid.load(self._entries)
         self._grid.set_file_loaded(True)
 
@@ -2072,64 +1603,136 @@ class TextureEditor(QWidget):
 
     # Selection
     def _on_select(self, entry: TextureEntry):
+        if entry is self._cur_entry:
+            return
+        if not self._flush_adjustments():
+            self._grid._select(self._cur_entry, emit=False)
+            return
+        self._preview_token += 1
+        self._preview_pending = None
+        self._right.reset_adjustments()
         self._cur_entry = entry
         self._orig_pil  = entry.pil_image.copy() if entry.pil_image else None
         self._right.set_entry(entry)
+        self._preview.set_levels(entry.width, entry.height, entry.mipmap_count)
+        textures = getattr(getattr(entry.chunk, 'nut', None), 'textures', ())
+        self._preview.set_faces(6 if textures and getattr(textures[0], 'is_cube_map', False) else 0)
         self._show_preview(entry.pil_image)
+        self._preview.surface.view.fit()
 
     def _show_preview(self, img: Image.Image | None):
         if self._cur_entry is None:
             self._preview.show_image(None)
             return
         e = self._cur_entry
+        self._preview_image = img
+        self._preview.set_levels(e.width, e.height, e.mipmap_count)
+        level = self._preview.level.currentData() or 0
+        face = self._preview.face.currentData() or 0
+        original_entry = self._baseline.get(getattr(e.chunk, '_texture_identity', None))
+        original = entry_image(original_entry, level, face) if original_entry else None
+        if level or face:
+            img = entry_image(e, level, face)
         info = f"{e.name}  |  {e.format_name}  |  {e.size_str}  |  {e.mipmap_count} mip"
-        self._preview.show_image(img, info)
+        if img is None:
+            info = ui_text('texture_unavailable_level')
+        self._preview.show_image(img, info, original=original)
+
+    def _flush_adjustments(self):
+        if self._cur_entry is None:
+            return True
+        if not self._right._hex_edit.hasAcceptableInput():
+            QMessageBox.warning(self, ui_text('ui_texture_choose_color'), ui_text('texture_invalid_color'))
+            self._right._hex_edit.setFocus()
+            return False
+        name, path = self._right._name_edit.text().strip(), self._right._path_edit.text().strip()
+        if (name, path) != (self._cur_entry.name, self._cur_entry.file_path):
+            if not self._rename(name, path):
+                return False
+        adjustments = self._right.get_adjustments(commit=True)
+        if any(adjustments.values()):
+            return self._apply_edits({'preview': False, **adjustments})
+        return True
+
+    def _preview_finished(self, token, image, error):
+        self._preview_running = False
+        if token == self._preview_token:
+            if error:
+                self._status(error, error=True)
+            else:
+                self._show_preview(image)
+        pending, self._preview_pending = self._preview_pending, None
+        if pending is not None:
+            self._start_preview(*pending)
+
+    def _start_preview(self, token, image, adjustments):
+        if self._preview_running:
+            self._preview_pending = (token, image, adjustments)
+            return
+        self._preview_running = True
+        QThreadPool.globalInstance().start(_AdjustmentJob(token, image, adjustments, self._preview_signals))
 
     # Live quick-edit preview
     def _apply_edits(self, adj: dict):
         if self._cur_entry is None or self._orig_pil is None:
-            return
-        img = _apply_adjustments(self._orig_pil.copy(), adj)
+            return False
+        if not entry_editable(self._cur_entry):
+            return False
+        self._preview_token += 1
 
         if adj.get('preview', True):
-            self._show_preview(img)
-            return
+            self._start_preview(self._preview_token, self._orig_pil, dict(adj))
+            return True
+        self._preview_pending = None
+        if not any(value for key, value in adj.items() if key != 'preview'):
+            return True
+        try:
+            img = _apply_adjustments(self._orig_pil, adj)
+        except Exception as exc:
+            QMessageBox.critical(self, ui_text('ui_texture_apply_error'), str(exc))
+            return False
 
         # Permanent apply
         self._push_history()
-        err = apply_pil_edits_to_entry(self._cur_entry, img)
+        old_format = self._cur_entry.pixel_format
+        err = apply_pil_edits_to_entry(self._cur_entry, img, rebuild_mips=self._right._rebuild_mips.isChecked())
         if err:
             QMessageBox.critical(self, ui_text("ui_texture_apply_error"), err)
-            return
+            return False
         self._orig_pil = img.copy()
+        self._right.reset_adjustments()
+        self._right.set_entry(self._cur_entry)
         self._grid.refresh_active_thumb()
         self._show_preview(img)
         fmt_note = ""
-        if self._cur_entry.pixel_format != 17:
+        if old_format != 17:
             fmt_note = ui_text("ui_texture_converted_to_rgba8888")
         self._status(f"Edits applied to  {self._cur_entry.name}{fmt_note}")
         self._mark_dirty()
+        return True
 
     def _reset_edits(self):
         if self._cur_entry is None or self._orig_pil is None:
             return
+        self._preview_token += 1
+        self._preview_pending = None
         self._show_preview(self._orig_pil)
 
     # Flip / Rotate
     def _flip_h(self):
-        if self._orig_pil is None:
+        if self._orig_pil is None or not self._flush_adjustments():
             return
         img = ImageOps.mirror(self._orig_pil)
         self._commit_edit(img)
 
     def _flip_v(self):
-        if self._orig_pil is None:
+        if self._orig_pil is None or not self._flush_adjustments():
             return
         img = ImageOps.flip(self._orig_pil)
         self._commit_edit(img)
 
     def _rotate(self, deg: int):
-        if self._orig_pil is None:
+        if self._orig_pil is None or not self._flush_adjustments():
             return
         img = self._orig_pil.rotate(-deg, expand=True)
         self._commit_edit(img)
@@ -2138,11 +1741,14 @@ class TextureEditor(QWidget):
         if self._cur_entry is None:
             return
         self._push_history()
-        err = apply_pil_edits_to_entry(self._cur_entry, img)
+        self._preview_token += 1
+        self._preview_pending = None
+        err = apply_pil_edits_to_entry(self._cur_entry, img, rebuild_mips=self._right._rebuild_mips.isChecked())
         if err:
             QMessageBox.critical(self, ui_text("ui_texture_apply_error"), err)
             return
         self._orig_pil = img.copy()
+        self._right.reset_adjustments()
         self._grid.refresh_active_thumb()
         self._right.set_entry(self._cur_entry)
         self._show_preview(img)
@@ -2152,7 +1758,13 @@ class TextureEditor(QWidget):
     def _export_dds(self):
         if self._cur_entry is None:
             return
-        data = export_entry_dds(self._cur_entry)
+        if not self._flush_adjustments():
+            return
+        try:
+            data = export_entry_dds(self._cur_entry)
+        except ValueError as exc:
+            QMessageBox.warning(self, ui_text('ui_texture_export'), str(exc))
+            return
         if data is None:
             QMessageBox.warning(self, ui_text("ui_texture_export"), ui_text("ui_texture_could_not_generate_dds_data_for_this_texture"))
             return
@@ -2169,6 +1781,8 @@ class TextureEditor(QWidget):
 
     def _export_png(self):
         if self._cur_entry is None:
+            return
+        if not self._flush_adjustments():
             return
         data = export_entry_png(self._cur_entry)
         if data is None:
@@ -2199,21 +1813,19 @@ class TextureEditor(QWidget):
         dlg.setFixedSize(300, 120)
         dlg.setStyleSheet(ss_dialog())
         lay = QVBoxLayout(dlg)
-        lay.setSpacing(10)
+        lay.setSpacing(Size.CARD_GAP)
         lbl = QLabel(ui_text("ui_texture_export_format"))
-        lbl.setFont(QFont("Segoe UI", 11))
+        lbl.setFont(ui_font(TypeSize.CODE))
         lbl.setStyleSheet(ss_field_label())
         lay.addWidget(lbl)
         btn_row = QHBoxLayout()
         for fmt in ('png', 'dds'):
             b = QPushButton(fmt.upper())
-            b.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-            b.setStyleSheet(ss_btn(accent=(fmt == 'png')))
+            configure_button(b, accent=fmt == 'png')
             b.clicked.connect(lambda _, f=fmt, d=dlg: (d.done(0), self._run_export_all(folder, f)))
             btn_row.addWidget(b)
         cancel = QPushButton(ui_text("ui_texture_cancel"))
-        cancel.setFont(QFont("Segoe UI", 11))
-        cancel.setStyleSheet(ss_btn())
+        configure_button(cancel)
         cancel.clicked.connect(dlg.reject)
         btn_row.addWidget(cancel)
         lay.addLayout(btn_row)
@@ -2223,6 +1835,8 @@ class TextureEditor(QWidget):
         self._run_export_entries(self._entries, folder, fmt)
 
     def _run_export_entries(self, entries: list[TextureEntry], folder: str, fmt: str):
+        if self._export_state is not None or not self._flush_adjustments():
+            return
         total = len(entries)
         prog = QProgressDialog(
             ui_text("ui_texture_exporting_value_textures", p0=total),
@@ -2235,16 +1849,16 @@ class TextureEditor(QWidget):
         prog.setMinimumDuration(0)
         prog.setWindowModality(Qt.WindowModality.WindowModal)
 
-        thread = QThread(self)
-        worker = _ExportWorker(entries, folder, fmt)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.progress.connect(prog.setValue)
-        worker.done.connect(
-            lambda ok, errs: self._on_export_all_done(ok, errs, folder, prog, thread)
-        )
-        thread.start()
-        prog.exec()
+        signals, cancel = _ExportSignals(), threading.Event()
+        # Copy wrappers/chunks so later editing cannot race an ongoing export.
+        snapshot = copy.deepcopy(entries)
+        worker = _ExportWorker(snapshot, folder, fmt, signals, cancel)
+        self._export_state = (worker, signals, prog, cancel, folder)
+        signals.progress.connect(prog.setValue)
+        signals.done.connect(self._export_finished)
+        prog.canceled.connect(cancel.set)
+        prog.show()
+        QThreadPool.globalInstance().start(worker)
 
     def _export_checked_png(self):
         entries = self._grid.checked_entries()
@@ -2261,11 +1875,13 @@ class TextureEditor(QWidget):
         if folder:
             self._run_export_entries(entries, folder, "png")
 
-    def _on_export_all_done(self, ok: int, errs: str,
-                            folder: str, prog: QProgressDialog, thread: QThread):
+    def _export_finished(self, ok, errs):
+        if self._export_state is None:
+            return
+        worker, signals, prog, cancel, folder = self._export_state
+        self._export_state = None
         prog.close()
-        thread.quit()
-        thread.wait()
+        prog.deleteLater()
         if errs:
             QMessageBox.warning(self, ui_text("ui_texture_export_all"),
                                 ui_text("ui_texture_exported_value_textures_some_failures_value", p0=ok, p1=errs))
@@ -2279,9 +1895,11 @@ class TextureEditor(QWidget):
         path, _ = QFileDialog.getOpenFileName(
             self, ui_text("ui_texture_replace_texture"),
             game_files_dialog_dir(os.path.dirname(self._xfbin_path or '')),
-            "Texture Files (*.dds *.png *.jpg *.bmp *.tga *.nut);;All Files (*)"
+            "Texture Files (*.dds *.png *.jpg *.jpeg *.bmp *.tga *.nut);;All Files (*)"
         )
         if not path:
+            return
+        if not self._flush_adjustments():
             return
         self._push_history()
         err = replace_texture_from_file(self._cur_entry, path)
@@ -2289,6 +1907,9 @@ class TextureEditor(QWidget):
             QMessageBox.critical(self, ui_text("ui_texture_replace_error"), err)
             return
         self._orig_pil = self._cur_entry.pil_image.copy() if self._cur_entry.pil_image else None
+        self._preview_token += 1
+        self._preview_pending = None
+        self._right.reset_adjustments()
         self._grid.refresh_active_thumb()
         self._right.set_entry(self._cur_entry)
         self._show_preview(self._cur_entry.pil_image)
@@ -2306,7 +1927,8 @@ class TextureEditor(QWidget):
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-
+        if not self._flush_adjustments():
+            return
         replacements = dlg.matched_replacements()
         if replacements:
             self._push_history()
@@ -2321,6 +1943,9 @@ class TextureEditor(QWidget):
             self._grid._refresh_row(entry)
 
         if replaced:
+            self._preview_token += 1
+            self._preview_pending = None
+            self._right.reset_adjustments()
             self._mark_dirty()
             if self._cur_entry is not None:
                 self._orig_pil = (
@@ -2368,6 +1993,8 @@ class TextureEditor(QWidget):
         selected = dlg.get_selected()
         if not selected:
             return
+        if not self._flush_adjustments():
+            return
 
         self._push_history()
         added = port_entries_into_xfbin(self._xfbin, selected)
@@ -2382,9 +2009,11 @@ class TextureEditor(QWidget):
         path, _ = QFileDialog.getOpenFileName(
             self, ui_text("ui_texture_new_texture"),
             game_files_dialog_dir(os.path.dirname(self._xfbin_path or '')),
-            "Texture Files (*.dds *.png *.jpg *.bmp *.tga *.nut);;All Files (*)"
+            "Texture Files (*.dds *.png *.jpg *.jpeg *.bmp *.tga *.nut);;All Files (*)"
         )
         if not path:
+            return
+        if not self._flush_adjustments():
             return
         try:
             self._push_history()
@@ -2399,6 +2028,8 @@ class TextureEditor(QWidget):
 
     def _duplicate_texture(self):
         if self._xfbin is None or self._cur_entry is None:
+            return
+        if not self._flush_adjustments():
             return
         old_name = self._cur_entry.name
         try:
@@ -2431,13 +2062,14 @@ class TextureEditor(QWidget):
         )
         if result != QMessageBox.StandardButton.Yes:
             return
-
+        if not self._flush_adjustments():
+            return
         self._push_history()
         if not delete_texture_entry(self._xfbin, entry):
             QMessageBox.warning(self, ui_text("dlg_title_warning"), ui_text("ui_texture_delete_failed"))
             return
 
-        self._entries = refresh_texture_entries(self._xfbin)
+        self._entries = refresh_texture_entries(self._xfbin, decode_images=False)
         next_entry = self._entries[min(old_idx, len(self._entries) - 1)] if self._entries else None
         self._reload_entries(next_entry)
         self._mark_dirty()
@@ -2452,8 +2084,16 @@ class TextureEditor(QWidget):
         self._status(f'Copied  \u201c{self._cur_entry.name}\u201d  to clipboard')
 
     def _rename(self, name: str, path: str):
-        if self._cur_entry is None or not name:
-            return
+        if self._cur_entry is None:
+            return False
+        if not name or '\0' in name or '\0' in path:
+            QMessageBox.warning(self, ui_text('ui_texture_rename'), ui_text('texture_invalid_name'))
+            return False
+        if (name, path) == (self._cur_entry.name, self._cur_entry.file_path):
+            return True
+        if any(e is not self._cur_entry and (e.name, e.file_path) == (name, path) for e in self._entries):
+            QMessageBox.warning(self, ui_text('ui_texture_rename'), ui_text('texture_name_conflict'))
+            return False
         old_name = self._cur_entry.name
         self._push_history()
         self._cur_entry.name      = name
@@ -2462,20 +2102,18 @@ class TextureEditor(QWidget):
         if self._cur_entry.chunk is not None:
             self._cur_entry.chunk.name     = name
             self._cur_entry.chunk.filePath = path
-        # Refresh the thumbnail label in the grid
-        for thumb in self._grid._thumbs:
-            if thumb._entry is self._cur_entry:
-                thumb._name_lbl.setText(_truncate(name, 16))
-                thumb._name_lbl.setToolTip(name)
-                break
+        self._grid._refresh_row(self._cur_entry)
         self._right.set_entry(self._cur_entry)
         self._mark_dirty()
         self._status(f'Renamed  \u201c{old_name}\u201d  \u2192  \u201c{name}\u201d')
+        return True
 
     # Add Text Overlay
     def _add_text(self):
         if self._cur_entry is None or self._orig_pil is None:
             QMessageBox.information(self, ui_text("ui_texture_add_text_2"), ui_text("ui_texture_open_a_texture_first"))
+            return
+        if not self._flush_adjustments():
             return
         dlg = _TextOverlayDialog(self._orig_pil.copy(), self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -2483,99 +2121,13 @@ class TextureEditor(QWidget):
         result = dlg.get_result()
         if result is None:
             return
-        self._push_history()
-        err = apply_pil_edits_to_entry(self._cur_entry, result)
-        if err:
-            QMessageBox.critical(self, ui_text("ui_texture_text_apply_error"), err)
-            return
-        self._orig_pil = result.copy()
-        self._grid.refresh_active_thumb()
-        self._right.set_entry(self._cur_entry)
-        self._show_preview(result)
-        self._mark_dirty()
+        self._commit_edit(result)
         self._status(f"Text baked into  {self._cur_entry.name}")
 
     # Status bar
     def _status(self, msg: str, error: bool = False):
         self._status_lbl.setStyleSheet(ss_error_label() if error else ss_dim_label())
         self._status_lbl.setText(msg)
-
-
-# Adjustment helpers
-import numpy as _np
-
-def _rgb_to_hsv_np(rgb: '_np.ndarray') -> '_np.ndarray':
-    r, g, b = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
-    maxc = _np.maximum(_np.maximum(r, g), b)
-    minc = _np.minimum(_np.minimum(r, g), b)
-    v = maxc
-    diff = maxc - minc
-    s = _np.where(maxc > 1e-7, diff / maxc, 0.0)
-    safe = _np.where(diff > 1e-7, diff, 1.0)
-    h = _np.where(maxc == r, (g - b) / safe % 6,
-        _np.where(maxc == g, (b - r) / safe + 2.0, (r - g) / safe + 4.0)) / 6.0
-    h = _np.where(diff > 1e-7, h % 1.0, 0.0)
-    return _np.stack([h, s, v], axis=2).astype(_np.float32)
-
-def _hsv_to_rgb_np(hsv: '_np.ndarray') -> '_np.ndarray':
-    h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
-    i = (_np.floor(h * 6)).astype(_np.int32) % 6
-    f = h * 6.0 - _np.floor(h * 6.0)
-    p = v * (1.0 - s)
-    q = v * (1.0 - f * s)
-    t = v * (1.0 - (1.0 - f) * s)
-    r = _np.choose(i, [v, q, p, p, t, v])
-    g = _np.choose(i, [t, v, v, q, p, p])
-    b = _np.choose(i, [p, p, t, v, v, q])
-    return _np.stack([r, g, b], axis=2).clip(0.0, 1.0).astype(_np.float32)
-
-def _apply_adjustments(img: Image.Image, adj: dict) -> Image.Image:
-    img = img.convert('RGBA')
-
-    def _f(v): return max(0.0, 1.0 + v / 100.0)
-
-    b = adj.get('brightness', 0)
-    if b != 0:
-        img = ImageEnhance.Brightness(img).enhance(_f(b))
-
-    c = adj.get('contrast', 0)
-    if c != 0:
-        img = ImageEnhance.Contrast(img).enhance(_f(c))
-
-    sh = adj.get('sharpness', 0)
-    if sh != 0:
-        img = ImageEnhance.Sharpness(img).enhance(_f(sh))
-
-    h        = adj.get('hue', 0)
-    s        = adj.get('saturation', 0)
-    l        = adj.get('lightness', 0)
-    colorize = adj.get('colorize', False)
-
-    if h != 0 or s != 0 or l != 0 or colorize:
-        arr   = _np.array(img, dtype=_np.float32) / 255.0
-        alpha = arr[:, :, 3].copy()
-        hsv   = _rgb_to_hsv_np(arr[:, :, :3])
-
-        if colorize:
-            # Replace hue of every pixel with the slider's absolute hue,
-            # use a fixed default saturation boosted by the sat slider,
-            # then shift lightness (value).
-            hsv[:, :, 0] = ((h + 180) / 360.0) % 1.0
-            hsv[:, :, 1] = _np.clip(0.5 + s / 200.0, 0.0, 1.0)
-            hsv[:, :, 2] = _np.clip(hsv[:, :, 2] + l / 100.0, 0.0, 1.0)
-        else:
-            if h != 0:
-                hsv[:, :, 0] = (hsv[:, :, 0] + h / 360.0) % 1.0
-            if s != 0:
-                hsv[:, :, 1] = _np.clip(hsv[:, :, 1] * _f(s), 0.0, 1.0)
-            if l != 0:
-                hsv[:, :, 2] = _np.clip(hsv[:, :, 2] + l / 100.0, 0.0, 1.0)
-
-        rgb_out = _hsv_to_rgb_np(hsv)
-        out = _np.concatenate([rgb_out, alpha[:, :, _np.newaxis]], axis=2)
-        img = Image.fromarray((out * 255).clip(0, 255).astype(_np.uint8), 'RGBA')
-
-    return img
 
 
 # Font utilities
@@ -2814,23 +2366,22 @@ class _TextOverlayDialog(QDialog):
     # UI
     def _build_ui(self):
         root = QHBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        configure_layout(root, LayoutRole.ROOT)
 
         # Left: preview
         preview_wrap = QWidget()
         preview_wrap.setStyleSheet(ss_bg_dark())
         pl = QVBoxLayout(preview_wrap)
         pl.setContentsMargins(8, 8, 8, 8)
-        pl.setSpacing(4)
+        pl.setSpacing(Size.GAP_SM)
 
-        pv_hdr = QHBoxLayout(); pv_hdr.setSpacing(8)
+        pv_hdr = QHBoxLayout(); pv_hdr.setSpacing(Size.GAP)
         pv_lbl = QLabel(ui_text("ui_texture_preview"))
-        pv_lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        pv_lbl.setFont(ui_font(TypeSize.BODY, QFont.Weight.Bold))
         pv_lbl.setStyleSheet(ss_accent_label())
         pv_hdr.addWidget(pv_lbl)
         drag_hint = QLabel(ui_text("ui_texture_drag_to_reposition_text"))
-        drag_hint.setFont(QFont("Segoe UI", 9))
+        drag_hint.setFont(ui_font(TypeSize.HINT))
         drag_hint.setStyleSheet(ss_dim_label())
         pv_hdr.addWidget(drag_hint)
         pv_hdr.addStretch()
@@ -2841,7 +2392,7 @@ class _TextOverlayDialog(QDialog):
         self._preview_scroll.setStyleSheet(ss_scrollarea_card())
         self._preview_lbl = _DraggablePreview()
         self._preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._preview_lbl.setStyleSheet(ui_text("ui_texture_background_transparent"))
+        self._preview_lbl.setStyleSheet(ss_transparent())
         self._preview_lbl.position_changed.connect(self._on_preview_drag)
         self._preview_scroll.setWidget(self._preview_lbl)
         self._preview_scroll.setWidgetResizable(False)
@@ -2859,8 +2410,7 @@ class _TextOverlayDialog(QDialog):
         ctrl = QWidget()
         ctrl.setStyleSheet(ss_bg_panel())
         cl = QVBoxLayout(ctrl)
-        cl.setContentsMargins(12, 12, 12, 12)
-        cl.setSpacing(8)
+        configure_layout(cl, LayoutRole.PAGE)
 
         # Text input
         cl.addWidget(self._sec(ui_text("ui_galleryartparam_text")))
@@ -2868,8 +2418,7 @@ class _TextOverlayDialog(QDialog):
         self._text_edit = QPlainTextEdit()
         self._text_edit.setPlaceholderText(ui_text("ui_texture_enter_text_ctrl_enter_new_line"))
         self._text_edit.setFixedHeight(80)
-        self._text_edit.setFont(QFont("Segoe UI", 11))
-        self._text_edit.setStyleSheet(ss_textedit())
+        configure_textedit(self._text_edit)
         self._text_edit.textChanged.connect(self._kick)
         cl.addWidget(self._text_edit)
 
@@ -2879,7 +2428,7 @@ class _TextOverlayDialog(QDialog):
         from PyQt6.QtWidgets import QFontComboBox
         self._font_combo = QFontComboBox()
         self._font_combo.setCurrentFont(QFont("Arial"))
-        self._font_combo.setStyleSheet(ss_input())
+        configure_input(self._font_combo)
         self._font_combo.currentFontChanged.connect(self._kick)
         cl.addWidget(self._font_combo)
 
@@ -2887,7 +2436,7 @@ class _TextOverlayDialog(QDialog):
         srow = QHBoxLayout(); srow.setSpacing(6)
         from PyQt6.QtWidgets import QSpinBox
         size_lbl = QLabel(ui_text("ui_texture_size"))
-        size_lbl.setFont(QFont("Segoe UI", 10))
+        size_lbl.setFont(ui_font(TypeSize.BODY))
         size_lbl.setStyleSheet(ss_dim_label())
         srow.addWidget(size_lbl)
 
@@ -2895,8 +2444,7 @@ class _TextOverlayDialog(QDialog):
         self._size_spin.setRange(6, 512)
         self._size_spin.setValue(36)
         self._size_spin.setFixedWidth(64)
-        self._size_spin.setFont(QFont("Consolas", 11))
-        self._size_spin.setStyleSheet(ss_input())
+        configure_input(self._size_spin, monospace=True)
         self._size_spin.valueChanged.connect(self._kick)
         srow.addWidget(self._size_spin)
 
@@ -2966,7 +2514,7 @@ class _TextOverlayDialog(QDialog):
         ag_widget = QWidget()
         ag_widget.setStyleSheet(ss_transparent())
         ag_layout = QGridLayout(ag_widget)
-        ag_layout.setContentsMargins(0, 0, 0, 0)
+        ag_layout.setContentsMargins(*Insets.NONE)
         ag_layout.setSpacing(3)
         self._anchor_group = QButtonGroup(self)
         self._anchor_btns: dict[str, QPushButton] = {}
@@ -2974,8 +2522,7 @@ class _TextOverlayDialog(QDialog):
             btn = QPushButton(label.split()[0])
             btn.setCheckable(True)
             btn.setFixedSize(46, 28)
-            btn.setFont(QFont("Segoe UI", 10))
-            btn.setStyleSheet(ss_toggle_btn())
+            configure_button(btn, toggle=True)
             btn.setToolTip(label)
             btn.clicked.connect(lambda _, a=anc: self._on_anchor(a))
             self._anchor_group.addButton(btn)
@@ -2986,14 +2533,13 @@ class _TextOverlayDialog(QDialog):
         cl.addWidget(ag_widget)
 
         # Alignment row
-        align_row = QHBoxLayout(); align_row.setSpacing(4)
+        align_row = QHBoxLayout(); align_row.setSpacing(Size.GAP_SM)
         self._align_group = QButtonGroup(self)
         for symbol, val in ((ui_text("ui_texture_l"), 'left'), (ui_text("ui_texture_c"), 'center'), (ui_text("ui_texture_r"), 'right')):
             btn = QPushButton(symbol)
             btn.setCheckable(True)
             btn.setFixedSize(42, 26)
-            btn.setFont(QFont("Segoe UI", 10))
-            btn.setStyleSheet(ss_toggle_btn())
+            configure_button(btn, toggle=True)
             btn.setProperty('align_val', val)
             btn.clicked.connect(self._kick)
             self._align_group.addButton(btn)
@@ -3007,18 +2553,14 @@ class _TextOverlayDialog(QDialog):
         cl.addStretch()
         cl.addWidget(_make_sep())
 
-        btn_row = QHBoxLayout(); btn_row.setSpacing(8)
+        btn_row = QHBoxLayout(); btn_row.setSpacing(Size.GAP)
         ok_btn = QPushButton(ui_text("ui_texture_apply_to_texture"))
-        ok_btn.setFixedHeight(34)
-        ok_btn.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        ok_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(ok_btn, accent=True, height=Size.CONTROL)
         ok_btn.clicked.connect(self._accept)
         btn_row.addWidget(ok_btn, 1)
 
         cancel_btn = QPushButton(ui_text("ui_texture_cancel"))
-        cancel_btn.setFixedHeight(34)
-        cancel_btn.setFont(QFont("Segoe UI", 11))
-        cancel_btn.setStyleSheet(ss_btn())
+        configure_button(cancel_btn, height=Size.CONTROL)
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(cancel_btn)
         cl.addLayout(btn_row)
@@ -3030,8 +2572,8 @@ class _TextOverlayDialog(QDialog):
     @staticmethod
     def _sec(text: str) -> QLabel:
         lbl = QLabel(text)
-        lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        lbl.setStyleSheet(ss_accent_label() + "padding-top:4px;")
+        lbl.setFont(ui_font(TypeSize.BODY, QFont.Weight.Bold))
+        lbl.setStyleSheet(ss_accent_label())
         return lbl
 
     @staticmethod
@@ -3039,20 +2581,19 @@ class _TextOverlayDialog(QDialog):
         btn = QPushButton(label)
         btn.setCheckable(True)
         btn.setFixedSize(30, 28)
-        f = QFont("Segoe UI", 11, weight)
+        f = ui_font(TypeSize.CODE, weight)
         f.setItalic(italic)
-        btn.setFont(f)
-        btn.setStyleSheet(ss_toggle_btn())
+        configure_button(btn, toggle=True)
         return btn
 
     def _color_picker_btn(self, label: str, default: tuple, callback) -> tuple:
         """Returns (QWidget, setter_fn) where the widget shows a color swatch + label."""
         w   = QWidget(); w.setStyleSheet(ss_transparent())
         row = QHBoxLayout(w)
-        row.setContentsMargins(0, 0, 0, 0); row.setSpacing(6)
+        row.setContentsMargins(*Insets.NONE); row.setSpacing(6)
 
         lbl = QLabel(label + ":")
-        lbl.setFont(QFont("Segoe UI", 10))
+        lbl.setFont(ui_font(TypeSize.BODY))
         lbl.setStyleSheet(ss_dim_label())
         row.addWidget(lbl)
 

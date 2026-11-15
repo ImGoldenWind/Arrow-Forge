@@ -1,9 +1,20 @@
+from core.design_tokens import (
+    Size,
+    TypeSize,
+    ui_font,
+)
+from core.style_helpers import (
+    ss_dialog,
+)
+from core.ui.editor_widgets import (
+    configure_button,
+    configure_textedit,
+)
 from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QDesktopServices, QFont
 from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout
 
 from core import updater
-from core.style_helpers import ss_btn, ss_dialog, ss_textedit
 from core.themes import P
 
 
@@ -22,12 +33,12 @@ class UpdateDialogsMixin:
         layout.setSpacing(12)
 
         title = QLabel(self.t("updates_changelog_title", version=info.get("latest_version", "")))
-        title.setFont(QFont("Segoe UI", 17, QFont.Weight.Bold))
+        title.setFont(ui_font(TypeSize.ANNOUNCEMENT, QFont.Weight.Bold))
         title.setStyleSheet(f"color: {P['accent']}; background: transparent;")
         layout.addWidget(title)
 
         summary = QLabel(message)
-        summary.setFont(QFont("Segoe UI", 10))
+        summary.setFont(ui_font(TypeSize.BODY))
         summary.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
         summary.setWordWrap(True)
         layout.addWidget(summary)
@@ -36,19 +47,19 @@ class UpdateDialogsMixin:
 
         if not info.get("asset_url"):
             no_asset = QLabel(self.t("updates_no_download_asset_dialog"))
-            no_asset.setFont(QFont("Segoe UI", 10))
+            no_asset.setFont(ui_font(TypeSize.BODY))
             no_asset.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
             no_asset.setWordWrap(True)
             layout.addWidget(no_asset)
         elif not can_auto_install:
             manual_only = QLabel(self.t("updates_manual_install_only"))
-            manual_only.setFont(QFont("Segoe UI", 10))
+            manual_only.setFont(ui_font(TypeSize.BODY))
             manual_only.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
             manual_only.setWordWrap(True)
             layout.addWidget(manual_only)
 
         changelog_label = QLabel(self.t("updates_changelog_label"))
-        changelog_label.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        changelog_label.setFont(ui_font(TypeSize.CODE, QFont.Weight.Bold))
         changelog_label.setStyleSheet(f"color: {P['secondary']}; background: transparent;")
         layout.addWidget(changelog_label)
 
@@ -56,7 +67,7 @@ class UpdateDialogsMixin:
         changelog = QTextEdit()
         changelog.setReadOnly(True)
         changelog.setMinimumHeight(260)
-        changelog.setStyleSheet(ss_textedit())
+        configure_textedit(changelog)
         try:
             changelog.setMarkdown(body)
         except Exception:
@@ -65,14 +76,12 @@ class UpdateDialogsMixin:
 
         button_row = QHBoxLayout()
         button_row.setContentsMargins(0, 2, 0, 0)
-        button_row.setSpacing(8)
+        button_row.setSpacing(Size.GAP)
         button_row.addStretch()
 
         def add_dialog_button(text, action, accent=False):
             btn = QPushButton(text)
-            btn.setFixedHeight(32)
-            btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold if accent else QFont.Weight.Normal))
-            btn.setStyleSheet(ss_btn(accent=accent))
+            configure_button(btn, accent=accent, height=32)
             btn.clicked.connect(lambda _checked=False, a=action: (result.update(action=a), dialog.accept()))
             button_row.addWidget(btn)
             return btn
@@ -82,9 +91,7 @@ class UpdateDialogsMixin:
         if can_auto_install:
             add_dialog_button(self.t("updates_install_now"), "download", accent=True)
         cancel_btn = QPushButton(self.t("unsaved_changes_cancel"))
-        cancel_btn.setFixedHeight(32)
-        cancel_btn.setFont(QFont("Segoe UI", 10))
-        cancel_btn.setStyleSheet(ss_btn())
+        configure_button(cancel_btn, height=32)
         cancel_btn.clicked.connect(dialog.reject)
         button_row.addWidget(cancel_btn)
 

@@ -1,3 +1,39 @@
+from core.design_tokens import (
+    Insets,
+    LayoutRole,
+    Size,
+    TypeSize,
+    mono_font,
+    ui_font,
+)
+from core.style_helpers import (
+    add_editor_card_title,
+    make_editor_card,
+    make_editor_field,
+    make_empty_state,
+    ss_bg_dark,
+    ss_dim_label,
+    ss_main_label,
+    ss_panel,
+    ss_section_label,
+    ss_sidebar_btn,
+    ss_transparent,
+)
+from core.ui.editor_widgets import (
+    EditorActionRow,
+    EditorListRow,
+    EditorSeparator,
+    EditorSidebar,
+    EditorToolbar,
+    configure_button,
+    configure_file_label,
+    configure_input,
+    configure_layout,
+    configure_scrollarea,
+    configure_search,
+)
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.editor_actions import commit_save_path, editor_path, install_file_actions
 import os
 import copy
 import json
@@ -11,12 +47,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
 from core.themes import P
-from core.style_helpers import (
-    ss_btn, ss_accent_sep, ss_input, ss_file_label,
-    ss_scrollarea, ss_scrollarea_transparent, ss_editor_card, ss_field_label,
-    ss_main_label, ss_dim_label, ss_section_label, ss_panel_title,
-    ss_transparent, make_empty_state,
-)
 from core.editor_file_state import set_file_label, set_file_label_empty
 from core.editor_diff import ChangeItem
 from core.editor_host import confirm_editor_change_summary, notify_editor_file_loaded
@@ -62,120 +92,104 @@ class CharacterStatsEditor(QWidget):
         self._load_error_signal.connect(self._on_load_error)
 
         self._build_ui()
+        install_file_actions(self, self._save_btn, save_to=lambda path: self._save_file(target_path=path))
+        install_editor_chrome(self)
 
     def _build_ui(self):
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
+        configure_layout(root_layout, LayoutRole.ROOT)
 
         # Top bar
-        top = QFrame()
-        top.setFixedHeight(46)
-        top.setStyleSheet(f"background-color: {P['bg_panel']};")
-        top_layout = QHBoxLayout(top)
-        top_layout.setContentsMargins(12, 8, 12, 8)
-        top_layout.setSpacing(4)
+        top = EditorToolbar()
+
+
+        top_layout = top.content_layout
+
 
         open_btn = QPushButton(self.t("btn_open_file"))
-        open_btn.setFixedHeight(30)
-        open_btn.setFont(QFont("Segoe UI", 10))
-        open_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(open_btn, accent=True)
         open_btn.clicked.connect(lambda _checked=False: self._load_file())
+        open_btn.setProperty("designAction", 'open')
         top_layout.addWidget(open_btn)
 
         self._save_btn = QPushButton(self.t("btn_save_file"))
-        self._save_btn.setFixedHeight(30)
-        self._save_btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self._save_btn.setEnabled(False)
-        self._save_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._save_btn, accent=True)
         self._save_btn.clicked.connect(self._save_file)
         top_layout.addWidget(self._save_btn)
 
         self._file_label = QLabel(self.t("no_file_loaded"))
-        self._file_label.setFont(QFont("Consolas", 12))
-        self._file_label.setStyleSheet(ss_file_label())
+
+        configure_file_label(self._file_label)
         top_layout.addWidget(self._file_label)
         top_layout.addStretch()
 
         root_layout.addWidget(top)
 
         # Separator
-        sep = QFrame()
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
+        sep = EditorSeparator(accent=True)
+
+
         root_layout.addWidget(sep)
 
         # Main area: character list + editor
         main = QWidget()
         main_layout = QHBoxLayout(main)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        configure_layout(main_layout, LayoutRole.ROOT)
 
         # Character list sidebar
-        list_frame = QFrame()
-        list_frame.setFixedWidth(260)
-        list_frame.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; }}")
-        list_vlayout = QVBoxLayout(list_frame)
-        list_vlayout.setContentsMargins(8, 8, 8, 4)
-        list_vlayout.setSpacing(4)
+        list_frame = EditorSidebar()
+
+
+        list_vlayout = list_frame.content_layout
+
 
         # Search
         self._search_entry = QLineEdit()
-        self._search_entry.setPlaceholderText(self.t("search_placeholder"))
-        self._search_entry.setFixedHeight(32)
-        self._search_entry.setFont(QFont("Segoe UI", 13))
-        self._search_entry.setStyleSheet(
-            f"QLineEdit {{ background-color: {P['bg_card']}; border: 1px solid {P['border']}; "
-            f"color: {P['text_main']}; padding: 2px 6px; border-radius: 4px; }}"
-        )
+        configure_search(self._search_entry)
         self._search_entry.textChanged.connect(self._filter_list)
         list_vlayout.addWidget(self._search_entry)
 
         # Action buttons
-        actions_frame = QWidget()
-        actions_frame.setStyleSheet("background: transparent;")
-        actions_layout = QHBoxLayout(actions_frame)
-        actions_layout.setContentsMargins(0, 2, 0, 4)
-        actions_layout.setSpacing(4)
+        actions_frame = EditorActionRow()
 
-        btn_font = QFont("Segoe UI", 10)
+        actions_layout = actions_frame.content_layout
+
+
+        btn_font = ui_font(TypeSize.BODY)
 
         self._add_btn = QPushButton(self.t("btn_new"))
-        self._add_btn.setFixedHeight(28)
-        self._add_btn.setFont(btn_font)
         self._add_btn.setEnabled(False)
-        self._add_btn.setStyleSheet(ss_btn())
+        configure_button(self._add_btn, height=Size.COMPACT_CONTROL)
         self._add_btn.clicked.connect(self._add_new_char)
+        self._add_btn.setProperty("designAction", 'new')
         actions_layout.addWidget(self._add_btn, 1)
 
         self._dup_btn = QPushButton(self.t("btn_duplicate"))
-        self._dup_btn.setFixedHeight(28)
-        self._dup_btn.setFont(btn_font)
         self._dup_btn.setEnabled(False)
-        self._dup_btn.setStyleSheet(ss_btn())
+        configure_button(self._dup_btn, height=Size.COMPACT_CONTROL)
         self._dup_btn.clicked.connect(self._duplicate_char)
+        self._dup_btn.setProperty("designAction", 'duplicate')
         actions_layout.addWidget(self._dup_btn, 1)
 
         self._del_btn = QPushButton(self.t("btn_delete"))
-        self._del_btn.setFixedHeight(28)
-        self._del_btn.setFont(btn_font)
         self._del_btn.setEnabled(False)
-        self._del_btn.setStyleSheet(ss_btn(danger=True))
+        configure_button(self._del_btn, danger=True, height=Size.COMPACT_CONTROL)
         self._del_btn.clicked.connect(self._delete_char)
+        self._del_btn.setProperty("designAction", 'delete')
         actions_layout.addWidget(self._del_btn, 1)
 
         list_vlayout.addWidget(actions_frame)
 
         # Scrollable character list
         self._char_scroll = QScrollArea()
-        self._char_scroll.setWidgetResizable(True)
-        self._char_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._char_scroll.setStyleSheet(ss_scrollarea_transparent())
+
+
+        configure_scrollarea(self._char_scroll, transparent=True)
         self._char_list_widget = QWidget()
-        self._char_list_widget.setStyleSheet("background-color: transparent;")
+        self._char_list_widget.setStyleSheet(ss_transparent())
         self._char_list_layout = QVBoxLayout(self._char_list_widget)
-        self._char_list_layout.setContentsMargins(0, 0, 0, 0)
-        self._char_list_layout.setSpacing(1)
+        configure_layout(self._char_list_layout, LayoutRole.LIST)
         self._char_list_layout.addStretch()
         self._char_scroll.setWidget(self._char_list_widget)
         list_vlayout.addWidget(self._char_scroll)
@@ -183,21 +197,20 @@ class CharacterStatsEditor(QWidget):
         main_layout.addWidget(list_frame)
 
         # Thin divider between sidebar and editor
-        divider = QFrame()
-        divider.setFixedWidth(1)
-        divider.setStyleSheet(f"background-color: {P['mid']};")
+        divider = EditorSeparator(orientation=Qt.Orientation.Vertical)
+
+
         main_layout.addWidget(divider)
 
         # Editor panel (scrollable)
         self._editor_scroll = QScrollArea()
-        self._editor_scroll.setWidgetResizable(True)
-        self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._editor_scroll.setStyleSheet(ss_scrollarea())
+
+
+        configure_scrollarea(self._editor_scroll)
         self._editor_widget = QWidget()
-        self._editor_widget.setStyleSheet(f"background-color: {P['bg_dark']};")
+        self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
-        self._editor_layout.setSpacing(0)
+        configure_layout(self._editor_layout, LayoutRole.PAGE)
         self._editor_scroll.setWidget(self._editor_widget)
 
         self._show_placeholder()
@@ -290,26 +303,26 @@ class CharacterStatsEditor(QWidget):
         self._field_edit_order = []
 
         hdr = QFrame()
-        hdr.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
+        hdr.setStyleSheet(ss_panel())
         hdr_layout = QVBoxLayout(hdr)
-        hdr_layout.setContentsMargins(16, 14, 16, 14)
+        hdr_layout.setContentsMargins(*Insets.CARD)
         hdr_layout.addWidget(SkeletonBar(height=36, corner_radius=5))
         self._editor_layout.addWidget(hdr)
 
         for _ in range(3):
             sec = QFrame()
-            sec.setStyleSheet(f"QFrame {{ background-color: {P['bg_panel']}; border-radius: 10px; }}")
+            sec.setStyleSheet(ss_panel())
             sec_layout = QVBoxLayout(sec)
-            sec_layout.setContentsMargins(12, 12, 12, 12)
+            sec_layout.setContentsMargins(*Insets.PAGE)
 
             g = QWidget()
             g_layout = QGridLayout(g)
-            g_layout.setContentsMargins(0, 0, 0, 0)
+            g_layout.setContentsMargins(*Insets.NONE)
             for col in range(3):
                 f = QWidget()
                 f_layout = QVBoxLayout(f)
                 f_layout.setContentsMargins(8, 0, 8, 0)
-                f_layout.setSpacing(4)
+                f_layout.setSpacing(Size.GAP_SM)
                 f_layout.addWidget(SkeletonBar(height=11, corner_radius=3))
                 f_layout.addWidget(SkeletonBar(height=30, corner_radius=4))
                 g_layout.addWidget(f, 0, col)
@@ -347,28 +360,28 @@ class CharacterStatsEditor(QWidget):
         self._del_btn.setEnabled(True)
         self._populate_list()
 
-    def _save_file(self):
+    def _save_file(self, target_path=None):
+        save_path = target_path or editor_path(self)
         if not self._xfbin_data:
             return
         self._apply_fields()
-        if not self._filepath:
+        if not save_path:
             return
         if not confirm_editor_change_summary(self):
             return
         try:
-            path = self._filepath
+            path = save_path
             save_xfbin(path, self._xfbin_data, self._characters)
             labels = {char['char_id']: char['name'] for char in self._characters}
             with open(self._labels_path(path), 'w', encoding='utf-8') as f:
                 json.dump(labels, f, ensure_ascii=False, indent=2)
             self._saved_characters = copy.deepcopy(self._characters)
+            commit_save_path(self, save_path)
             self._dirty = False
             set_file_label(self._file_label, path)
-            QMessageBox.information(self, self.t("dlg_title_success"),
-                                    self.t("msg_save_success", path=os.path.basename(path)))
+            QMessageBox.information(self, self.t('dlg_title_success'), self.t('msg_save_success', path=os.path.basename(path)))
         except Exception as e:
-            QMessageBox.critical(self, self.t("dlg_title_error"),
-                                 self.t("msg_save_error", error=e))
+            QMessageBox.critical(self, self.t('dlg_title_error'), self.t('msg_save_error', error=e))
 
     # Character list
 
@@ -384,30 +397,17 @@ class CharacterStatsEditor(QWidget):
             self._select_char(self._characters[0])
 
     def _make_char_button(self, char):
-        btn = QPushButton()
-        btn.setFixedHeight(44)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet(
-            f"QPushButton {{ background-color: transparent; border-radius: 6px; "
-            f"text-align: left; padding: 0px; border: none; }} "
-            f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
-        )
+        btn = EditorListRow()
 
-        btn_layout = QVBoxLayout(btn)
-        btn_layout.setContentsMargins(10, 3, 10, 3)
-        btn_layout.setSpacing(0)
 
-        name_lbl = QLabel(char['name'])
-        name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        name_lbl.setStyleSheet(f"color: {P['text_main']}; background: transparent;")
-        name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        btn_layout.addWidget(name_lbl)
+        btn_layout = btn.content_layout
 
-        id_lbl = QLabel(char['char_id'])
-        id_lbl.setFont(QFont("Consolas", 11))
-        id_lbl.setStyleSheet(f"color: {P['text_dim']}; background: transparent;")
-        id_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        btn_layout.addWidget(id_lbl)
+
+        name_lbl = btn.add_title(char['name'])
+
+
+        id_lbl = btn.add_subtitle(char['char_id'])
+
 
         btn.clicked.connect(lambda checked=False, c=char: self._select_char(c))
         return btn
@@ -425,15 +425,11 @@ class CharacterStatsEditor(QWidget):
             try:
                 if c is char:
                     btn.setStyleSheet(
-                        f"QPushButton {{ background-color: {P['bg_card']}; border-radius: 6px; "
-                        f"text-align: left; padding: 0px; border: none; }} "
-                        f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
+                        ss_sidebar_btn(True)
                     )
                 else:
                     btn.setStyleSheet(
-                        f"QPushButton {{ background-color: transparent; border-radius: 6px; "
-                        f"text-align: left; padding: 0px; border: none; }} "
-                        f"QPushButton:hover {{ background-color: {P['bg_card_hov']}; }}"
+                        ss_sidebar_btn(False)
                     )
             except Exception:
                 pass
@@ -467,8 +463,6 @@ class CharacterStatsEditor(QWidget):
                         char['bones'][bi][field] = val
                     else:
                         char['bones'][bi][field] = int(val)
-                elif parts[0] == 'uf':
-                    char['unk_floats'][int(parts[1])] = float(val)
                 elif key in ('dmg_scaling_1', 'dmg_scaling_2', 'dmg_scaling_3'):
                     char[key] = float(val)
                 elif key == 'char_id':
@@ -502,59 +496,14 @@ class CharacterStatsEditor(QWidget):
 
     # Editor
 
-    def _make_editor_card(self, margins=(16, 14, 16, 14), spacing=10):
-        card = QFrame()
-        card.setObjectName("EditorCard")
-        card.setStyleSheet(ss_editor_card())
-        inner = QWidget(card)
-        inner.setStyleSheet(ss_transparent())
-        layout = QVBoxLayout(inner)
-        layout.setContentsMargins(*margins)
-        layout.setSpacing(spacing)
-        outer = QVBoxLayout(card)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(inner)
-        return card, layout
+    def _make_editor_card(self, margins=Insets.CARD, spacing=Size.CARD_GAP):
+        return make_editor_card(margins=margins, spacing=spacing)
 
     def _add_card_title(self, layout, title, icon_name=None):
-        row = QWidget()
-        row.setStyleSheet(ss_transparent())
-        row_layout = QHBoxLayout(row)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.setSpacing(8)
+        add_editor_card_title(layout, title, icon_name)
 
-        if icon_name:
-            icon = QLabel()
-            icon.setFixedSize(18, 18)
-            icon.setStyleSheet(ss_transparent())
-            icon.setPixmap(qta.icon(icon_name, color=P["accent"]).pixmap(18, 18))
-            row_layout.addWidget(icon)
-
-        lbl = QLabel(title.upper())
-        lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        lbl.setStyleSheet(ss_panel_title())
-        row_layout.addWidget(lbl)
-        row_layout.addStretch()
-        layout.addWidget(row)
-
-    def _make_editor_field(self, label, value, field_key, *, value_font=None, height=30):
-        frame = QWidget()
-        frame.setStyleSheet(ss_transparent())
-        field_layout = QVBoxLayout(frame)
-        field_layout.setContentsMargins(0, 0, 0, 0)
-        field_layout.setSpacing(4)
-
-        lbl = QLabel(label)
-        lbl.setFont(QFont("Segoe UI", 12))
-        lbl.setStyleSheet(ss_field_label())
-        field_layout.addWidget(lbl)
-
-        entry = QLineEdit()
-        entry.setFixedHeight(height)
-        entry.setFont(value_font or QFont("Consolas", 13))
-        entry.setStyleSheet(ss_input())
-        entry.setText(str(value))
-        field_layout.addWidget(entry)
+    def _make_editor_field(self, label, value, field_key, *, value_font=None, height=Size.CONTROL):
+        frame, entry = make_editor_field(label, value, value_font=value_font, height=height)
         self._fields[field_key] = entry
         return frame, entry
 
@@ -562,43 +511,38 @@ class CharacterStatsEditor(QWidget):
         self._clear_editor()
         self._fields = {}
         self._field_edit_order = []
-        self._editor_layout.setContentsMargins(10, 8, 10, 0)
-        self._editor_layout.setSpacing(12)
+        configure_layout(self._editor_layout, LayoutRole.PAGE)
 
         overview_lbl = QLabel("OVERVIEW")
-        overview_lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        overview_lbl.setFont(ui_font(TypeSize.LABEL, QFont.Weight.Bold))
         overview_lbl.setStyleSheet(ss_section_label())
         self._editor_layout.addWidget(overview_lbl)
 
         overview_grid = QGridLayout()
-        overview_grid.setContentsMargins(0, 0, 0, 0)
+        overview_grid.setContentsMargins(*Insets.NONE)
         overview_grid.setHorizontalSpacing(12)
         overview_grid.setVerticalSpacing(0)
-        overview_font = QFont("Consolas", 16)
-        name_font = QFont("Segoe UI", 18, QFont.Weight.Bold)
+        overview_font = mono_font(TypeSize.LARGE)
+        name_font = ui_font(TypeSize.DISPLAY, QFont.Weight.Bold)
         for col, (key, label, value, font) in enumerate([
             ("_display_name", self.t("label_display_name_cosmetic"), char['name'], name_font),
             ("char_id", self.t("label_char_id_saved"), char['char_id'], overview_font),
             ("param_id", self.t("label_param_id"), char['param_id'], overview_font),
         ]):
-            card, card_layout = self._make_editor_card(margins=(16, 14, 16, 14), spacing=6)
-            field, _ = self._make_editor_field(label, value, key, value_font=font, height=38)
+            card, card_layout = self._make_editor_card()
+            field, _ = self._make_editor_field(label, value, key, value_font=font, height=Size.LARGE_CONTROL)
             card_layout.addWidget(field)
             overview_grid.addWidget(card, 0, col)
             overview_grid.setColumnStretch(col, 1)
         self._editor_layout.addLayout(overview_grid)
 
         cards_grid = QGridLayout()
-        cards_grid.setContentsMargins(0, 0, 0, 0)
-        cards_grid.setHorizontalSpacing(12)
-        cards_grid.setVerticalSpacing(12)
+        configure_layout(cards_grid, LayoutRole.GRID)
 
         stats_frame, stats_layout = self._make_editor_card()
         self._add_card_title(stats_layout, self.t("section_combat_stats"), "fa6s.khanda")
         stats_grid = QGridLayout()
-        stats_grid.setContentsMargins(0, 4, 0, 0)
-        stats_grid.setHorizontalSpacing(16)
-        stats_grid.setVerticalSpacing(10)
+        configure_layout(stats_grid, LayoutRole.GRID_TITLED)
         for i, (key, label, val, span) in enumerate([
             ("hp", self.t("field_hp"), char['hp'], 1),
             ("gha_damage", self.t("field_gha_damage"), char['gha_damage'], 1),
@@ -635,33 +579,15 @@ class CharacterStatsEditor(QWidget):
             col_layout.addWidget(field)
         cards_grid.addWidget(col_frame, 0, 2)
 
-        uf_frame, uf_layout = self._make_editor_card()
-        self._add_card_title(uf_layout, self.t("section_unk_floats"), "fa6s.circle-question")
-        uf_grid = QGridLayout()
-        uf_grid.setContentsMargins(0, 4, 0, 0)
-        uf_grid.setHorizontalSpacing(16)
-        uf_grid.setVerticalSpacing(10)
-        for i, val in enumerate(char['unk_floats']):
-            row, col = divmod(i, 4)
-            field, _ = self._make_editor_field(
-                self.t("field_unk_float_n", n=i + 1),
-                ui_text("ui_char_stats_value", p0=val),
-                f"uf.{i}",
-            )
-            uf_grid.addWidget(field, row, col)
-            uf_grid.setColumnStretch(col, 1)
-        uf_layout.addLayout(uf_grid)
-        cards_grid.addWidget(uf_frame, 1, 0)
-
         bones_frame, bones_layout = self._make_editor_card()
         self._add_card_title(bones_layout, self.t("section_hitbox_bones"), "fa6s.crosshairs")
         bones_grid = QGridLayout()
-        bones_grid.setContentsMargins(0, 4, 0, 0)
-        bones_grid.setHorizontalSpacing(12)
-        bones_grid.setVerticalSpacing(8)
+        bones_grid.setContentsMargins(*Insets.GRID_TITLE)
+        configure_layout(bones_grid, LayoutRole.GRID)
+        bones_grid.setVerticalSpacing(Size.GAP)
         for col, hdr_text in enumerate([self.t("bone_col_bone"), self.t("bone_col_name")]):
             lbl = QLabel(hdr_text)
-            lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+            lbl.setFont(ui_font(TypeSize.CODE, QFont.Weight.Bold))
             lbl.setStyleSheet(ss_dim_label())
             bones_grid.addWidget(lbl, 0, col)
         bones_grid.setColumnStretch(0, 0)
@@ -669,18 +595,16 @@ class CharacterStatsEditor(QWidget):
 
         for bi, bone in enumerate(char['bones']):
             lbl = QLabel(bone['label'])
-            lbl.setFont(QFont("Segoe UI", 12))
+            lbl.setFont(ui_font(TypeSize.LABEL))
             lbl.setStyleSheet(ss_main_label())
             bones_grid.addWidget(lbl, bi + 1, 0)
             entry = QLineEdit()
-            entry.setFixedHeight(28)
-            entry.setFont(QFont("Consolas", 12))
-            entry.setStyleSheet(ss_input())
+            configure_input(entry, monospace=True)
             entry.setText(str(bone['name']))
             bones_grid.addWidget(entry, bi + 1, 1)
             self._fields[f"bone.{bi}.name"] = entry
         bones_layout.addLayout(bones_grid)
-        cards_grid.addWidget(bones_frame, 1, 1, 1, 2)
+        cards_grid.addWidget(bones_frame, 1, 0, 1, 3)
 
         for col in range(3):
             cards_grid.setColumnStretch(col, 1)
@@ -699,9 +623,8 @@ class CharacterStatsEditor(QWidget):
             'dash_jump_dist':   self.t("field_dash_jump_dist"),
         }
         movement_grid = QGridLayout()
-        movement_grid.setContentsMargins(0, 0, 0, 0)
-        movement_grid.setHorizontalSpacing(12)
-        movement_grid.setVerticalSpacing(12)
+        movement_grid.setContentsMargins(*Insets.NONE)
+        configure_layout(movement_grid, LayoutRole.GRID)
         for bi, block in enumerate(char['movement_blocks']):
             mf, mf_layout = self._make_editor_card()
             self._add_card_title(
@@ -710,9 +633,7 @@ class CharacterStatsEditor(QWidget):
                 "fa6s.person-running",
             )
             mg = QGridLayout()
-            mg.setContentsMargins(0, 4, 0, 0)
-            mg.setHorizontalSpacing(16)
-            mg.setVerticalSpacing(10)
+            configure_layout(mg, LayoutRole.GRID_TITLED)
 
             fields_list = ['fwd_walk', 'bwd_walk', 'fwd_run', 'bwd_run', 'gravity_strength',
                            'jump_upward_vel', 'jump_forward_vel', 'dash_jump_height', 'dash_jump_dist']
@@ -738,9 +659,7 @@ class CharacterStatsEditor(QWidget):
         sf, sf_layout = self._make_editor_card()
         self._add_card_title(sf_layout, self.t("section_special_props"), "fa6s.sliders")
         sg = QGridLayout()
-        sg.setContentsMargins(0, 4, 0, 0)
-        sg.setHorizontalSpacing(16)
-        sg.setVerticalSpacing(10)
+        configure_layout(sg, LayoutRole.GRID_TITLED)
 
         sp_row0_fields = [
             ("dlc_code",    self.t("field_dlc_code"),    char['dlc_code']),
@@ -748,7 +667,11 @@ class CharacterStatsEditor(QWidget):
             ("corpse_parts", self.t("field_corpse_parts"), char['corpse_parts']),
         ]
         for ci, (key, label, val) in enumerate(sp_row0_fields):
-            f, _ = self._make_editor_field(label, val, key)
+            f, edit = self._make_editor_field(label, val, key)
+            if key in ('dlc_code', 'icon_code'):
+                hint = self.t(f"field_{key}_hint")
+                f.setToolTip(hint)
+                edit.setToolTip(hint)
             sg.addWidget(f, 0, ci)
             sg.setColumnStretch(ci, 1)
 
@@ -770,7 +693,7 @@ class CharacterStatsEditor(QWidget):
 
         spacer = QWidget()
         spacer.setFixedHeight(20)
-        spacer.setStyleSheet("background: transparent;")
+        spacer.setStyleSheet(ss_transparent())
         self._editor_layout.addWidget(spacer)
         self._editor_layout.addStretch()
 
@@ -1081,7 +1004,7 @@ class CharacterStatsEditor(QWidget):
 
     def _add_section(self, title):
         lbl = QLabel(title)
-        lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
-        lbl.setStyleSheet(f"color: {P['secondary']}; background: transparent;")
+        lbl.setFont(ui_font(TypeSize.SECTION, QFont.Weight.Bold))
+        lbl.setStyleSheet(ss_section_label())
         lbl.setContentsMargins(20, 10, 0, 2)
         self._editor_layout.addWidget(lbl)

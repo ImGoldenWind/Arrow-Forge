@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import struct
+import tempfile
 import xml.etree.ElementTree as ET
 
 
@@ -22,12 +24,18 @@ ARCADE_CPU_LEVEL_COUNT = 9
 
 
 def _scan_chunks(raw: bytes) -> list[dict]:
+    if len(raw) < 28 or raw[:4] != b"NUCC":
+        raise ValueError("Not a NUCC XFBIN file")
     chunk_table_size = struct.unpack(">I", raw[16:20])[0]
     offset = 28 + chunk_table_size
+    if offset > len(raw):
+        raise ValueError("Truncated XFBIN chunk table")
     chunks = []
     while offset + 12 <= len(raw):
         chunk_size = struct.unpack(">I", raw[offset:offset + 4])[0]
         map_idx = struct.unpack(">I", raw[offset + 4:offset + 8])[0]
+        if offset + 12 + chunk_size > len(raw):
+            raise ValueError("Truncated XFBIN chunk")
         chunks.append({
             "hdr_offset": offset,
             "data_offset": offset + 12,
@@ -42,10 +50,12 @@ def _scan_chunks(raw: bytes) -> list[dict]:
 
 def _find_xml_chunk(raw: bytes) -> dict:
     for chunk in _scan_chunks(raw):
-        if chunk["map_idx"] != 1 or chunk["chunk_size"] <= 4:
+        if chunk["chunk_size"] <= 4:
             continue
         data_off = chunk["data_offset"]
         payload_size = struct.unpack(">I", raw[data_off:data_off + 4])[0]
+        if payload_size > chunk["chunk_size"] - 4:
+            continue
         payload = raw[data_off + 4:data_off + 4 + payload_size]
         if payload.startswith(b"\xef\xbb\xbf<?xml") or payload.startswith(b"<?xml"):
             result = dict(chunk)
@@ -101,7 +111,14 @@ def _indent(elem: ET.Element, level: int = 0):
 
 def _parse_xml_bytes(xml_bytes: bytes) -> ET.ElementTree:
     text = xml_bytes.decode("utf-8-sig")
-    return ET.ElementTree(ET.fromstring(text))
+    parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True, insert_pis=True))
+    tree = ET.ElementTree(ET.fromstring(text, parser=parser))
+    if tree.getroot().tag != 'Root' or not any(
+            tree.getroot().find(tag) is not None for tag in (
+                'Pattern', 'ConditionDefine', 'ActionDefine', 'StatusDefine',
+                'ComboCondition', 'StiffCondition', 'NextCondition')):
+        raise ValueError("XML is not CPU AI data")
+    return tree
 
 
 def _element_label(element: ET.Element, index: int) -> str:
@@ -111,7 +128,7 @@ def _element_label(element: ET.Element, index: int) -> str:
         return attrs.get("name") or "Pattern"
     if tag == "BaseParam":
         return "BaseParam"
-    if tag == "Cond":
+    if tag in ("Cond", "Status", "Combo", "Stiff", "Next"):
         uid = attrs.get("uid") or attrs.get("name") or "Cond"
         return uid
     if tag == "Action":
@@ -136,7 +153,7 @@ def _element_label(element: ET.Element, index: int) -> str:
 def _element_subtitle(element: ET.Element) -> str:
     tag = _strip_namespace(element.tag)
     attrs = element.attrib
-    if tag in ("Cond", "Action"):
+    if tag in ("Cond", "Action", "Status", "Combo", "Stiff", "Next"):
         return (attrs.get("name") or tag).strip()
     if tag == "Data":
         parts = []
@@ -164,6 +181,8 @@ def _element_group(element: ET.Element) -> str:
         return "actions"
     if tag == "Data":
         return "action_table"
+    if tag in ('Status', 'Combo', 'Stiff', 'Next'):
+        return 'tokens'
     return "xml"
 
 
@@ -180,8 +199,8 @@ def editable_elements(root: ET.Element) -> list[dict]:
             "subtitle": _element_subtitle(elem),
         })
 
-    pattern = root.find("Pattern")
-    if pattern is not None:
+    for pattern in root.findall("Pattern"):
+        begin = len(items)
         add(pattern)
         base = pattern.find("BaseParam")
         if base is not None:
@@ -190,6 +209,14 @@ def editable_elements(root: ET.Element) -> list[dict]:
         if table is not None:
             for elem in table.findall("Data"):
                 add(elem)
+        for item in items[begin:]:
+            item['pattern'] = pattern
+            item['pattern_name'] = pattern.get('name', '')
+
+    for section, tag in (('StatusDefine', 'Status'), ('ComboCondition', 'Combo'),
+                         ('StiffCondition', 'Stiff'), ('NextCondition', 'Next')):
+        for elem in root.findall(f'{section}/{tag}'):
+            add(elem)
 
     cond_define = root.find("ConditionDefine")
     if cond_define is not None:
@@ -203,7 +230,7 @@ def editable_elements(root: ET.Element) -> list[dict]:
 
     if not items:
         for elem in root.iter():
-            if elem is not root:
+            if elem is not root and isinstance(elem.tag, str):
                 add(elem)
 
     return items
@@ -272,11 +299,15 @@ def parse_arcade_cpu_xfbin(filepath: str) -> tuple[bytearray, dict]:
 
 
 def save_cpu_xfbin(filepath: str, raw: bytearray, chunk: dict, tree: ET.ElementTree):
-    root = tree.getroot()
-    _indent(root)
-    xml_text = XML_DECL + ET.tostring(root, encoding="unicode", short_empty_elements=True)
-    xml_bytes = b"\xef\xbb\xbf" + xml_text.encode("utf-8")
-    payload = struct.pack(">I", len(xml_bytes)) + xml_bytes
+    start = chunk['data_offset'] + 4
+    original_xml = bytes(raw[start:start + chunk['xml_size']])
+    original = _parse_xml_bytes(original_xml)
+    validate_cpu_tree(tree, original)
+    # Opening/selecting/saving must not rewrite BOM, whitespace, comments or XML
+    # spelling. Attribute-only edits patch the original opening tags in place.
+    xml_bytes = _encode_xml_edits(original_xml, original, tree)
+    suffix = raw[start + chunk['xml_size']:chunk['data_offset'] + chunk['chunk_size']]
+    payload = struct.pack(">I", len(xml_bytes)) + xml_bytes + suffix
 
     hdr_off = chunk["hdr_offset"]
     data_off = chunk["data_offset"]
@@ -287,8 +318,110 @@ def save_cpu_xfbin(filepath: str, raw: bytearray, chunk: dict, tree: ET.ElementT
     struct.pack_into(">I", new_hdr, 0, len(payload))
     out = raw[:hdr_off] + new_hdr + payload + raw[old_end:]
 
-    with open(filepath, "wb") as f:
-        f.write(out)
+    _atomic_write(filepath, out)
+
+
+NUMERIC_FIELDS = set(('tid rid Rate Delay2 Delay3 Delay4 Delay5 StiffMin StiffMax '
+                      'NextRate Next keepTime quitTime strength level crouch stand '
+                      'general1 general2 general3 GuardRate JustGuardRate NearInterval '
+                      'FarInterval RecoverDown ThrowCounter AgainstDio RisAbandonNear '
+                      'RisAbandonMiddle RisAbandonFar RisAbandonNearCounter '
+                      'RisAbandonMiddleCounter RisAbandonFarCounter').split())
+
+
+def validate_cpu_tree(tree, original=None):
+    """Check representable integer fields and newly introduced duplicate IDs.
+
+    Native loaders use signed decimal conversion; do not clamp undocumented
+    gameplay ranges or reject duplicate rule IDs already present in stock data.
+    Rule IDs belong to their own ActionTable, not every difficulty at once.
+    """
+    from collections import Counter
+    parents = list(tree.getroot().iter())
+    old_parents = list(original.getroot().iter()) if original is not None else []
+    for parent in parents:
+        if not isinstance(parent.tag, str):
+            continue
+        for key, value in parent.attrib.items():
+            if key in NUMERIC_FIELDS and (not re.fullmatch(r'[+-]?[0-9]+', value)
+                                         or not -2147483648 <= int(value) <= 2147483647):
+                raise ValueError(f'{parent.tag} {parent.get("rid", parent.get("uid", ""))}: {key} = {value!r}; signed decimal integer required')
+            if any(ord(c) < 32 and c not in '\t\r\n' for c in value):
+                raise ValueError(f'{key}: invalid XML control character')
+        for tag, key in (('Data', 'rid'), ('Cond', 'tid'), ('Cond', 'uid'),
+                         ('Action', 'tid'), ('Action', 'uid')):
+            children = parent.findall(tag)
+            if not children:
+                continue
+            # A matching parent is selected by structural position among the
+            # same container tags; added/deleted rows do not shift that lookup.
+            peers = [p for p in parents if p.tag == parent.tag]
+            old_peers = [p for p in old_parents if p.tag == parent.tag]
+            index = next(i for i, p in enumerate(peers) if p is parent)
+            before = Counter(e.get(key) for e in old_peers[index].findall(tag)) if index < len(old_peers) else Counter()
+            counts = Counter(e.get(key) for e in children)
+            for value, count in counts.items():
+                if value is not None and (not value.strip() or count > max(1, before[value])):
+                    raise ValueError(f'{tag}: {key} {value!r} must be unique and nonempty')
+
+
+def _encode_xml_edits(xml_bytes, original, tree):
+    old_nodes, new_nodes = list(original.getroot().iter()), list(tree.getroot().iter())
+    if ET.tostring(original.getroot()) == ET.tostring(tree.getroot()):
+        return xml_bytes
+    same_structure = len(old_nodes) == len(new_nodes) and all(
+        a.tag == b.tag and a.text == b.text and a.tail == b.tail
+        and list(a.attrib) == list(b.attrib) for a, b in zip(old_nodes, new_nodes))
+    if same_structure:
+        from xml.parsers import expat
+        from xml.sax.saxutils import escape
+        positions = []
+        parser = expat.ParserCreate()
+        parser.StartElementHandler = lambda *_: positions.append(parser.CurrentByteIndex)
+        parser.Parse(xml_bytes, True)
+        pairs = [(a, b) for a, b in zip(old_nodes, new_nodes) if isinstance(a.tag, str)]
+        patches = []
+        for start, (a, b) in zip(positions, pairs):
+            if a.attrib == b.attrib:
+                continue
+            # Quotes may contain a literal >, so match the entire opening tag.
+            match = re.match(rb'<(?:[^\'\">]|\'[^\']*\'|"[^"]*")*>', xml_bytes[start:])
+            if match is None:
+                raise ValueError('Cannot locate XML opening tag')
+            tag_bytes = match[0]
+            for key, value in b.attrib.items():
+                if value == a.get(key):
+                    continue
+                pat = rb'(?P<head>\s' + re.escape(key.encode()) + rb'\s*=\s*)(?P<q>[\'\"])(?P<v>.*?)(?P=q)'
+                def replacement(m):
+                    quote = m['q']
+                    encoded = escape(value, {'"': '&quot;', "'": '&apos;', '\n': '&#10;', '\r': '&#13;', '\t': '&#9;'}).encode('utf-8')
+                    return m['head'] + quote + encoded + quote
+                tag_bytes = re.sub(pat, replacement, tag_bytes, count=1, flags=re.S)
+            patches.append((start, start + len(match[0]), tag_bytes))
+        out = bytearray(xml_bytes)
+        for start, end, value in reversed(patches):
+            out[start:end] = value
+        return bytes(out)
+    # Structural edits retain comments, unknown nodes/attributes and authored
+    # whitespace; indenting the live tree would silently mutate the editor.
+    bom = b'\xef\xbb\xbf' if xml_bytes.startswith(b'\xef\xbb\xbf') else b''
+    decl = re.search(rb'<\?xml[^?]*\?>\s*', xml_bytes)
+    result = bom + (decl[0] if decl else b'') + ET.tostring(tree.getroot(), encoding='utf-8')
+    _parse_xml_bytes(result)
+    return result
+
+
+def _atomic_write(filepath, data):
+    destination = os.path.abspath(filepath)
+    fd, temporary = tempfile.mkstemp(prefix='.cpu-', suffix='.tmp', dir=os.path.dirname(destination))
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def make_default_arcade_cpu_entry(source: dict | None = None) -> dict:

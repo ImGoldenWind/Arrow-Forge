@@ -1,2229 +1,1044 @@
-"""
-XFBIN Audio Editor  –  battle.xfbin / NUS3BANK sound editor
-
-Supports XFBIN containers that embed NUS3BANK sound banks (CC2 / ASBR).
-Features:
-  • Open any .xfbin containing NUS3BANK chunks
-  • List all banks and their sound tones (with search)
-  • Play back individual sounds (decoded via VGAudioCli → WAV)
-  • Export a tone as WAV or as raw BNSF
-  • Import & replace audio from any common format (WAV, MP3, FLAC, OGG…)
-    – converted to BNSF IS14 via VGAudioCli
-  • Edit tone parameters: volume, pitch, pan, loop points
-  • Add / delete tones
-  • Save the modified XFBIN
-"""
-
-import os
+"""Native-preserving NUS3BANK workspace and decoded stream audition."""
+import copy
 import io
-import math
-import wave
+import os
 import struct
+import math
 import threading
-import subprocess
-import tempfile
-
-from PyQt6.QtWidgets import (
-    QWidget, QFrame, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QLineEdit, QScrollArea, QSlider,
-    QFileDialog, QMessageBox, QSizePolicy, QComboBox,
-    QDoubleSpinBox, QSpinBox, QCheckBox,
-    QTabWidget, QProgressBar,
-)
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont, QPainter, QColor, QPen
-
-from core.themes import P
-from core.style_helpers import (
-    TOOLBAR_H, TOOLBAR_BTN_H,
-    add_editor_card_title, make_editor_card, make_editor_field_shell, make_empty_state,
-    ss_btn, ss_accent_label, ss_accent_sep, ss_check, ss_dim_label, ss_field_label,
-    ss_file_label, ss_file_label_loaded, ss_input,
-    ss_scrollarea, ss_scrollarea_transparent, ss_search,
-    ss_bg_dark, ss_bg_panel, ss_sep, ss_sidebar_btn, ss_sidebar_frame, ss_slider,
-    ss_blocking_overlay, ss_blocking_overlay_card, ss_progressbar,
-    ss_transparent,
-)
-from core.editor_file_state import set_file_label, set_file_label_empty
-from core.external_tools import find_vgaudio_cli, find_vgmstream_cli, is_tool_path, tool_command
-from core.skeleton import SkeletonListRow
-from core.settings import create_backup_on_open, load_settings, save_settings, game_files_dialog_dir
+import wave
+from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal, InvalidOperation
+from PyQt6.QtCore import Qt, pyqtSignal, QSignalBlocker, QTimer
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QLineEdit, QScrollArea, QComboBox, QCheckBox, QFileDialog, QMessageBox,
+    QSizePolicy)
+from core.audio_tools import AudioCache, analyze_wav, import_pyaudio
+from core.design_tokens import LayoutRole, Size, TypeSize, ui_font
+from core.editor_file_state import set_file_label
 from core.quiet_unlocks import request_and_cascade
-from parsers.nus3bank_parser import (
-    parse_xfbin_audio, save_xfbin_audio,
-    get_tone_bnsf, set_tone_bnsf,
-    parse_bnsf_meta, build_bnsf,
-    Nus3Bank, ToneEntry, PARAMS_SIZE,
-    _align_up,
-)
+from core.settings import create_backup_on_open, game_files_dialog_dir
+from core.external_tools import find_vgmstream_cli, find_vgaudio_cli
+from core.style_helpers import (make_editor_card, add_editor_card_title, make_editor_field_shell,
+    make_empty_state, ss_bg_dark, ss_dim_label, ss_error_label, ss_check, ss_input_validation)
 from core.translations import ui_text
+from core.ui.audio_waveform import AudioWaveform
+from core.ui.editor_actions import install_file_actions, commit_save_path, editor_path
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.editor_widgets import (EditorToolbar, EditorSidebar, EditorSeparator, EditorActionRow,
+    EditorFilterCombo, configure_layout, configure_button, configure_input, configure_file_label,
+    configure_search, configure_scrollarea, configure_card, fit_scroll_page)
+from core.ui.number_input import FloatSliderInput
+from core.ui.record_list import RecordListModel, EditorRecordList
+from core.ui.timeline_controls import timeline_icon_button
+from core.xfbin_audio_tools import (decode_audio, import_audio, stream_loop, set_stream_loop,
+    tone_state, export_filename)
+from parsers.nus3bank_parser import (parse_xfbin_audio, save_xfbin_audio, set_tone_bnsf,
+    parse_audio_meta, ToneEntry)
+
+_AUDIO_OPEN_FILTER = 'Audio (*.wav *.mp3 *.flac *.ogg *.opus *.aiff *.aif *.m4a *.aac *.wv *.wma *.bnsf *.hca *.adx *.bin);;All files (*)'
 
 
-def _truncate(text: str, limit: int = 28) -> str:
-    text = str(text)
-    return text if len(text) <= limit else text[: max(0, limit - 3)].rstrip() + "..."
+# Display-unit conversion; slider spans are authoring conveniences, not file limits.
+_DISPLAY_UNITS = {'pitch_cents': (Decimal('.01'), Decimal(0)),
+                  'volume': (Decimal(100), Decimal(0)),
+                  'pitch': (Decimal(-100), Decimal(100)),
+                  'send_level': (Decimal(100), Decimal(0))}
 
 
-# Audio format detection
-
-_AUDIO_MATCHERS = [
-    (lambda d: d[:4] == b'RIFF' and d[8:12] == b'WAVE',               '.wav',  'WAV'),
-    (lambda d: d[:3] in (b'ID3', b'\xff\xfb', b'\xff\xf3', b'\xff\xf2'), '.mp3', 'MP3'),
-    (lambda d: d[:4] == b'fLaC',                                        '.flac', 'FLAC'),
-    (lambda d: d[:4] == b'OggS',                                        '.ogg',  'OGG'),
-    (lambda d: d[:4] == b'FORM' and d[8:12] in (b'AIFF', b'AIFC'),     '.aiff', 'AIFF'),
-    (lambda d: d[:2] in (b'\xff\xf1', b'\xff\xf9'),                    '.aac',  'AAC'),
-    (lambda d: d[:4] == b'wvpk',                                        '.wv',   'WV'),
-    (lambda d: d[:8] == b'\x30\x26\xb2\x75\x8e\x66\xcf\x11',          '.wma',  'WMA'),
-    (lambda d: d[:2] == b'\x80\x00',                                    '.adx',  'ADX'),
-    (lambda d: d[:4] == b'BNSF',                                        '.bnsf', 'BNSF'),
-    (lambda d: d[:3] == b'HCA' or d[:3] == bytes([0xC8,0xC3,0xC1]),    '.hca',  'HCA'),
-    (lambda d: len(d) > 8 and d[4:8] == b'ftyp',                       '.m4a',  'M4A'),
-]
-
-_AUDIO_EXTENSIONS = {
-    '.wav', '.mp3', '.flac', '.ogg', '.opus', '.aiff', '.aif',
-    '.m4a', '.aac', '.wv', '.wma', '.bnsf', '.hca', '.adx', '.bin',
-}
-
-_AUDIO_OPEN_FILTER = (
-    "Audio files (*.wav *.mp3 *.flac *.ogg *.opus *.aiff *.aif *.m4a *.aac "
-    "*.wv *.wma *.bnsf *.hca *.adx *.bin);;All files (*.*)"
-)
+def _display_text(name, value):
+    scale, offset = _DISPLAY_UNITS.get(name, (Decimal(1), Decimal(0)))
+    number = Decimal(str(value))
+    return format(float(number * scale + offset), '.7g') if number.is_finite() else str(value)
 
 
-def _ensure_file_ext(path: str, ext: str) -> str:
-    return path if os.path.splitext(path)[1] else path + ext
+def _decode_bnsf_to_wav(blob, cli=''):
+    return decode_audio(blob, cli)
 
 
-def _detect_ext(data: bytes, fallback_path: str = '') -> str:
-    h = data[:16]
-    for matcher, ext, _ in _AUDIO_MATCHERS:
-        try:
-            if matcher(h):
-                return ext
-        except Exception:
-            pass
-    fallback_ext = os.path.splitext(fallback_path)[1].lower()
-    if fallback_ext in _AUDIO_EXTENSIONS:
-        return fallback_ext
-    raise ValueError(ui_text("xfa_unknown_audio_format", signature=h[:8].hex()))
+def _detect_audio_tool():
+    return dict(decode=find_vgmstream_cli(), encode=find_vgaudio_cli())
 
 
-def _detect_audio_tool() -> dict:
-    """Find vgmstream for reading and VGAudio for writing."""
-    vgmstream = find_vgmstream_cli()
-    vgaudio = find_vgaudio_cli()
-    
-    return {
-        'decode': vgmstream or vgaudio,
-        'encode': vgaudio
-    }
-
-
-def _detect_vgaudio() -> str:
-    settings = load_settings()
-    cli = settings.get('vgaudio_cli_path', '')
-    if cli and is_tool_path(cli):
-        return cli
-    return _detect_audio_tool().get('encode', '')
-
-
-def _run_vgaudio(cli: str, in_path: str, out_path: str) -> bytes:
-    # Try multiple command-line styles for compatibility with different VGAudioCli versions.
-    # Some versions need the explicit `-i` flag (which triggers magic-byte detection rather
-    # than relying solely on the file extension).
-    cmds = [
-        [*tool_command(cli), '-i', in_path, '-o', out_path],   # newer / explicit input flag
-        [*tool_command(cli), in_path, '-o', out_path],          # older / positional input
-    ]
-    last_err = ''
-    for cmd in cmds:
-        if os.path.isfile(out_path):
-            try:
-                os.remove(out_path)
-            except OSError:
-                pass
-        res = subprocess.run(cmd, capture_output=True, timeout=90)
-        if os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
-            with open(out_path, 'rb') as f:
-                return f.read()
-        raw = (res.stderr or res.stdout or b'').decode(errors='replace').strip()
-        last_err = ui_text("xfa_vgaudio_exit_code", code=res.returncode, details=raw or ui_text("no_output"))
-    raise RuntimeError(last_err)
-
-
-_IMA_STEP_TABLE = [
-    7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28,
-    31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107,
-    118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337,
-    371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963, 1060,
-    1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749,
-    3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132,
-    7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818,
-    18500, 20350, 22385, 24623, 27086, 29794, 32767,
-]
-_IMA_INDEX_TABLE = [-1, -1, -1, -1, 2, 4, 6, 8]
-
-def _run_vgmstream(cli: str, in_path: str, out_path: str) -> bytes:
-    cmd = [*tool_command(cli), '-o', out_path, in_path]
-    res = subprocess.run(cmd, capture_output=True, timeout=30)
-    if os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
-        with open(out_path, 'rb') as f:
-            return f.read()
-    raise RuntimeError(f"vgmstream error: {(res.stderr or b'').decode(errors='replace')}")
-            
-    err = (res.stderr or res.stdout or b'').decode(errors='replace').strip()
-    raise RuntimeError(f"vgmstream error: {err}")
-
-def _decode_is14_python(bnsf_data: bytes) -> bytes:
-    """Pure-Python IS14 (CRI IMA ADPCM) decoder for BNSF containers.
-
-    Fallback used when VGAudioCli is unavailable or does not support BNSF.
-    Handles mono fully; stereo uses standard 4-byte interleave convention.
-    """
-    if len(bnsf_data) < 48 or bnsf_data[:4] != b'BNSF':
-        raise ValueError(ui_text("ui_xfbin_audio_not_a_valid_bnsf_file"))
-
-    sections = {}
-    pos = 12
-    while pos + 8 <= len(bnsf_data):
-        tag = bnsf_data[pos:pos + 4]
-        size = struct.unpack_from(ui_text("ui_char_stats_i"), bnsf_data, pos + 4)[0]
-        data_off = pos + 8
-        data_end = data_off + size
-        if not tag.strip(b'\x00 ') or data_end > len(bnsf_data):
-            break
-        sections[tag] = bnsf_data[data_off:data_end]
-        pos = _align_up(data_end, 4)
-
-    sfmt = sections.get(b'sfmt')
-    raw = sections.get(b'sdat')
-    if sfmt is None or raw is None or len(sfmt) < 20:
-        raise ValueError(ui_text("ui_xfbin_audio_not_a_valid_bnsf_file"))
-
-    channels      = struct.unpack_from(ui_text("ui_char_stats_i"), sfmt, 0)[0]
-    sample_rate   = struct.unpack_from(ui_text("ui_char_stats_i"), sfmt, 4)[0]
-    total_samples = struct.unpack_from(ui_text("ui_char_stats_i"), sfmt, 8)[0]
-
-    if channels < 1 or channels > 2:
-        raise ValueError(f"Unsupported channel count: {channels}")
-
-    # Auto-detect block size: pick smallest standard size that evenly divides raw data
-    block_size = 512
-    for bs in (512, 256, 1024, 128, 2048):
-        if len(raw) % bs == 0:
-            block_size = bs
-            break
-
-    def _decode_nibble(nib, pred, sidx):
-        step = _IMA_STEP_TABLE[sidx]
-        diff = step >> 3
-        if nib & 4: diff += step
-        if nib & 2: diff += step >> 1
-        if nib & 1: diff += step >> 2
-        pred = (pred - diff) if (nib & 8) else (pred + diff)
-        pred = max(-32768, min(32767, pred))
-        sidx = max(0, min(88, sidx + _IMA_INDEX_TABLE[nib & 7]))
-        return pred, sidx
-
-    out = []
-    n_blocks = len(raw) // block_size
-
-    for bi in range(n_blocks):
-        blk = raw[bi * block_size : (bi + 1) * block_size]
-
-        if channels == 1:
-            pred = struct.unpack_from('<h', blk, 0)[0]
-            sidx = max(0, min(88, blk[2]))
-            out.append(pred)                           # predictor = first sample
-            for byte in blk[4:]:
-                pred, sidx = _decode_nibble(byte & 0xF, pred, sidx)
-                out.append(pred)
-                pred, sidx = _decode_nibble((byte >> 4) & 0xF, pred, sidx)
-                out.append(pred)
-        else:
-            # Stereo: 2×4-byte headers, then 4-byte chunks alternating ch0/ch1
-            pred0 = struct.unpack_from('<h', blk, 0)[0]
-            sidx0 = max(0, min(88, blk[2]))
-            pred1 = struct.unpack_from('<h', blk, 4)[0]
-            sidx1 = max(0, min(88, blk[6]))
-            ch0 = [pred0]
-            ch1 = [pred1]
-            pos = 8
-            INTERLEAVE = 4
-            while pos + INTERLEAVE * 2 <= len(blk):
-                for byte in blk[pos : pos + INTERLEAVE]:
-                    pred0, sidx0 = _decode_nibble(byte & 0xF, pred0, sidx0)
-                    ch0.append(pred0)
-                    pred0, sidx0 = _decode_nibble((byte >> 4) & 0xF, pred0, sidx0)
-                    ch0.append(pred0)
-                pos += INTERLEAVE
-                for byte in blk[pos : pos + INTERLEAVE]:
-                    pred1, sidx1 = _decode_nibble(byte & 0xF, pred1, sidx1)
-                    ch1.append(pred1)
-                    pred1, sidx1 = _decode_nibble((byte >> 4) & 0xF, pred1, sidx1)
-                    ch1.append(pred1)
-                pos += INTERLEAVE
-            # Interleave channels: [L0, R0, L1, R1, ...]
-            for l, r in zip(ch0, ch1):
-                out.append(l)
-                out.append(r)
-
-    # Trim to exact sample count
-    out = out[: total_samples * channels]
-
-    import array as _array
-    pcm = _array.array('h', out).tobytes()
-    buf = io.BytesIO()
-    with wave.open(buf, 'wb') as wf:
-        wf.setnchannels(channels)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-        wf.writeframes(pcm)
-    return buf.getvalue()
-
-
-
-def _decode_bnsf_to_wav(bnsf_data: bytes, cli: str) -> bytes:
-    """Decode BNSF using vgmstream/VGAudio when available, otherwise Python IS14."""
-    if not cli:
-        return _decode_is14_python(bnsf_data)
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            in_path = os.path.join(tmp, 'tone.bnsf')
-            out_path = os.path.join(tmp, 'tone.wav')
-            with open(in_path, 'wb') as f:
-                f.write(bnsf_data)
-            if 'vgmstream' in cli.lower():
-                return _run_vgmstream(cli, in_path, out_path)
-            return _run_vgaudio(cli, in_path, out_path)
-    except Exception as e:
-        if len(bnsf_data) > 0x100 and b'ATRAC9' in bnsf_data[:0x200]:
-            raise RuntimeError(f"ATRAC9 decode error: {e}")
-        return _decode_is14_python(bnsf_data)
-
-
-def _decode_input_to_wav(audio_data: bytes, cli: str, source_path: str = '') -> bytes:
-    ext = _detect_ext(audio_data, source_path)
-    if ext == '.wav':
-        return audio_data
-    if not cli:
-        raise RuntimeError(ui_text("sound_decode_tool_missing"))
-    with tempfile.TemporaryDirectory() as tmp:
-        in_path = os.path.join(tmp, f'input{ext}')
-        out_path = os.path.join(tmp, 'output.wav')
-        with open(in_path, 'wb') as f:
-            f.write(audio_data)
-        return _run_vgaudio(cli, in_path, out_path)
-
-
-def _read_wav_pcm16(wav_data: bytes) -> tuple:
-    with wave.open(io.BytesIO(wav_data), 'rb') as wf:
-        channels = wf.getnchannels()
-        sample_rate = wf.getframerate()
-        sample_width = wf.getsampwidth()
-        frame_count = wf.getnframes()
-        frames = wf.readframes(frame_count)
-
-    if channels not in (1, 2):
-        raise ValueError(f"Unsupported channel count: {channels}")
-    if sample_width == 2:
-        samples = list(struct.unpack('<' + 'h' * (len(frames) // 2), frames))
-    elif sample_width == 1:
-        samples = [(b - 128) << 8 for b in frames]
-    else:
-        raise ValueError(f"Unsupported WAV sample width: {sample_width * 8} bits")
-    return samples, sample_rate, channels, frame_count
-
-
-def _encode_ima_nibble(sample: int, predictor: int, step_index: int) -> tuple:
-    step = _IMA_STEP_TABLE[step_index]
-    diff = sample - predictor
-    nibble = 0
-    if diff < 0:
-        nibble = 8
-        diff = -diff
-    if diff >= step:
-        nibble |= 4
-        diff -= step
-    if diff >= step >> 1:
-        nibble |= 2
-        diff -= step >> 1
-    if diff >= step >> 2:
-        nibble |= 1
-
-    delta = step >> 3
-    if nibble & 4:
-        delta += step
-    if nibble & 2:
-        delta += step >> 1
-    if nibble & 1:
-        delta += step >> 2
-    predictor = predictor - delta if nibble & 8 else predictor + delta
-    predictor = max(-32768, min(32767, predictor))
-    step_index = max(0, min(88, step_index + _IMA_INDEX_TABLE[nibble & 7]))
-    return nibble & 0xF, predictor, step_index
-
-
-def _encode_ima_bytes(samples: list, predictor: int, step_index: int, count: int) -> tuple:
-    encoded = bytearray()
-    pending = None
-    last = predictor
-    for i in range(count):
-        sample = samples[i] if i < len(samples) else last
-        last = sample
-        nibble, predictor, step_index = _encode_ima_nibble(sample, predictor, step_index)
-        if pending is None:
-            pending = nibble
-        else:
-            encoded.append(pending | (nibble << 4))
-            pending = None
-    if pending is not None:
-        encoded.append(pending)
-    return bytes(encoded), predictor, step_index
-
-
-def _encode_pcm16_to_is14(samples: list, channels: int) -> bytes:
-    block_size = 512
-    raw = bytearray()
-
-    if channels == 1:
-        block_samples = 1 + (block_size - 4) * 2
-        for start in range(0, max(1, len(samples)), block_samples):
-            block = samples[start:start + block_samples]
-            if not block:
-                block = [0]
-            predictor = int(block[0])
-            step_index = 0
-            payload, _, _ = _encode_ima_bytes(block[1:], predictor, step_index, (block_size - 4) * 2)
-            raw += struct.pack('<hBB', predictor, step_index, 0)
-            raw += payload[:block_size - 4].ljust(block_size - 4, b'\x00')
-        return bytes(raw)
-
-    left = samples[0::2]
-    right = samples[1::2]
-    block_samples = 1 + ((block_size - 8) // 8) * 8
-    total = max(1, max(len(left), len(right)))
-    for start in range(0, total, block_samples):
-        l_block = left[start:start + block_samples] or [0]
-        r_block = right[start:start + block_samples] or [0]
-        l_pred = int(l_block[0])
-        r_pred = int(r_block[0])
-        l_idx = 0
-        r_idx = 0
-        block = bytearray(struct.pack('<hBBhBB', l_pred, l_idx, 0, r_pred, r_idx, 0))
-        l_pos = 1
-        r_pos = 1
-        for _ in range((block_size - 8) // 8):
-            l_payload, l_pred, l_idx = _encode_ima_bytes(l_block[l_pos:l_pos + 8], l_pred, l_idx, 8)
-            r_payload, r_pred, r_idx = _encode_ima_bytes(r_block[r_pos:r_pos + 8], r_pred, r_idx, 8)
-            block += l_payload[:4].ljust(4, b'\x00')
-            block += r_payload[:4].ljust(4, b'\x00')
-            l_pos += 8
-            r_pos += 8
-        raw += block[:block_size].ljust(block_size, b'\x00')
-    return bytes(raw)
-
-
-def _encode_audio_to_bnsf(audio_data: bytes, cli: str, source_path: str = '') -> bytes:
-    ext = _detect_ext(audio_data, source_path)
-    if ext == '.bnsf':
-        return audio_data
-    wav_data = _decode_input_to_wav(audio_data, cli, source_path)
-    samples, sample_rate, channels, total_samples = _read_wav_pcm16(wav_data)
-    is14_data = _encode_pcm16_to_is14(samples, channels)
-    return build_bnsf(is14_data, sample_rate, channels, total_samples)
-
-
-def _fmt_size(n: int) -> str:
-    if n < 1024:
-        return f"{n} B"
-    if n < 1024 * 1024:
-        return f"{n / 1024:.1f} KB"
-    return f"{n / (1024 * 1024):.2f} MB"
-
-
-def _fmt_dur(sec: float) -> str:
-    m, s = divmod(sec, 60)
-    return f"{int(m)}:{s:05.2f}"
-
-
-def _tone_type_info(type_id: bytes) -> tuple:
-    if len(type_id) >= 2:
-        t = type_id[:2]
-        if t == b'\xff\xff':
-            return "PS", P['accent'], P['bg_dark']
-        if t == b'\x7f\x00':
-            return "RNG", P['secondary'], P['bg_dark']
-    return "-", P['mid'], P['text_dim']
+def _fmt_dur(seconds):
+    minutes, seconds = divmod(seconds, 60)
+    return f'{int(minutes)}:{seconds:06.3f}'
 
 
 def _clear_layout(layout):
-    if not layout:
-        return
     while layout.count():
         item = layout.takeAt(0)
         if item.widget():
-            widget = item.widget()
-            widget.hide()
-            widget.setParent(None)
-            widget.deleteLater()
-        elif item.layout():
-            _clear_layout(item.layout())
-
-
-class WaveformWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(80)
-        self._lines = None
-        self.setStyleSheet(f"background-color: {P['bg_card']};")
-
-    def set_waveform(self, lines):
-        self._lines = lines
-        self.update()
-
-    def clear(self):
-        self._lines = None
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        w, h = self.width(), self.height()
-        mid = h // 2
-        painter.fillRect(self.rect(), QColor(P['bg_card']))
-        painter.setPen(QPen(QColor(P['mid']), 1))
-        painter.drawLine(0, mid, w, mid)
-        if self._lines:
-            painter.setPen(QPen(QColor(P['accent']), 1))
-            for x, y_top, y_bot in self._lines:
-                if x < w:
-                    painter.drawLine(x, y_top, x, y_bot)
-        else:
-            painter.setPen(QPen(QColor(P['text_dim']), 1))
-            fm = painter.fontMetrics()
-            txt = "..."
-            painter.drawText((w - fm.horizontalAdvance(txt)) // 2, mid + fm.ascent() // 2, txt)
-        painter.end()
-
-
-class RangeSlider(QWidget):
-    valueChanged = pyqtSignal(int, int)
-
-    def __init__(self, minimum=0, maximum=100, start=0, end=100, parent=None):
-        super().__init__(parent)
-        self._min = int(minimum)
-        self._max = max(self._min + 1, int(maximum))
-        self._start = max(self._min, min(self._max, int(start)))
-        self._end = max(self._start, min(self._max, int(end)))
-        self._active = None
-        self.setMinimumHeight(34)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-    def values(self):
-        return self._start, self._end
-
-    def setValues(self, start, end):
-        start = max(self._min, min(self._max, int(start)))
-        end = max(self._min, min(self._max, int(end)))
-        if start > end:
-            start, end = end, start
-        if start != self._start or end != self._end:
-            self._start, self._end = start, end
-            self.update()
-            self.valueChanged.emit(self._start, self._end)
-
-    def _track_rect(self):
-        return 10, self.width() - 10
-
-    def _x_from_value(self, value):
-        left, right = self._track_rect()
-        ratio = (value - self._min) / max(1, self._max - self._min)
-        return left + ratio * max(1, right - left)
-
-    def _value_from_x(self, x):
-        left, right = self._track_rect()
-        ratio = (max(left, min(right, x)) - left) / max(1, right - left)
-        return int(round(self._min + ratio * (self._max - self._min)))
-
-    def paintEvent(self, _):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        y = self.height() // 2
-        left, right = self._track_rect()
-        sx = self._x_from_value(self._start)
-        ex = self._x_from_value(self._end)
-        p.setPen(QPen(QColor(P['mid']), 6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        p.drawLine(int(left), y, int(right), y)
-        p.setPen(QPen(QColor(P['accent']), 6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        p.drawLine(int(sx), y, int(ex), y)
-        p.setPen(QPen(QColor(P['border']), 1))
-        p.setBrush(QColor(P['accent']))
-        p.drawEllipse(int(sx - 7), int(y - 7), 14, 14)
-        p.drawEllipse(int(ex - 7), int(y - 7), 14, 14)
-        p.end()
-
-    def mousePressEvent(self, e):
-        if e.button() != Qt.MouseButton.LeftButton:
-            return
-        x = e.position().x()
-        sx = self._x_from_value(self._start)
-        ex = self._x_from_value(self._end)
-        self._active = 'start' if abs(x - sx) <= abs(x - ex) else 'end'
-        self.mouseMoveEvent(e)
-
-    def mouseMoveEvent(self, e):
-        if self._active is None or not self.isEnabled():
-            return
-        value = self._value_from_x(e.position().x())
-        if self._active == 'start':
-            self.setValues(min(value, self._end), self._end)
-        else:
-            self.setValues(self._start, max(value, self._start))
-
-    def mouseReleaseEvent(self, _):
-        self._active = None
-
-
-class KnobWidget(QWidget):
-    valueChanged = pyqtSignal(int)
-    _HALF_SWEEP = 135
-
-    def __init__(self, lo: int, hi: int, val: int, parent=None):
-        super().__init__(parent)
-        self._lo = lo
-        self._hi = hi
-        self._val = max(lo, min(hi, int(val)))
-        self._drag_y = None
-        self._drag_val = None
-        self.setFixedSize(80, 80)
-        self.setCursor(Qt.CursorShape.SizeVerCursor)
-
-    def value(self) -> int:
-        return self._val
-
-    def setValue(self, v: int):
-        v = max(self._lo, min(self._hi, int(v)))
-        if v != self._val:
-            self._val = v
-            self.update()
-            self.valueChanged.emit(v)
-
-    def paintEvent(self, _):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-        cx, cy = w / 2, h / 2
-        R = min(cx, cy) - 3
-        tr = R - 7
-        p.setPen(QPen(QColor(P['border']), 1))
-        p.setBrush(QColor(P['bg_card']))
-        p.drawEllipse(int(cx - R), int(cy - R), int(R * 2), int(R * 2))
-        qt_start = int((90 + self._HALF_SWEEP) * 16)
-        qt_span = -int(self._HALF_SWEEP * 2 * 16)
-        p.setPen(QPen(QColor(P['mid']), 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        rect_s = int(cx - tr)
-        p.drawArc(rect_s, rect_s, int(tr * 2), int(tr * 2), qt_start, qt_span)
-        ratio = (self._val - self._lo) / max(1, self._hi - self._lo)
-        p.setPen(QPen(QColor(P['accent']), 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        p.drawArc(rect_s, rect_s, int(tr * 2), int(tr * 2), qt_start, -int(self._HALF_SWEEP * 2 * ratio * 16))
-        ir = tr - 8
-        p.setPen(QPen(QColor(P['mid']), 1))
-        p.setBrush(QColor(P['bg_panel']))
-        p.drawEllipse(int(cx - ir), int(cy - ir), int(ir * 2), int(ir * 2))
-        std_rad = math.radians(90.0 - (-self._HALF_SWEEP + self._HALF_SWEEP * 2 * ratio))
-        dot_r = ir - 6
-        nx = cx + dot_r * math.cos(std_rad)
-        ny = cy - dot_r * math.sin(std_rad)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(P['accent']))
-        p.drawEllipse(int(nx - 4), int(ny - 4), 8, 8)
-        p.end()
-
-    def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            self._drag_y = e.globalPosition().y()
-            self._drag_val = self._val
-
-    def mouseMoveEvent(self, e):
-        if self._drag_y is not None:
-            dy = self._drag_y - e.globalPosition().y()
-            self.setValue(self._drag_val + int(dy * (self._hi - self._lo) / 150))
-
-    def mouseReleaseEvent(self, e):
-        self._drag_y = None
-        self._drag_val = None
-
-    def wheelEvent(self, e):
-        self.setValue(self._val + (1 if e.angleDelta().y() > 0 else -1))
-
-    def mouseDoubleClickEvent(self, e):
-        self.setValue((self._lo + self._hi) // 2)
+            item.widget().hide()
+            item.widget().deleteLater()
 
 
 class XfbinAudioEditor(QWidget):
+    defer_file_load_notification = True
     _sig_load_done = pyqtSignal(str, object, list)
     _sig_load_err = pyqtSignal(str)
-    _sig_decode_done = pyqtSignal(bytes)
-    _sig_decode_err = pyqtSignal(str)
-    _sig_wave_ready = pyqtSignal(object)
-    _sig_play_prog = pyqtSignal(float, float)
-    _sig_play_done = pyqtSignal()
-    _sig_convert_done = pyqtSignal(int, int, bytes)
-    _sig_convert_err = pyqtSignal(str)
+    _sig_preview = pyqtSignal(int, object, object, str)
+    _sig_play = pyqtSignal(int, float, str)
+    _sig_job = pyqtSignal(str, object, str)
+    _sig_progress = pyqtSignal(str)
     _sig_save_done = pyqtSignal(str)
     _sig_save_err = pyqtSignal(str)
-    _sig_batch_done = pyqtSignal(str)
-    _sig_batch_err = pyqtSignal(str)
-    _sig_batch_prog = pyqtSignal(str)
-    _sig_busy_progress = pyqtSignal(str, int, int)
 
     def __init__(self, parent=None, lang_func=None, embedded=False):
         super().__init__(parent)
-        self.t = lang_func or (lambda k, **kw: kw.get('default', k))
-        self._filepath = None
-        self._raw = None
-        self._banks = []
-        self._cur_bank = 0
-        self._cur_tone = -1
-        self._tone_btns = []
-        self._wav_cache = {}
-        self._dirty = False
-        self._decode_and_play = False
-        self._decode_busy = False
-        self._playing = False
-        self._stop_flag = threading.Event()
-        self._pause_flag = threading.Event()
-        self._seek_lock = threading.Lock()
-        self._seek_target_frame = None
-        self._seeking = False
-        self._seek_total = 0.0
-        self._seek_total_frames = 0
-        self._seek_fps = 0
-        self._play_thread = None
-        self._pa = None
+        self.t = lang_func or ui_text
+        self._filepath, self._raw, self._banks = None, None, []
+        self._cur_bank, self._cur_tone = 0, -1
+        self._dirty, self._busy, self._closed = False, False, False
+        self._originals, self._saved_state = {}, None
+        self._templates = {}
+        self._wav_cache = AudioCache()
+        self._generation, self._play_generation = 0, 0
+        self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='xfb-audio')
+        self._preview_future = None
+        self._wav, self._envelope = None, None
+        self._player, self._playing = None, False
+        self._fields = {}
+        self._building = False
+        self.destroyed.connect(lambda: self._dispose())
         self._sig_load_done.connect(self._on_load_done)
         self._sig_load_err.connect(self._on_load_err)
-        self._sig_decode_done.connect(self._on_decode_done)
-        self._sig_decode_err.connect(self._on_decode_err)
-        self._sig_wave_ready.connect(self._draw_waveform)
-        self._sig_play_prog.connect(self._update_play_progress)
-        self._sig_play_done.connect(self._on_play_done)
-        self._sig_convert_done.connect(self._on_convert_done)
-        self._sig_convert_err.connect(self._on_convert_err)
+        self._sig_preview.connect(self._on_preview)
+        self._sig_play.connect(self._on_play_event)
+        self._sig_job.connect(self._on_job)
+        self._sig_progress.connect(self._set_status)
         self._sig_save_done.connect(self._on_save_done)
         self._sig_save_err.connect(self._on_save_err)
-        self._sig_batch_done.connect(self._on_batch_done)
-        self._sig_batch_err.connect(self._on_batch_err)
-        self._sig_batch_prog.connect(self._on_batch_prog)
-        self._sig_busy_progress.connect(self._on_busy_progress)
         self._build_ui()
+        install_file_actions(self, self._save_btn, save_to=lambda path: self._save_file(target_path=path), asynchronous=True)
+        install_editor_chrome(self)
 
     def _build_ui(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        root = configure_layout(QVBoxLayout(self), LayoutRole.ROOT)
         self.setStyleSheet(ss_bg_dark())
-        top = QFrame()
-        top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(ss_bg_panel())
-        tl = QHBoxLayout(top)
-        tl.setContentsMargins(12, 8, 12, 8)
-        tl.setSpacing(4)
-        self._open_btn = QPushButton(self.t("btn_open_file", default=ui_text("btn_open_file")))
-        self._open_btn.setFixedHeight(TOOLBAR_BTN_H)
-        self._open_btn.setFont(QFont("Segoe UI", 10))
-        self._open_btn.setStyleSheet(ss_btn(accent=True))
-        self._open_btn.clicked.connect(self._load_file)
-        tl.addWidget(self._open_btn)
-        self._save_btn = QPushButton(self.t("btn_save_file", default=ui_text("btn_save_file")))
-        self._save_btn.setFixedHeight(TOOLBAR_BTN_H)
-        self._save_btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        self._toolbar = EditorToolbar()
+        row = self._toolbar.content_layout
+        self._open_btn = configure_button(QPushButton(ui_text('btn_open_file')), accent=True)
+        self._open_btn.setProperty('designAction', 'open')
+        self._open_btn.clicked.connect(lambda: self._load_file())
+        row.addWidget(self._open_btn)
+        self._save_btn = configure_button(QPushButton(ui_text('btn_save_file')), accent=True)
         self._save_btn.setEnabled(False)
-        self._save_btn.setStyleSheet(ss_btn(accent=True))
-        self._save_btn.clicked.connect(self._save_file)
-        tl.addWidget(self._save_btn)
-        self._file_lbl = QLabel(self.t("no_file_loaded", default=ui_text("cpk_no_file")))
+        self._save_btn.clicked.connect(lambda: self._save_file())
+        row.addWidget(self._save_btn)
+        self._file_lbl = configure_file_label(QLabel(ui_text('cpk_no_file')))
         self._file_lbl.setMinimumWidth(0)
         self._file_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self._file_lbl.setFont(QFont("Consolas", 12))
-        self._file_lbl.setStyleSheet(ss_file_label())
-        tl.addWidget(self._file_lbl, 1)
-        self._bank_combo = QComboBox()
-        self._bank_combo.setFixedWidth(200)
-        self._bank_combo.setMinimumWidth(160)
-        self._bank_combo.setFont(QFont("Segoe UI", 11))
-        self._bank_combo.setStyleSheet(ss_input())
-        self._bank_combo.currentIndexChanged.connect(self._on_bank_changed)
-        tl.addWidget(self._bank_combo)
-        root.addWidget(top)
-        sep = QFrame()
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
-        root.addWidget(sep)
+        row.addWidget(self._file_lbl, 1)
+        root.addWidget(self._toolbar)
+        root.addWidget(EditorSeparator(accent=True))
         main = QWidget()
-        main_layout = QHBoxLayout(main)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-        left = QFrame()
-        left.setFixedWidth(260)
-        left.setStyleSheet(ss_sidebar_frame())
-        ll = QVBoxLayout(left)
-        ll.setContentsMargins(8, 8, 8, 4)
-        ll.setSpacing(4)
-        self._search = QLineEdit()
-        self._search.setPlaceholderText(self.t("search_placeholder", default=ui_text("search_placeholder")))
-        self._search.setFixedHeight(32)
-        self._search.setFont(QFont("Segoe UI", 13))
-        self._search.setStyleSheet(ss_search())
+        body = configure_layout(QHBoxLayout(main), LayoutRole.ROOT)
+        self._sidebar = EditorSidebar()
+        side = self._sidebar.content_layout
+        self._bank_combo = configure_input(QComboBox(), monospace=False)
+        self._bank_combo.setMinimumWidth(0)
+        self._bank_combo.setToolTip(ui_text('xfa_bank_hint'))
+        self._bank_combo.currentIndexChanged.connect(self._on_bank_changed)
+        self._search = configure_search(QLineEdit())
         self._search.textChanged.connect(self._filter_tones)
-        ll.addWidget(self._search)
-        actions_frame = QWidget()
-        actions_frame.setStyleSheet(ss_transparent())
-        actions_layout = QHBoxLayout(actions_frame)
-        actions_layout.setContentsMargins(0, 2, 0, 4)
-        actions_layout.setSpacing(4)
-        btn_font = QFont("Segoe UI", 10)
-        self._add_btn = QPushButton(self.t("btn_new"))
-        self._add_btn.setFixedHeight(28)
-        self._add_btn.setFont(btn_font)
-        self._add_btn.setEnabled(False)
-        self._add_btn.setStyleSheet(ss_btn())
-        self._add_btn.clicked.connect(self._add_tone)
-        actions_layout.addWidget(self._add_btn, 1)
-        self._dup_btn = QPushButton(self.t("btn_dup_short"))
-        self._dup_btn.setFixedHeight(28)
-        self._dup_btn.setFont(btn_font)
-        self._dup_btn.setEnabled(False)
-        self._dup_btn.setStyleSheet(ss_btn())
-        self._dup_btn.clicked.connect(self._duplicate_tone)
-        actions_layout.addWidget(self._dup_btn, 1)
-        self._del_btn = QPushButton(self.t("btn_delete"))
-        self._del_btn.setFixedHeight(28)
-        self._del_btn.setFont(btn_font)
-        self._del_btn.setEnabled(False)
-        self._del_btn.setStyleSheet(ss_btn(danger=True))
-        self._del_btn.clicked.connect(self._delete_tone)
-        actions_layout.addWidget(self._del_btn, 1)
-        ll.addWidget(actions_frame)
-        self._tone_scroll = QScrollArea()
-        self._tone_scroll.setWidgetResizable(True)
-        self._tone_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._tone_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._tone_scroll.setStyleSheet(ss_scrollarea_transparent())
-        self._tone_list_widget = QWidget()
-        self._tone_list_widget.setMinimumWidth(0)
-        self._tone_list_widget.setStyleSheet(ss_transparent())
-        self._tone_list_layout = QVBoxLayout(self._tone_list_widget)
-        self._tone_list_layout.setContentsMargins(0, 0, 0, 0)
-        self._tone_list_layout.setSpacing(1)
-        self._tone_list_layout.addStretch()
-        self._tone_scroll.setWidget(self._tone_list_widget)
-        ll.addWidget(self._tone_scroll, 1)
-        main_layout.addWidget(left)
-        divider = QFrame()
-        divider.setFixedWidth(1)
-        divider.setStyleSheet(ss_sep())
-        main_layout.addWidget(divider)
-        self._editor_scroll = QScrollArea()
-        self._editor_scroll.setWidgetResizable(True)
-        self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        side.addWidget(self._search)
+        self._state_filter = EditorFilterCombo()
+        for key, value in (('xfa_filter_state', None), ('xfa_edited', 'edited'), ('xfa_looped', 'loop')):
+            self._state_filter.addItem(ui_text(key), value)
+        self._state_filter.currentIndexChanged.connect(self._filter_tones)
+        actions = EditorActionRow()
+        for attr, key, callback, action in (('_add_btn', 'btn_new', self._add_tone, 'new'),
+                ('_dup_btn', 'btn_duplicate', self._duplicate_tone, 'duplicate'),
+                ('_del_btn', 'btn_delete', self._delete_tone, 'delete')):
+            button = configure_button(QPushButton(ui_text(key)), danger=action == 'delete', height=Size.COMPACT_CONTROL)
+            button.setEnabled(False)
+            button.setProperty('designAction', action)
+            button.clicked.connect(callback)
+            setattr(self, attr, button)
+            actions.content_layout.addWidget(button, 1)
+        side.addWidget(actions)
+        side.addWidget(self._bank_combo)
+        side.addWidget(self._state_filter)
+        self._list_model = RecordListModel(self)
+        self._tone_list = EditorRecordList(self._list_model, self._describe_tone)
+        self._tone_list.selectionModel().currentRowChanged.connect(self._catalog_selected)
+        side.addWidget(self._tone_list, 1)
+        body.addWidget(self._sidebar)
+        body.addWidget(EditorSeparator(orientation=Qt.Orientation.Vertical))
+        self._editor_scroll = configure_scrollarea(QScrollArea())
         self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._editor_scroll.setStyleSheet(ss_scrollarea())
         self._editor_inner = QWidget()
         self._editor_inner.setMinimumWidth(0)
-        self._editor_inner.setStyleSheet(ss_bg_dark())
-        self._editor_layout = QVBoxLayout(self._editor_inner)
-        self._editor_layout.setContentsMargins(12, 12, 12, 12)
-        self._editor_layout.setSpacing(8)
+        self._editor_layout = configure_layout(QVBoxLayout(self._editor_inner), LayoutRole.PAGE)
         self._editor_scroll.setWidget(self._editor_inner)
-        self._show_placeholder()
-        main_layout.addWidget(self._editor_scroll, 1)
+        body.addWidget(self._editor_scroll, 1)
         root.addWidget(main, 1)
-        self._build_busy_overlay()
+        self._status = QLabel('')
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet(ss_dim_label())
+        root.addWidget(self._status)
+        self._show_placeholder()
 
-    def _build_busy_overlay(self):
-        self._busy_overlay = QFrame(self)
-        self._busy_overlay.setObjectName("BlockingOverlay")
-        self._busy_overlay.setStyleSheet(ss_blocking_overlay())
-        self._busy_overlay.hide()
-
-        overlay_layout = QVBoxLayout(self._busy_overlay)
-        overlay_layout.setContentsMargins(0, 0, 0, 0)
-        overlay_layout.addStretch()
-
-        card = QFrame()
-        card.setObjectName("BlockingOverlayCard")
-        card.setFixedWidth(360)
-        card.setStyleSheet(ss_blocking_overlay_card())
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(22, 18, 22, 18)
-        card_layout.setSpacing(10)
-
-        self._busy_title_lbl = QLabel(ui_text("loading"))
-        self._busy_title_lbl.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        self._busy_title_lbl.setStyleSheet(ss_file_label())
-        self._busy_title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        card_layout.addWidget(self._busy_title_lbl)
-
-        self._busy_detail_lbl = QLabel("")
-        self._busy_detail_lbl.setFont(QFont("Segoe UI", 10))
-        self._busy_detail_lbl.setStyleSheet(ss_dim_label())
-        self._busy_detail_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        card_layout.addWidget(self._busy_detail_lbl)
-
-        self._busy_bar = QProgressBar()
-        self._busy_bar.setRange(0, 100)
-        self._busy_bar.setValue(0)
-        self._busy_bar.setTextVisible(False)
-        self._busy_bar.setStyleSheet(ss_progressbar())
-        card_layout.addWidget(self._busy_bar)
-
-        row = QHBoxLayout()
-        row.addStretch()
-        row.addWidget(card)
-        row.addStretch()
-        overlay_layout.addLayout(row)
-        overlay_layout.addStretch()
-        self._busy_overlay.setGeometry(self.rect())
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, '_busy_overlay'):
-            self._busy_overlay.setGeometry(self.rect())
-
-    def _set_busy(self, active: bool, title: str = '', detail: str = '', done: int = 0, total: int = 0):
-        if not hasattr(self, '_busy_overlay'):
-            return
-        if active:
-            self._busy_title_lbl.setText(title or ui_text("loading"))
-            self._on_busy_progress(detail, done, total)
-            self._busy_overlay.setGeometry(self.rect())
-            self._busy_overlay.raise_()
-            self._busy_overlay.show()
-            return
-        self._busy_overlay.hide()
-
-    def _on_busy_progress(self, text: str, done: int, total: int):
-        if not hasattr(self, '_busy_bar'):
-            return
-        self._busy_detail_lbl.setText(text or "")
-        if total > 0:
-            self._busy_bar.setRange(0, total)
-            self._busy_bar.setValue(max(0, min(done, total)))
-        else:
-            self._busy_bar.setRange(0, 0)
-
-    def _show_decode_busy(self, detail: str = ""):
-        self._decode_busy = True
-        self._set_busy(True, ui_text("ui_xfbin_audio_decoding"), detail, 0, 0)
-
-    def _hide_decode_busy(self):
-        if self._decode_busy:
-            self._decode_busy = False
-            self._set_busy(False)
-
-    def _show_placeholder(self, text: str | None = None):
+    def _show_placeholder(self, text=None):
+        self._generation += 1
+        self._wav, self._envelope = None, None
+        for name in ('_play_btn', '_pause_btn', '_stop_btn', '_wave_widget', '_prog_lbl'):
+            if hasattr(self, name):
+                delattr(self, name)
+        self._fields = {}
         _clear_layout(self._editor_layout)
-        self._placeholder_lbl = make_empty_state(
-            self._editor_inner,
-            title=self.t("no_file_loaded", default=ui_text("cpk_no_file")),
-            text=text or self.t("xfa_placeholder", default=ui_text("xfa_placeholder")),
-            icon_name="fa6s.wave-square",
-        )
         self._editor_layout.addStretch()
-        self._editor_layout.addWidget(self._placeholder_lbl, 0, Qt.AlignmentFlag.AlignCenter)
+        self._editor_layout.addWidget(make_empty_state(self._editor_inner,
+            title=ui_text('no_file_loaded') if not self._filepath else ui_text('select_entry'),
+            text=text or ui_text('xfa_placeholder')), 0, Qt.AlignmentFlag.AlignCenter)
         self._editor_layout.addStretch()
 
-    def _load_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, self.t("xfa_open_dlg", default=ui_text("xfa_open_dlg")), game_files_dialog_dir(target_patterns=("battle.xfbin", "*.xfbin")), "XFBIN files (*.xfbin);;All files (*.*)")
+    def _set_status(self, text):
+        self._status.setText(text)
+
+    def _set_busy(self, active, *args):
+        self._busy = active
+        self._toolbar.setEnabled(not active)
+        self._sidebar.setEnabled(not active)
+        self._editor_inner.setEnabled(not active)
+        self._save_btn.setEnabled(bool(self._banks) and not active)
+        if hasattr(self, '_file_actions'):
+            self._file_actions.refresh()
+        if active:
+            self._set_status(ui_text('loading'))
+
+    def _load_file(self, path=None):
+        if self._busy or not self._apply_params():
+            return False
         if not path:
-            return
-        create_backup_on_open(path)
+            path, _ = QFileDialog.getOpenFileName(self, ui_text('xfa_open_dlg'),
+                game_files_dialog_dir(target_patterns=('battle.xfbin', '*.xfbin')), 'XFBIN (*.xfbin);;All files (*)')
+        if not path:
+            return False
+        path = os.path.abspath(os.fspath(path))
         self._stop_playback()
-        self._wav_cache.clear()
-        set_file_label_empty(self._file_lbl, self.t("loading", default=ui_text("loading")))
-        self._show_list_skeleton()
+        self._generation += 1
+        self._set_busy(True)
         def worker():
             try:
                 raw, banks = parse_xfbin_audio(path)
-                self._sig_load_done.emit(path, raw, banks)
-            except Exception as e:
-                self._sig_load_err.emit(str(e))
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _show_list_skeleton(self):
-        _clear_layout(self._tone_list_layout)
-        for _ in range(12):
-            self._tone_list_layout.addWidget(SkeletonListRow())
-        self._tone_list_layout.addStretch()
-
-    def _on_load_err(self, msg):
-        _clear_layout(self._tone_list_layout)
-        self._tone_list_layout.addStretch()
-        self._filepath = None
-        self._dirty = False
-        set_file_label_empty(self._file_lbl, self.t("no_file_loaded", default=ui_text("cpk_no_file")))
-        self._show_placeholder()
-        QMessageBox.critical(self, ui_text("ui_charviewer_load_error"), msg)
+                if not banks:
+                    raise ValueError(ui_text('ui_xfbin_audio_no_embedded_nus3bank_bnsf_audio_entries_were_found_in_t'))
+                create_backup_on_open(path)
+                if not self._closed:
+                    self._sig_load_done.emit(path, raw, banks)
+            except Exception as error:
+                if not self._closed:
+                    self._sig_load_err.emit(str(error))
+        self._pool.submit(worker)
+        return True
 
     def _on_load_done(self, path, raw, banks):
-        self._filepath = path
-        self._raw = raw
-        self._banks = banks
-        self._cur_bank = 0
-        self._cur_tone = -1
-        self._wav_cache.clear()
+        if self._closed:
+            return
+        self._stop_playback()
+        self._filepath, self._raw, self._banks = path, raw, banks
+        self._originals = {id(tone): (tone, copy.deepcopy(tone)) for bank in banks for tone in bank.tones}
+        self._templates = {id(bank): copy.deepcopy(bank.tones[0]) for bank in banks if bank.tones}
+        self._saved_state = self._document_state()
         self._dirty = False
-        set_file_label(self._file_lbl, path)
-        self._save_btn.setEnabled(bool(banks))
-        self._bank_combo.blockSignals(True)
-        self._bank_combo.clear()
-        for i, b in enumerate(banks):
-            self._bank_combo.addItem(f"[{i}]  {b.name or 'bank'}", i)
-        self._bank_combo.blockSignals(False)
-        if banks:
+        self._fields = {}
+        self._cur_bank, self._cur_tone = 0, -1
+        self._wav_cache.clear()
+        with QSignalBlocker(self._bank_combo):
+            self._bank_combo.clear()
+            for i, bank in enumerate(banks):
+                self._bank_combo.addItem(bank.name or f'Bank {i}', i)
             self._bank_combo.setCurrentIndex(0)
+        self._set_busy(False)
+        set_file_label(self._file_lbl, path)
+        self._populate_tone_list()
+        self._set_status('')
+
+    def _on_load_err(self, message):
+        self._set_busy(False)
+        self._set_status(message)
+        if self._tone() is not None and self._wav is None:
+            self._request_preview()
+        QMessageBox.critical(self, ui_text('dlg_title_error'), message)
+
+    def _document_state(self):
+        return tuple(tuple(('tone', tone_state(record)) if isinstance(record, ToneEntry)
+                           else ('opaque', bytes(record))
+                           for record in bank._tone_records) for bank in self._banks)
+
+    def _original(self, tone):
+        pair = self._originals.get(id(tone))
+        return pair[1] if pair and pair[0] is tone else None
+
+    def _modified(self, tone):
+        original = self._original(tone)
+        return original is None or tone_state(original) != tone_state(tone)
+
+    def _tone(self):
+        if self._banks and 0 <= self._cur_tone < len(self._banks[self._cur_bank].tones):
+            return self._banks[self._cur_bank].tones[self._cur_tone]
+        return None
+
+    def _describe_tone(self, index):
+        title, idx, subtitle = index.data(Qt.ItemDataRole.UserRole)
+        return title, subtitle, title + '\n' + subtitle
+
+    def _filter_tones(self, *_):
+        rows = []
+        tone = self._tone()
+        if self._banks:
+            query, state = self._search.text().casefold(), self._state_filter.currentData()
+            edited_caption = ui_text('xfa_edited')
+            bank = self._banks[self._cur_bank]
+            slots = {id(record): i for i, record in enumerate(bank._tone_records)}
+            for i, entry in enumerate(bank.tones):
+                info = parse_audio_meta(entry._bnsf_blob or b'')
+                codec = info['codec'] if info else '?'
+                title = entry.name or f'Tone {i}'
+                duration = _fmt_dur(info['total_samples'] / info['sample_rate']) if info else '?'
+                subtitle = f'#{slots.get(id(entry), i)} · {codec} · {duration}'
+                if self._modified(entry):
+                    subtitle += ' · ' + ui_text('xfa_edited')
+                if query and query not in (title + ' ' + subtitle).casefold():
+                    continue
+                if state == 'edited' and not self._modified(entry) or state == 'loop' and not stream_loop(entry._bnsf_blob or b''):
+                    continue
+                rows.append((title, i, subtitle))
+        with QSignalBlocker(self._tone_list.selectionModel()):
+            self._list_model.reset_rows(rows)
+            selected = next((r for r, row in enumerate(rows) if self._banks[self._cur_bank].tones[row[1]] is tone), -1)
+            self._tone_list.setCurrentIndex(self._list_model.index(selected, 0))
+        self._tone_list.refresh()
+
+    def _populate_tone_list(self, selected=None):
+        self._filter_tones()
+        self._add_btn.setEnabled(bool(self._banks and id(self._banks[self._cur_bank]) in self._templates) and not self._busy)
+        tones = self._banks[self._cur_bank].tones if self._banks else []
+        if tones:
+            self._select_tone(min(selected if selected is not None else max(0, self._cur_tone), len(tones) - 1), force=True)
         else:
-            self._show_placeholder(
-                ui_text("ui_xfbin_audio_no_embedded_nus3bank_bnsf_audio_entries_were_found_in_t"))
+            self._cur_tone = -1
+            self._del_btn.setEnabled(False)
+            self._dup_btn.setEnabled(False)
+            key = 'xfa_empty_bank' if self._banks and id(self._banks[self._cur_bank]) in self._templates else 'xfa_no_template'
+            self._show_placeholder(ui_text(key) if self._banks else None)
+
+    def _catalog_selected(self, index, previous):
+        if index.isValid() and not self._select_tone(index.data(Qt.ItemDataRole.UserRole)[1]):
+            with QSignalBlocker(self._tone_list.selectionModel()):
+                self._tone_list.setCurrentIndex(previous)
+
+    def _on_bank_changed(self, index):
+        if index < 0 or index >= len(self._banks) or index == self._cur_bank:
+            return
+        if self._busy or not self._apply_params():
+            with QSignalBlocker(self._bank_combo):
+                self._bank_combo.setCurrentIndex(self._cur_bank)
+            return
+        self._stop_playback()
+        self._cur_bank, self._cur_tone = index, -1
+        self._fields = {}
         self._populate_tone_list()
 
-    def _on_bank_changed(self, idx):
-        if idx < 0 or idx >= len(self._banks):
-            return
-        self._cur_bank = idx
-        self._cur_tone = -1
+    def _select_tone(self, index, force=False):
+        if not self._banks or not 0 <= index < len(self._banks[self._cur_bank].tones):
+            return False
+        if not force and (self._busy or not self._apply_params()):
+            return False
+        if index == self._cur_tone and not force:
+            return True
         self._stop_playback()
-        self._populate_tone_list()
-
-    def _populate_tone_list(self):
-        _clear_layout(self._tone_list_layout)
-        self._tone_btns = []
-        if not self._banks:
-            self._tone_list_layout.addStretch()
-            return
-        bank = self._banks[self._cur_bank]
-        for i, tone in enumerate(bank.tones):
-            btn = QPushButton()
-            btn.setFixedHeight(44)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(ss_sidebar_btn(False))
-            inner = QWidget(btn)
-            il = QHBoxLayout(inner)
-            il.setContentsMargins(10, 3, 10, 3)
-            il.setSpacing(4)
-            tc = QWidget()
-            tcl = QVBoxLayout(tc)
-            tcl.setContentsMargins(0, 0, 0, 0)
-            tcl.setSpacing(0)
-            tone_title = tone.name or f"tone_{i}"
-            nl = QLabel(_truncate(tone_title, 24))
-            nl.setToolTip(tone_title)
-            nl.setMinimumWidth(0)
-            nl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-            nl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-            nl.setStyleSheet(ss_file_label_loaded())
-            nl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            tcl.addWidget(nl)
-            il.addWidget(tc, 1)
-            inner.setGeometry(0, 0, 260, 44)
-            inner.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            btn.resizeEvent = lambda ev, iw=inner: iw.setGeometry(0, 0, ev.size().width(), ev.size().height())
-            btn.clicked.connect(lambda _, ti=i: self._select_tone(ti))
-            self._tone_list_layout.addWidget(btn)
-            self._tone_btns.append((btn, i))
-        self._tone_list_layout.addStretch()
-        self._add_btn.setEnabled(True)
-        self._del_btn.setEnabled(False)
-        self._dup_btn.setEnabled(False)
-        if bank.tones:
-            self._select_tone(0)
-        else:
-            self._show_placeholder()
-
-    def _filter_tones(self):
-        q = self._search.text().lower()
-        for btn, i in self._tone_btns:
-            if not self._banks:
-                break
-            tone = self._banks[self._cur_bank].tones[i]
-            btn.setVisible(q in (tone.name or '').lower() or q in str(i))
-
-    def _select_tone(self, idx):
-        bank = self._banks[self._cur_bank]
-        if idx < 0 or idx >= len(bank.tones):
-            return
-        self._stop_playback()
-        self._cur_tone = idx
-        for btn, i in self._tone_btns:
-            try:
-                btn.setStyleSheet(ss_sidebar_btn(i == idx))
-            except RuntimeError:
-                pass
+        self._generation += 1
+        self._cur_tone = index
+        self._wav, self._envelope = None, None
         self._del_btn.setEnabled(True)
         self._dup_btn.setEnabled(True)
-        self._decode_and_play = False
-        self._build_editor(self._cur_bank, idx, bank.tones[idx])
-        key = (self._cur_bank, idx)
-        if key in self._wav_cache:
-            self._on_decode_done(self._wav_cache[key])
+        self._build_editor(self._cur_bank, index, self._tone())
+        self._filter_tones()
+        self._tone_list.scrollTo(self._tone_list.currentIndex())
+        self._request_preview()
+        return True
 
-    def _build_editor(self, bank_idx: int, tone_idx: int, tone: ToneEntry):
+    def _make_section(self, title, icon='fa6s.sliders'):
+        card, layout = make_editor_card()
+        configure_card(card, maximum_width=16777215, vertical_policy=QSizePolicy.Policy.Maximum)
+        add_editor_card_title(layout, title, icon)
+        self._editor_layout.addWidget(card)
+        return layout
+
+    def _hint(self, layout, key, **values):
+        label = QLabel(ui_text(key, **values))
+        label.setWordWrap(True)
+        label.setMinimumWidth(0)
+        label.setFont(ui_font(TypeSize.HINT))
+        label.setStyleSheet(ss_dim_label())
+        layout.addWidget(label)
+        return label
+
+    def _field(self, layout, key, edit, hint=''):
+        shell, content, label, _ = make_editor_field_shell(ui_text(key), ui_text(hint) if hint and hint not in ('xfa_exact_hint', 'xfa_unknown_hint') else '')
+        content.addWidget(edit)
+        edit.setAccessibleName(ui_text(key))
+        if hint:
+            edit.setToolTip(ui_text(hint))
+        layout.addWidget(shell)
+
+    def _build_editor(self, bank_index, tone_index, tone):
+        self._building = True
+        self._fields = {}
         _clear_layout(self._editor_layout)
-        hdr, hl = make_editor_card(margins=(16, 12, 16, 12), spacing=8)
-        self._prep_card(hdr)
-        title = tone.name or f"tone_{tone_idx}"
-        subtitle = f"Bank {bank_idx} | Tone {tone_idx}"
-        add_editor_card_title(hl, title, "fa6s.music", subtitle=subtitle)
-        self._name_edit = QLineEdit(tone.name)
-        self._name_edit.setFont(QFont("Consolas", 13, QFont.Weight.Bold))
-        self._name_edit.setStyleSheet(ss_input())
-        hl.addWidget(self._name_edit)
-        self._editor_layout.addWidget(hdr)
-        sec_play = self._make_section(ui_text("sound_section_playback"))
-        play_frame = QWidget()
-        play_frame.setStyleSheet(ss_transparent())
-        compact_editor = self.width() < 900
-        play_layout = QVBoxLayout(play_frame) if compact_editor else QHBoxLayout(play_frame)
-        play_layout.setContentsMargins(12, 0, 12, 12)
-        play_layout.setSpacing(6)
-        if compact_editor:
-            button_row = QWidget()
-            button_row.setStyleSheet(ss_transparent())
-            button_layout = QHBoxLayout(button_row)
-            button_layout.setContentsMargins(0, 0, 0, 0)
-            button_layout.setSpacing(6)
-        else:
-            button_row = None
-            button_layout = play_layout
-        self._play_btn = QPushButton(ui_text("ui_xfbin_audio_play"))
-        self._play_btn.setFixedHeight(34)
-        self._play_btn.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        self._play_btn.setStyleSheet(ss_btn(accent=True))
-        self._play_btn.clicked.connect(self._play_tone)
-        button_layout.addWidget(self._play_btn)
-        self._pause_btn = QPushButton(ui_text("ui_sound_pause"))
-        self._pause_btn.setFixedHeight(34)
-        self._pause_btn.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        header = self._make_section(tone.name or f'Tone {tone_index}', 'fa6s.music')
+        self._name_edit = configure_input(QLineEdit(tone.name))
+        self._field(header, 'xfa_tone_name', self._name_edit, 'xfa_name_hint')
+        self._fields['name'] = (self._name_edit, tone.name)
+        self._name_edit.editingFinished.connect(self._apply_params)
+        self._name_edit.textChanged.connect(self._mark_dirty)
+        layout = self._make_section(ui_text('sound_section_playback'), 'fa6s.wave-square')
+        self._source_combo = configure_input(QComboBox(), monospace=False)
+        self._source_combo.addItem(ui_text('awb_source_current'), False)
+        if self._original(tone):
+            self._source_combo.addItem(ui_text('awb_source_original'), True)
+        self._source_combo.currentIndexChanged.connect(self._change_source)
+        layout.addWidget(self._source_combo)
+        controls = QWidget()
+        row = configure_layout(QHBoxLayout(controls), LayoutRole.FIELD)
+        self._play_btn = timeline_icon_button(ui_text('ui_xfbin_audio_play'), 'fa6s.play', self._play_tone)
+        self._pause_btn = timeline_icon_button(ui_text('ui_sound_pause'), 'fa6s.pause', self._toggle_pause)
+        self._stop_btn = timeline_icon_button(ui_text('ui_xfbin_audio_stop'), 'fa6s.stop', self._stop_playback)
+        for button in (self._play_btn, self._pause_btn, self._stop_btn):
+            row.addWidget(button)
+        self._play_btn.setToolTip(ui_text('xfa_play_decoded_hint'))
+        self._play_btn.setEnabled(False)
         self._pause_btn.setEnabled(False)
-        self._pause_btn.setStyleSheet(ss_btn())
-        self._pause_btn.clicked.connect(self._toggle_pause)
-        button_layout.addWidget(self._pause_btn)
-        self._stop_btn = QPushButton(ui_text("ui_xfbin_audio_stop"))
-        self._stop_btn.setFixedHeight(34)
-        self._stop_btn.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         self._stop_btn.setEnabled(False)
-        self._stop_btn.setStyleSheet(ss_btn(danger=True))
-        self._stop_btn.clicked.connect(self._stop_playback)
-        button_layout.addWidget(self._stop_btn)
-        if compact_editor:
-            play_layout.addWidget(button_row)
-        self._prog_lbl = QLabel("0:00.00 / 0:00.00")
-        self._prog_lbl.setFont(QFont("Consolas", 11))
+        self._prog_lbl = QLabel('')
+        self._prog_lbl.setMinimumWidth(0)
         self._prog_lbl.setStyleSheet(ss_dim_label())
-        play_layout.addWidget(self._prog_lbl)
-        if not compact_editor:
-            play_layout.addStretch()
-        sec_play.layout().addWidget(play_frame)
-
-        seek_frame = QWidget()
-        seek_frame.setStyleSheet(ss_transparent())
-        seek_layout = QHBoxLayout(seek_frame)
-        seek_layout.setContentsMargins(12, 0, 12, 8)
-        seek_layout.setSpacing(8)
-        self._seek_slider = QSlider(Qt.Orientation.Horizontal)
-        self._seek_slider.setRange(0, 1000)
-        self._seek_slider.setValue(0)
-        self._seek_slider.setEnabled(False)
-        self._seek_slider.setStyleSheet(ss_slider())
-        self._seek_slider.sliderPressed.connect(self._begin_seek)
-        self._seek_slider.sliderReleased.connect(self._finish_seek)
-        self._seek_slider.valueChanged.connect(self._preview_seek)
-        seek_layout.addWidget(self._seek_slider, 1)
-        sec_play.layout().addWidget(seek_frame)
-
-        self._wave_widget = WaveformWidget()
-        wf_container = QWidget()
-        wf_container.setStyleSheet(ss_transparent())
-        wf_layout = QHBoxLayout(wf_container)
-        wf_layout.setContentsMargins(12, 0, 12, 12)
-        wf_layout.addWidget(self._wave_widget)
-        sec_play.layout().addWidget(wf_container)
-        sec_vol = self._make_section(ui_text("sound_section_volume"))
-        vol_frame = QWidget()
-        vol_frame.setStyleSheet(ss_transparent())
-        vol_layout = QVBoxLayout(vol_frame)
-        vol_layout.setContentsMargins(12, 0, 12, 12)
-        row_w, self._vol_slider, _ = _param_slider(ui_text("ui_xfbin_audio_volume"), 0.0, 4.0, tone.volume, 100)
-        vol_layout.addWidget(row_w)
-        sec_vol.layout().addWidget(vol_frame)
-        sec_act = self._make_section(ui_text("sound_section_actions"))
-        act_frame = QWidget()
-        act_frame.setStyleSheet(ss_transparent())
-        compact_actions = self.width() < 900
-        act_layout = QVBoxLayout(act_frame) if compact_actions else QHBoxLayout(act_frame)
-        act_layout.setContentsMargins(12, 0, 12, 12)
-        act_layout.setSpacing(8)
-        for text, fn, accent in [
-            (ui_text("ui_sound_extract_audio"), lambda: self._export_tone('wav'), True),
-            (ui_text("ui_sound_extract_all"), self._batch_export, False),
-            (ui_text("ui_sound_replace_audio"), self._replace_audio, False),
-        ]:
-            b = QPushButton(text)
-            b.setFixedHeight(34)
-            b.setMinimumWidth(0 if compact_actions else 150)
-            b.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-            b.setStyleSheet(ss_btn(accent=accent))
-            b.clicked.connect(fn)
-            act_layout.addWidget(b)
-        if not compact_actions:
-            act_layout.addStretch()
-        sec_act.layout().addWidget(act_frame)
-        sec_params = self._make_section(ui_text("skill_section_params"))
-        params = QWidget()
-        params.setStyleSheet(ss_transparent())
-        pl = QVBoxLayout(params)
-        pl.setContentsMargins(12, 0, 12, 12)
-        pl.setSpacing(6)
-        row_w, self._pitch_slider, _ = _param_slider(ui_text("ui_xfbin_audio_pitch"), 0.1, 4.0, tone.pitch, 100)
-        pl.addWidget(row_w)
-        row_w, self._send_slider, _ = _param_slider(ui_text("ui_xfbin_audio_send_level"), 0.0, 4.0, getattr(tone, 'send_level', 0.0), 100)
-        pl.addWidget(row_w)
-        pan_container = QWidget()
-        pan_container.setStyleSheet(ss_transparent())
-        pan_hl = QHBoxLayout(pan_container)
-        pan_hl.setContentsMargins(0, 4, 0, 4)
-        pan_hl.addStretch()
-        col_3d, self._pan3d_knob, _ = _param_knob(ui_text("ui_xfbin_audio_pan_3d"), -180, 180, int(round(tone.pan_3d)))
-        col_2d, self._pan2d_knob, _ = _param_knob(ui_text("ui_xfbin_audio_pan_2d"), -180, 180, int(round(tone.pan_2d)))
-        pan_hl.addWidget(col_3d)
-        pan_hl.addSpacing(28)
-        pan_hl.addWidget(col_2d)
-        pan_hl.addStretch()
-        pl.addWidget(pan_container)
-        track_row = QWidget()
-        track_row.setStyleSheet(ss_transparent())
-        trl = QHBoxLayout(track_row)
-        trl.setContentsMargins(0, 2, 0, 2)
-        lbl = QLabel(ui_text("ui_xfbin_audio_track_count"))
-        lbl.setFont(QFont("Segoe UI", 11))
-        lbl.setStyleSheet(ss_dim_label())
-        lbl.setFixedWidth(130)
-        trl.addWidget(lbl)
-        self._track_spin = QSpinBox()
-        self._track_spin.setRange(1, 16)
-        self._track_spin.setValue(max(1, min(16, int(getattr(tone, 'track_count', 1) or 1))))
-        self._track_spin.setFixedHeight(28)
-        self._track_spin.setFont(QFont("Consolas", 11))
-        self._track_spin.setStyleSheet(ss_input())
-        trl.addWidget(self._track_spin)
-        trl.addStretch()
-        pl.addWidget(track_row)
-        sec_params.layout().addWidget(params)
-        sec_loop = self._make_section(ui_text("ui_xfbin_audio_loop_control"))
-        loop = QWidget()
-        loop.setStyleSheet(ss_transparent())
-        lc = QVBoxLayout(loop)
-        lc.setContentsMargins(12, 0, 12, 12)
-        self._loop_chk = QCheckBox(ui_text("ui_xfbin_audio_loop_audio"))
-        self._loop_chk.setFont(QFont("Segoe UI", 12))
+        row.addWidget(self._prog_lbl, 1)
+        layout.addWidget(controls)
+        self._wave_widget = AudioWaveform()
+        self._wave_widget.loop_min_samples = 2
+        self._wave_widget.loopSelectionChanged.connect(self._loop_selection_changed)
+        self._wave_widget.seekRequested.connect(self._seek_to)
+        self._wave_widget.loopEditRequested.connect(self._edit_loop_markers)
+        layout.addWidget(self._wave_widget)
+        self._preview_stats = self._hint(layout, 'loading')
+        info = parse_audio_meta(tone._bnsf_blob or b'')
+        bounds = stream_loop(tone._bnsf_blob or b'')
+        self._loop_total = info['total_samples'] if info else 0
+        self._loop_bounds = bounds or (0, self._loop_total)
+        loop_row = EditorActionRow()
+        self._loop_chk = QCheckBox(ui_text('xfa_loop_short'))
         self._loop_chk.setStyleSheet(ss_check())
-        self._loop_chk.setChecked(tone.looping)
-        self._loop_chk.stateChanged.connect(self._on_loop_toggle)
-        lc.addWidget(self._loop_chk)
-        sr = tone.sample_rate or 1
-        total = tone.total_samples
-        start = tone.loop_start if tone.looping else 0
-        end = tone.loop_end if tone.looping else total
-        if end == 0xFFFFFFFF or end == 0:
-            end = total
-        row_w, self._loop_range_slider, _ = _loop_range_slider(ui_text("ui_xfbin_audio_loop_range"), total, start, end, sr)
-        self._loop_range_slider.setEnabled(tone.looping)
-        lc.addWidget(row_w)
-        sec_loop.layout().addWidget(loop)
-        self._bind_auto_apply(bank_idx, tone_idx)
+        self._loop_chk.setFont(ui_font(TypeSize.LABEL))
+        self._loop_chk.setChecked(bounds is not None)
+        self._loop_saved = self._loop_form()
+        self._loop_chk.toggled.connect(self._toggle_loop_fields)
+        loop_row.content_layout.addWidget(self._loop_chk)
+        self._select_loop_btn = configure_button(QPushButton(ui_text('xfa_select_loop')), toggle=True)
+        self._select_loop_btn.setCheckable(True)
+        self._select_loop_btn.setToolTip(ui_text('xfa_select_loop_hint'))
+        self._select_loop_btn.toggled.connect(self._select_loop)
+        loop_row.content_layout.addWidget(self._select_loop_btn)
+        self._loop_btn = configure_button(QPushButton(ui_text('xfa_audition_short')), toggle=True)
+        self._loop_btn.setCheckable(True)
+        self._loop_btn.setToolTip(ui_text('xfa_audition_loop'))
+        self._loop_btn.toggled.connect(self._update_audition_loop)
+        loop_row.content_layout.addWidget(self._loop_btn)
+        loop_row.content_layout.addStretch()
+        layout.addWidget(loop_row)
+        self._loop_status = self._hint(layout, 'xfa_select_loop_hint')
+        self._retry_btn = configure_button(QPushButton(ui_text('awb_prepare_waveform')))
+        self._retry_btn.clicked.connect(self._request_preview)
+        self._retry_btn.hide()
+        layout.addWidget(self._retry_btn)
+        parameters = self._make_section(ui_text('xfa_tone_properties'))
+        self._sliders = {}
+        for name, label, lo, hi, step in (
+                ('gain_db', 'xfa_gain_db', -90, 12, .5),
+                ('pitch_cents', 'xfa_pitch_semitones', -24, 24, .5),
+                ('pan_degrees', 'xfa_pan_degrees', -180, 180, 1)):
+            self._float_field(parameters, name, label, lo, hi, step)
+        self._processing_status = QLabel('')
+        self._processing_status.setWordWrap(True)
+        self._processing_status.setStyleSheet(ss_error_label())
+        self._processing_status.hide()
+        parameters.addWidget(self._processing_status)
+        filters = self._make_section(ui_text('xfa_filters'))
+        for name, label, lo, hi, step in (
+                ('volume', 'xfa_lowpass_percent', 0, 100, 1),
+                ('pitch', 'xfa_highpass_percent', 0, 100, 1),
+                ('pan_3d', 'xfa_spatial_field', -90, 12, .5),
+                ('send_level', 'xfa_blend_percent', 0, 100, 1)):
+            self._float_field(filters, name, label, lo, hi, step)
+        self._parameter_status = QLabel('')
+        self._parameter_status.setWordWrap(True)
+        self._parameter_status.setStyleSheet(ss_dim_label())
+        filters.addWidget(self._parameter_status)
+        actions = self._make_section(ui_text('sound_section_actions'), 'fa6s.screwdriver-wrench')
+        self._hint(actions, 'xfa_import_hint')
+        for key, callback in (('ui_sound_extract_audio', lambda: self._export_tone('wav')),
+            ('xfa_export_encoded', lambda: self._export_tone('encoded')), ('ui_sound_replace_audio', self._replace_audio),
+            ('ui_sound_extract_all', self._batch_export), ('xfa_import_batch', self._batch_import)):
+            button = configure_button(QPushButton(ui_text(key)))
+            button.clicked.connect(callback)
+            actions.addWidget(button)
         self._editor_layout.addStretch()
+        self._building = False
+        self._processing_feedback()
+        QTimer.singleShot(0, self._fit_page)
 
-    def _make_section(self, title):
-        sec, sec_layout = make_editor_card(margins=(16, 14, 16, 14), spacing=10)
-        self._prep_card(sec)
-        icon_name = "fa6s.sliders"
-        text = str(title).lower()
-        if "play" in text or "preview" in text:
-            icon_name = "fa6s.play"
-        elif "loop" in text:
-            icon_name = "fa6s.repeat"
-        elif "pan" in text:
-            icon_name = "fa6s.location-crosshairs"
-        elif "action" in text or "import" in text or "export" in text:
-            icon_name = "fa6s.screwdriver-wrench"
-        add_editor_card_title(sec_layout, title, icon_name)
-        self._editor_layout.addWidget(sec)
-        return sec
+    def _float_field(self, layout, name, label, lo, hi, step):
+        edit = configure_input(QLineEdit(_display_text(name, getattr(self._tone(), name))))
+        edit.setAccessibleName(ui_text(label))
+        edit.setToolTip(ui_text('xfa_exact_hint'))
+        self._fields[name] = (edit, edit.text())
+        control = FloatSliderInput(edit, lo, hi, step)
+        self._sliders[name] = control
+        self._field(layout, label, control)
+        edit.editingFinished.connect(self._apply_params)
+        edit.textChanged.connect(self._mark_dirty)
+        edit.textChanged.connect(self._processing_feedback)
+        control.value_changed.connect(self._apply_params)
 
-    def _prep_card(self, card: QWidget, *, max_width: int = 1120):
-        card.setMinimumWidth(0)
-        card.setMaximumWidth(max_width)
-        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_editor_scroll'):
+            QTimer.singleShot(0, self._fit_page)
 
-    def _bind_auto_apply(self, bank_idx: int, tone_idx: int):
-        self._name_edit.editingFinished.connect(lambda b=bank_idx, t=tone_idx: self._apply_params(b, t, refresh_list=True))
-        for widget in (self._vol_slider, self._pitch_slider, self._send_slider, self._track_spin):
-            widget.valueChanged.connect(lambda _=None, b=bank_idx, t=tone_idx: self._apply_params(b, t))
-        self._loop_range_slider.valueChanged.connect(
-            lambda _start=None, _end=None, b=bank_idx, t=tone_idx: self._apply_params(b, t))
-        self._pan3d_knob.valueChanged.connect(lambda _=None, b=bank_idx, t=tone_idx: self._apply_params(b, t))
-        self._pan2d_knob.valueChanged.connect(lambda _=None, b=bank_idx, t=tone_idx: self._apply_params(b, t))
-        self._loop_chk.stateChanged.connect(lambda _=None, b=bank_idx, t=tone_idx: self._apply_params(b, t))
-
-    def _on_loop_toggle(self, state):
-        enabled = bool(state)
-        if hasattr(self, '_loop_range_slider'):
-            self._loop_range_slider.setEnabled(enabled)
-
-    # Apply parameters
-
-    def _apply_params(self, bank_idx: int, tone_idx: int, refresh_list: bool = False):
-        if not self._banks or bank_idx >= len(self._banks):
+    def _processing_feedback(self, *_):
+        if self._building or not self._fields:
             return
-        bank = self._banks[bank_idx]
-        if tone_idx < 0 or tone_idx >= len(bank.tones):
-            return
-        tone = bank.tones[tone_idx]
+        try:
+            gain = float(self._fields['gain_db'][0].text())
+            pitch = float(self._fields['pitch_cents'][0].text())
+            if not math.isfinite(gain) or not math.isfinite(pitch):
+                raise ValueError()
+            self._processing_status.clear()
+            self._processing_status.hide()
+        except (ValueError, OverflowError):
+            self._processing_status.setText(ui_text('xfa_invalid_properties'))
+            self._processing_status.show()
 
-        new_name = self._name_edit.text().strip()
-        if new_name and new_name != tone.name:
-            tone.name = new_name
+    def _fit_page(self):
+        if not self._closed:
+            fit_scroll_page(self._editor_scroll)
 
-        tone.volume      = self._vol_slider.value()    / 100.0
-        tone.pitch       = self._pitch_slider.value()  / 100.0
-        tone.pan_3d      = float(self._pan3d_knob.value())
-        tone.pan_2d      = float(self._pan2d_knob.value())
-        tone.send_level  = self._send_slider.value()   / 100.0
-        tone.track_count = self._track_spin.value()
-
-        if self._loop_chk.isChecked():
-            tone.loop_start, tone.loop_end = self._loop_range_slider.values()
-        else:
-            tone.loop_start = 0xFFFFFFFF
-            tone.loop_end   = 0xFFFFFFFF
-
-        if refresh_list and hasattr(self, '_tone_btns'):
-            self._populate_tone_list()
-            self._select_tone(tone_idx)
-        self._mark_dirty()
-
-    # Decode / waveform
-
-    def _on_decode_done(self, wav_bytes: bytes):
-        self._hide_decode_busy()
-        # Restore play button
-        if hasattr(self, '_play_btn'):
-            self._play_btn.setEnabled(True)
-            self._play_btn.setText(ui_text("ui_xfbin_audio_play"))
-        if hasattr(self, '_pause_btn'):
-            self._pause_btn.setEnabled(False)
-            self._pause_btn.setText(ui_text("ui_sound_pause"))
-        # Auto-play if triggered by Play click
-        if self._decode_and_play:
-            self._decode_and_play = False
-            self._play_tone()
-        # Draw waveform in background
-        def worker():
+    def _apply_params(self, *args, **kwargs):
+        tone = self._tone()
+        if tone is None or not self._fields:
+            return True
+        changes = {}
+        for name, (edit, loaded) in self._fields.items():
+            text = edit.text()
+            if text == loaded:
+                edit.setStyleSheet(ss_input_validation(False))
+                continue
             try:
-                with wave.open(io.BytesIO(wav_bytes), 'rb') as wf:
-                    n_ch = wf.getnchannels()
-                    n_fr = wf.getnframes()
-                    raw  = wf.readframes(n_fr)
-                samps = list(struct.unpack_from(f'<{n_fr * n_ch}h', raw))
-                if n_ch > 1:
-                    samps = [samps[i] for i in range(0, len(samps), n_ch)]
-                self._sig_wave_ready.emit(samps)
-            except Exception:
-                pass
-        threading.Thread(target=worker, daemon=True).start()
+                if name == 'name':
+                    if len(text.encode('ascii')) > 253 or '\0' in text:
+                        raise ValueError()
+                    value = text
+                else:
+                    scale, offset = _DISPLAY_UNITS.get(name, (Decimal(1), Decimal(0)))
+                    value = struct.unpack('<f', struct.pack('<f', float((Decimal(text) - offset) / scale)))[0]
+                    if not math.isfinite(value):
+                        raise ValueError()
+                edit.setStyleSheet(ss_input_validation(False))
+                changes[name] = value
+            except (ValueError, OverflowError, struct.error, UnicodeError, InvalidOperation):
+                edit.setStyleSheet(ss_input_validation(True))
+                self._parameter_status.setText(ui_text('xfa_invalid_properties'))
+                edit.setFocus()
+                return False
+        if not self._commit_loop():
+            return False
+        for name, value in changes.items():
+            setattr(tone, name, value)
+            edit, _ = self._fields[name]
+            self._fields[name] = edit, edit.text()
+        if changes:
+            self._mark_dirty()
+            self._filter_tones()
+            self._parameter_status.setText(ui_text('xfa_properties_applied'))
+        return True
 
-    def _on_decode_err(self, msg):
-        self._hide_decode_busy()
-        self._decode_and_play = False
-        if hasattr(self, '_play_btn'):
-            self._play_btn.setEnabled(True)
-            self._play_btn.setText(ui_text("ui_xfbin_audio_play"))
-        if hasattr(self, '_pause_btn'):
-            self._pause_btn.setEnabled(False)
-            self._pause_btn.setText(ui_text("ui_sound_pause"))
-        if hasattr(self, '_wave_widget'):
-            self._wave_widget.clear()
-        QMessageBox.critical(
-            self,
-            ui_text("xfa_decode_error_title"),
-            ui_text("ui_xfbin_audio_value_2", p0=msg),
-        )
+    def _loop_form(self):
+        return self._loop_chk.isChecked(), *(str(value) for value in self._loop_bounds)
 
-    def _draw_waveform(self, samples):
-        if not hasattr(self, '_wave_widget'):
+    def _toggle_loop_fields(self, *_):
+        if self._building:
             return
-        w = max(self._wave_widget.width(), 200)
-        h = self._wave_widget.height()
-        mid = h // 2
-        n = len(samples)
-        if n == 0:
-            return
-        step = max(1, n // w)
-        lines = []
-        for x in range(min(w, n // step)):
-            chunk = samples[x * step:(x + 1) * step]
-            hi = max(chunk)
-            lo = min(chunk)
-            y_top = int(mid - (hi / 32768.0) * (mid - 2))
-            y_bot = int(mid - (lo / 32768.0) * (mid - 2))
-            lines.append((x, y_top, y_bot))
-        self._wave_widget.set_waveform(lines)
+        if not self._apply_params():
+            with QSignalBlocker(self._loop_chk):
+                self._loop_chk.setChecked(self._loop_saved[0])
+            self._refresh_loop_view()
 
-    # Playback
+    def _commit_loop(self, *_):
+        if not self._fields or not hasattr(self, '_loop_chk') or self._tone() is None:
+            return True
+        form = self._loop_form()
+        if form == self._loop_saved:
+            return True
+        enabled = form[0]
+        try:
+            start, end = (int(value) for value in form[1:]) if enabled else (0, 0)
+            blob = set_stream_loop(self._tone()._bnsf_blob, enabled, start, end)
+        except (ValueError, TypeError) as error:
+            self._loop_status.setText(ui_text('xfa_loop_invalid', detail=str(error)))
+            return False
+        self._tone()._bnsf_blob = blob
+        self._tone().pack_size = len(blob)
+        self._loop_saved = form
+        self._update_audition_loop(self._loop_btn.isChecked())
+        self._mark_dirty()
+        self._filter_tones()
+        self._refresh_loop_view()
+        return True
 
-    def _play_tone(self):
-        if self._cur_tone < 0:
+    def _select_loop(self, enabled):
+        if enabled and (self._busy or self._source_combo.currentData() or self._envelope is None or not self._apply_params()):
+            with QSignalBlocker(self._select_loop_btn):
+                self._select_loop_btn.setChecked(False)
             return
-        key = (self._cur_bank, self._cur_tone)
-        wav = self._wav_cache.get(key)
-        if wav is None:
-            # Decode first, then auto-play when done
-            tone = self._banks[self._cur_bank].tones[self._cur_tone]
-            bnsf = get_tone_bnsf(tone)
-            if not bnsf:
-                QMessageBox.warning(self, ui_text("dlg_title_error"), ui_text("xfa_no_audio_playback"))
-                return
-            tools = _detect_audio_tool()
-            cli = tools['decode']
-            self._decode_and_play = True
-            if hasattr(self, '_play_btn'):
-                self._play_btn.setEnabled(False)
-                self._play_btn.setText(ui_text("ui_xfbin_audio_decoding"))
-            if hasattr(self, '_pause_btn'):
-                self._pause_btn.setEnabled(False)
-                self._pause_btn.setText(ui_text("ui_sound_pause"))
-            self._show_decode_busy(tone.name or f"tone_{self._cur_tone}")
-            def _decode_worker(bnsf=bnsf, cli=cli, key=key):
-                try:
-                    decoded = _decode_bnsf_to_wav(bnsf, cli)
-                    self._wav_cache[key] = decoded
-                    self._sig_decode_done.emit(decoded)
-                except Exception as e:
-                    self._sig_decode_err.emit(str(e))
-            threading.Thread(target=_decode_worker, daemon=True).start()
+        self._wave_widget.set_loop_selection_enabled(enabled)
+
+    def _loop_selection_changed(self, phase):
+        with QSignalBlocker(self._select_loop_btn):
+            self._select_loop_btn.setChecked(phase != 0)
+        if phase:
+            self._loop_status.setText(ui_text('xfa_loop_first_point' if phase == 1 else 'xfa_loop_second_point'))
+        else:
+            self._refresh_loop_view()
+        QTimer.singleShot(0, self._fit_page)
+
+    def _edit_loop_markers(self, bounds):
+        if self._source_combo.currentData() or not self._apply_params():
+            self._refresh_loop_view()
+            return
+        self._loop_bounds = tuple(bounds)
+        with QSignalBlocker(self._loop_chk):
+            self._loop_chk.setChecked(True)
+        if not self._commit_loop():
+            with QSignalBlocker(self._loop_chk):
+                self._loop_chk.setChecked(self._loop_saved[0])
+            self._loop_bounds = tuple(int(value) for value in self._loop_saved[1:])
+            self._refresh_loop_view()
+
+    def _refresh_loop_view(self):
+        source = self._preview_source()
+        blob = source._bnsf_blob if source else None
+        bounds = stream_loop(blob) if blob else None
+        info = parse_audio_meta(blob) if blob else None
+        editable = bool(self._envelope and not self._source_combo.currentData() and info
+                        and info['total_samples'] >= 2 and not info.get('flags'))
+        rate = self._envelope.sample_rate if self._envelope else 1
+        self._wave_widget.loop = tuple(value / rate for value in bounds) if bounds else None
+        self._wave_widget.loop_editable = bool(bounds and editable)
+        self._loop_chk.setEnabled(editable)
+        self._select_loop_btn.setEnabled(editable)
+        self._loop_btn.setEnabled(bool(bounds and self._envelope))
+        if not bounds:
+            self._loop_btn.setChecked(False)
+        if not self._wave_widget.loop_selection_active:
+            self._loop_status.setText(ui_text('xfa_loop_times', start=_fmt_dur(bounds[0] / rate),
+                end=_fmt_dur(bounds[1] / rate)) if bounds and self._envelope else ui_text('xfa_select_loop_hint'))
+        self._wave_widget.update()
+        QTimer.singleShot(0, self._fit_page)
+
+    def _preview_source(self):
+        tone = self._tone()
+        return self._original(tone) if tone and self._source_combo.currentData() else tone
+
+    def _change_source(self, *_):
+        if not self._apply_params():
+            with QSignalBlocker(self._source_combo):
+                self._source_combo.setCurrentIndex(1 - self._source_combo.currentIndex())
             return
         self._stop_playback()
-        self._stop_flag.clear()
-        self._pause_flag.clear()
-        with self._seek_lock:
-            self._seek_target_frame = None
-        self._playing = True
-        if hasattr(self, '_play_btn'):
-            self._play_btn.setEnabled(False)
-            self._play_btn.setText(ui_text("ui_xfbin_audio_play"))
-        if hasattr(self, '_pause_btn'):
-            self._pause_btn.setEnabled(True)
-            self._pause_btn.setText(ui_text("ui_sound_pause"))
-        if hasattr(self, '_stop_btn'):
-            self._stop_btn.setEnabled(True)
-        if hasattr(self, '_seek_slider'):
-            self._seek_slider.setEnabled(True)
-            self._seek_slider.setValue(0)
+        self._request_preview()
 
+    def _request_preview(self, *_):
+        source = self._preview_source()
+        if source is None or self._closed:
+            return
+        self._generation += 1
+        generation, blob = self._generation, source._bnsf_blob
+        self._wav, self._envelope = None, None
+        self._wave_widget.clear()
+        self._play_btn.setEnabled(False)
+        self._preview_stats.setText(ui_text('ui_xfbin_audio_decoding'))
+        self._retry_btn.hide()
+        if self._preview_future:
+            self._preview_future.cancel()
+        cached = self._wav_cache.get(blob)
         def worker():
             try:
-                with wave.open(io.BytesIO(wav), 'rb') as wf:
-                    sr    = wf.getframerate()
-                    ch    = wf.getnchannels()
-                    sw    = wf.getsampwidth()
-                    total = wf.getnframes()
-                    CHUNK = 1024
-                    frames_read = 0
-                    self._seek_total = total / sr if sr else 0.0
-                    self._seek_total_frames = total
-                    self._seek_fps = sr
+                wav = cached if cached is not None else decode_audio(blob)
+                envelope = analyze_wav(wav)
+                if not self._closed:
+                    self._sig_preview.emit(generation, wav, envelope, '')
+            except Exception as error:
+                if not self._closed:
+                    self._sig_preview.emit(generation, None, None, str(error))
+        self._preview_future = self._pool.submit(worker)
 
-                    try:
-                        import sounddevice as _sd
-                        _dtype = {1: 'int8', 2: 'int16', 4: 'int32'}.get(sw, 'int16')
-                        with _sd.RawOutputStream(samplerate=sr, channels=ch, dtype=_dtype,
-                                                  blocksize=CHUNK) as stream:
-                            while not self._stop_flag.is_set():
-                                while self._pause_flag.is_set() and not self._stop_flag.is_set():
-                                    self._stop_flag.wait(0.05)
-                                with self._seek_lock:
-                                    target = self._seek_target_frame
-                                    self._seek_target_frame = None
-                                if target is not None:
-                                    target = max(0, min(total, target))
-                                    wf.setpos(target)
-                                    frames_read = target
-                                data = wf.readframes(CHUNK)
-                                if not data:
-                                    break
-                                stream.write(data)
-                                frames_read = wf.tell()
-                                self._sig_play_prog.emit(frames_read / sr, total / sr)
-                    except ImportError:
-                        # sounddevice not installed — try pyaudio
-                        import pyaudio
-                        if self._pa is None:
-                            self._pa = pyaudio.PyAudio()
-                        stream = self._pa.open(
-                            format=self._pa.get_format_from_width(sw),
-                            channels=ch, rate=sr, output=True)
-                        while not self._stop_flag.is_set():
-                            while self._pause_flag.is_set() and not self._stop_flag.is_set():
-                                self._stop_flag.wait(0.05)
-                            with self._seek_lock:
-                                target = self._seek_target_frame
-                                self._seek_target_frame = None
-                            if target is not None:
-                                target = max(0, min(total, target))
-                                wf.setpos(target)
-                                frames_read = target
-                            data = wf.readframes(CHUNK)
-                            if not data:
-                                break
-                            stream.write(data)
-                            frames_read = wf.tell()
-                            self._sig_play_prog.emit(frames_read / sr, total / sr)
-                        stream.stop_stream()
-                        stream.close()
-            except ImportError:
-                self._sig_decode_err.emit(ui_text("xfa_playback_library_missing"))
-            except Exception as e:
-                self._sig_decode_err.emit(str(e))
+    def _on_preview(self, generation, wav, envelope, error):
+        if generation != self._generation or self._closed:
+            return
+        if error:
+            self._preview_stats.setText(ui_text('xfa_preview_error', detail=error))
+            self._retry_btn.show()
+            self._fit_page()
+            return
+        self._wav, self._envelope = wav, envelope
+        self._wav_cache[self._preview_source()._bnsf_blob] = wav
+        self._wave_widget.set_audio(envelope)
+        self._seek_to(0)
+        self._refresh_loop_view()
+        self._play_btn.setEnabled(True)
+        self._preview_stats.setText(ui_text('xfa_stream_details', channels=envelope.channels,
+            rate=envelope.sample_rate, samples=envelope.frames, duration=f'{envelope.duration:.3f}'))
+        fit_scroll_page(self._editor_scroll)
+
+    def _seek_to(self, seconds):
+        if self._envelope is None:
+            return
+        seconds = max(0., min(seconds, self._envelope.duration))
+        self._wave_widget.set_position(seconds)
+        self._prog_lbl.setText(f'{_fmt_dur(seconds)} / {_fmt_dur(self._envelope.duration)}')
+        if self._player:
+            with self._player['lock']:
+                self._player['seek'] = round(seconds * self._envelope.sample_rate)
+
+    def _play_tone(self):
+        if self._busy or not self._apply_params() or self._wav is None:
+            return
+        self._stop_playback(reset=False)
+        self._set_status('')
+        self._play_generation += 1
+        token = self._play_generation
+        state = dict(stop=threading.Event(), pause=threading.Event(), lock=threading.Lock(), seek=None, loop=None)
+        self._player, self._playing = state, True
+        self._play_btn.setEnabled(False)
+        self._pause_btn.setEnabled(True)
+        self._stop_btn.setEnabled(True)
+        wav = self._wav
+        start = round(self._wave_widget.position * self._envelope.sample_rate)
+        state['loop'] = stream_loop(self._preview_source()._bnsf_blob) if self._loop_btn.isChecked() else None
+        def worker():
+            pa, output = None, None
+            try:
+                pa = import_pyaudio().PyAudio()
+                with wave.open(io.BytesIO(wav), 'rb') as audio:
+                    total, rate = audio.getnframes(), audio.getframerate()
+                    audio.setpos(start if start < total else 0)
+                    output = pa.open(format=pa.get_format_from_width(audio.getsampwidth()),
+                                     rate=rate, channels=audio.getnchannels(), output=True)
+                    while not state['stop'].is_set():
+                        if state['pause'].is_set():
+                            state['stop'].wait(.03)
+                            continue
+                        with state['lock']:
+                            target, state['seek'] = state['seek'], None
+                            bounds = state['loop']
+                        if target is not None:
+                            audio.setpos(max(0, min(total, target)))
+                        if bounds and audio.tell() >= bounds[1]:
+                            audio.setpos(bounds[0])
+                        count = min(1024, bounds[1] - audio.tell()) if bounds else 1024
+                        data = audio.readframes(count)
+                        if not data:
+                            break
+                        output.write(data)
+                        if not self._closed:
+                            self._sig_play.emit(token, audio.tell() / rate, '')
+            except Exception as error:
+                if not self._closed:
+                    self._sig_play.emit(token, -1, str(error))
             finally:
-                self._playing = False
-                self._sig_play_done.emit()
+                if output:
+                    try:
+                        output.stop_stream()
+                        output.close()
+                    except Exception:
+                        pass
+                if pa:
+                    try:
+                        pa.terminate()
+                    except Exception:
+                        pass
+                if not self._closed:
+                    self._sig_play.emit(token, -2, '')
+        threading.Thread(target=worker, daemon=True, name='xfb-audition').start()
 
-        self._play_thread = threading.Thread(target=worker, daemon=True)
-        self._play_thread.start()
+    def _on_play_event(self, token, seconds, error):
+        if token != self._play_generation or self._closed:
+            return
+        if error:
+            self._set_status(ui_text('xfa_playback_error', detail=error))
+        elif seconds == -2:
+            self._stop_playback(reset=False)
+        elif seconds >= 0:
+            player, self._player = self._player, None
+            self._seek_to(seconds)
+            self._player = player
+
+    def _update_audition_loop(self, enabled):
+        if self._player:
+            with self._player['lock']:
+                self._player['loop'] = stream_loop(self._preview_source()._bnsf_blob) if enabled else None
 
     def _toggle_pause(self):
-        if not self._playing:
-            return
-        if self._pause_flag.is_set():
-            self._pause_flag.clear()
-            if hasattr(self, '_pause_btn'):
-                self._pause_btn.setText(ui_text("ui_sound_pause"))
-        else:
-            self._pause_flag.set()
-            if hasattr(self, '_pause_btn'):
-                self._pause_btn.setText(ui_text("ui_sound_resume"))
+        if self._player:
+            pause = self._player['pause']
+            pause.clear() if pause.is_set() else pause.set()
+            self._pause_btn.setToolTip(ui_text('ui_sound_resume') if pause.is_set() else ui_text('ui_sound_pause'))
 
-    def _begin_seek(self):
-        self._seeking = True
-
-    def _preview_seek(self, value):
-        if not self._seeking or not hasattr(self, '_prog_lbl') or not hasattr(self, '_seek_slider'):
-            return
-        if self._seek_total <= 0:
-            return
-        pos = self._seek_total * value / max(1, self._seek_slider.maximum())
-        self._prog_lbl.setText(ui_text("ui_sound_value_value_2", p0=_fmt_dur(pos), p1=_fmt_dur(self._seek_total)))
-
-    def _finish_seek(self):
-        self._seeking = False
-        if not hasattr(self, '_seek_slider'):
-            return
-        if self._seek_fps <= 0 or self._seek_total_frames <= 0:
-            return
-        ratio = self._seek_slider.value() / max(1, self._seek_slider.maximum())
-        with self._seek_lock:
-            self._seek_target_frame = int(self._seek_total_frames * ratio)
-
-    def _stop_playback(self):
-        self._stop_flag.set()
-        self._pause_flag.clear()
-        with self._seek_lock:
-            self._seek_target_frame = None
-        self._playing = False
+    def _stop_playback(self, reset=True):
+        self._play_generation += 1
+        if self._player:
+            self._player['stop'].set()
+        self._player, self._playing = None, False
         if hasattr(self, '_play_btn'):
-            self._play_btn.setEnabled(True)
-            self._play_btn.setText(ui_text("ui_xfbin_audio_play"))
-        if hasattr(self, '_pause_btn'):
+            self._play_btn.setEnabled(self._wav is not None)
             self._pause_btn.setEnabled(False)
-            self._pause_btn.setText(ui_text("ui_sound_pause"))
-        if hasattr(self, '_stop_btn'):
             self._stop_btn.setEnabled(False)
-        if hasattr(self, '_seek_slider'):
-            self._seek_slider.setEnabled(False)
+            if reset:
+                self._seek_to(0)
 
-    def _update_play_progress(self, pos, total):
-        if hasattr(self, '_prog_lbl'):
-            self._prog_lbl.setText(ui_text("ui_sound_value_value_2", p0=_fmt_dur(pos), p1=_fmt_dur(total)))
-        self._seek_total = total
-        if hasattr(self, '_seek_slider') and not self._seeking and total > 0:
-            self._seek_slider.setValue(int((pos / total) * self._seek_slider.maximum()))
-
-    def _on_play_done(self):
-        if hasattr(self, '_play_btn'):
-            self._play_btn.setEnabled(True)
-            self._play_btn.setText(ui_text("ui_xfbin_audio_play"))
-        if hasattr(self, '_pause_btn'):
-            self._pause_btn.setEnabled(False)
-            self._pause_btn.setText(ui_text("ui_sound_pause"))
-        if hasattr(self, '_stop_btn'):
-            self._stop_btn.setEnabled(False)
-        if hasattr(self, '_seek_slider'):
-            self._seek_slider.setEnabled(False)
-            self._seek_slider.setValue(0)
-
-    # Export
-
-    def _export_tone(self, fmt: str):
-        if self._cur_tone < 0:
+    def _mark_dirty(self, *_):
+        if self._building:
             return
-        bank = self._banks[self._cur_bank]
-        tone = bank.tones[self._cur_tone]
-        bnsf = get_tone_bnsf(tone)
-        if not bnsf:
-            QMessageBox.warning(self, ui_text("dlg_title_error"), ui_text("xfa_no_audio_export"))
-            return
+        pending = any(edit.text() != loaded for edit, loaded in self._fields.values())
+        if self._fields and hasattr(self, '_loop_saved'):
+            pending = pending or self._loop_form() != self._loop_saved
+        self._dirty = pending or self._saved_state != self._document_state()
+        if self._filepath:
+            set_file_label(self._file_lbl, self._filepath, dirty=self._dirty)
 
-        if fmt == 'bnsf':
-            path, _ = QFileDialog.getSaveFileName(
-                self, ui_text("ui_xfbin_audio_bnsf"), f"{tone.name}.bnsf",
-                "BNSF files (*.bnsf);;All files (*.*)")
-            if not path:
-                return
-            with open(path, 'wb') as f:
-                f.write(bnsf)
-            QMessageBox.information(self, ui_text("ui_xfbin_audio_ok"), ui_text("ui_xfbin_audio_value_6", p0=os.path.basename(path)))
-            return
-
-        path, _ = QFileDialog.getSaveFileName(
-            self, ui_text("ui_xfbin_audio_wav"), f"{tone.name}.wav",
-            "WAV files (*.wav);;All files (*.*)")
-        if not path:
-            return
-        path = _ensure_file_ext(path, '.wav')
-
-        key = (self._cur_bank, self._cur_tone)
-        cached_wav = self._wav_cache.get(key)
-        if cached_wav:
+    def _run_job(self, kind, worker):
+        if self._busy or not self._apply_params():
+            return False
+        self._stop_playback()
+        self._set_busy(True)
+        def run():
             try:
-                with open(path, 'wb') as f:
-                    f.write(cached_wav)
-                QMessageBox.information(self, ui_text("ui_xfbin_audio_ok"), ui_text("ui_xfbin_audio_value_6", p0=os.path.basename(path)))
-            except Exception as e:
-                QMessageBox.critical(self, ui_text("dlg_title_error"), str(e))
-            return
+                result = worker()
+                if not self._closed:
+                    self._sig_job.emit(kind, result, '')
+            except Exception as error:
+                if not self._closed:
+                    self._sig_job.emit(kind, None, str(error))
+        self._pool.submit(run)
+        return True
 
-        cli = _detect_audio_tool()['decode']
-        self._set_busy(True, ui_text("ui_xfbin_audio_decoding"), os.path.basename(path), 0, 0)
-
+    def _import_paths(self, paths, replace=False):
+        bank, tone = self._banks[self._cur_bank], self._tone()
         def worker():
-            try:
-                wav = _decode_bnsf_to_wav(bnsf, cli)
-                self._wav_cache[key] = wav
-                with open(path, 'wb') as f:
-                    f.write(wav)
-                self._sig_save_done.emit(path)
-            except Exception as e:
-                self._sig_save_err.emit(str(e))
-        threading.Thread(target=worker, daemon=True).start()
-
-    # Import / Replace
+            results, errors = [], []
+            for path in paths:
+                self._sig_progress.emit(ui_text('xfa_converting_name', name=os.path.basename(path)))
+                try:
+                    with open(path, 'rb') as stream:
+                        blob = import_audio(stream.read(), path)
+                    results.append((os.path.splitext(os.path.basename(path))[0], blob))
+                except Exception as error:
+                    errors.append(f'{os.path.basename(path)}: {error}')
+            return bank, tone if replace else None, results, errors
+        self._run_job('import', worker)
 
     def _replace_audio(self):
-        if self._cur_tone < 0:
+        if self._busy or not self._tone() or not self._apply_params():
             return
-
-        path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("xfa_import_replacement_audio"), game_files_dialog_dir(), _AUDIO_OPEN_FILTER)
-        if not path:
-            return
-
-        bank_idx = self._cur_bank
-        tone_idx = self._cur_tone
-        cli = _detect_vgaudio()
-
-        def worker():
-            try:
-                with open(path, 'rb') as f:
-                    audio_data = f.read()
-                bnsf = _encode_audio_to_bnsf(audio_data, cli, path)
-                self._sig_convert_done.emit(bank_idx, tone_idx, bnsf)
-            except Exception as e:
-                self._sig_convert_err.emit(str(e))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_convert_done(self, bank_idx: int, tone_idx: int, bnsf: bytes):
-        bank = self._banks[bank_idx]
-        tone = bank.tones[tone_idx]
-        set_tone_bnsf(tone, bnsf)
-
-        key = (bank_idx, tone_idx)
-        self._wav_cache.pop(key, None)
-
-        self._populate_tone_list()
-        self._select_tone(tone_idx)
-        self._mark_dirty()
-
-        QMessageBox.information(self, ui_text("ui_xfbin_audio_ok"), ui_text("ui_xfbin_audio_value_3", p0=tone.name))
-
-    def _on_convert_err(self, msg: str):
-        QMessageBox.critical(
-            self,
-            ui_text("xfa_conversion_error_title"),
-            ui_text("ui_xfbin_audio_value_vgaudiocli_exe_bnsf", p0=msg),
-        )
+        path, _ = QFileDialog.getOpenFileName(self, ui_text('ui_sound_replace_audio'), game_files_dialog_dir(), _AUDIO_OPEN_FILTER)
+        if path:
+            self._import_paths([path], replace=True)
 
     def _add_tone(self):
-        if not self._banks:
+        if self._busy or not self._banks or not self._apply_params():
             return
-
-        path, _ = QFileDialog.getOpenFileName(
-            self, ui_text("xfa_import_new_tone_audio"), game_files_dialog_dir(), _AUDIO_OPEN_FILTER)
-        if not path:
-            return
-
-        bank_idx = self._cur_bank
-        cli = _detect_vgaudio()
-
-        def worker():
-            try:
-                with open(path, 'rb') as f:
-                    audio_data = f.read()
-                bnsf = _encode_audio_to_bnsf(audio_data, cli, path)
-                self._sig_convert_done.emit(bank_idx, -1, bnsf)
-            except Exception as e:
-                self._sig_convert_err.emit(str(e))
-
-        self._pending_add_path = os.path.splitext(os.path.basename(path))[0]
-        self._sig_convert_done.disconnect(self._on_convert_done)
-        self._sig_convert_done.connect(self._on_add_tone_done)
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_add_tone_done(self, bank_idx: int, _dummy: int, bnsf: bytes):
-        try:
-            self._sig_convert_done.disconnect(self._on_add_tone_done)
-        except Exception:
-            pass
-        self._sig_convert_done.connect(self._on_convert_done)
-
-        bank = self._banks[bank_idx]
-
-        t = ToneEntry()
-        t.type_id = bank._tone_type_id
-        t._params_size = getattr(bank, '_tone_param_size', PARAMS_SIZE)
-        t._raw_params = bytearray(t._params_size)
-        t.name = getattr(self, '_pending_add_path', 'new_tone')[:15]
-        set_tone_bnsf(t, bnsf)
-
-        bank.tones.append(t)
-        if hasattr(bank, '_tone_records'):
-            bank._tone_records.append(t)
-        new_idx = len(bank.tones) - 1
-
-        self._wav_cache.pop((bank_idx, new_idx), None)
-        self._populate_tone_list()
-        self._select_tone(new_idx)
-        self._mark_dirty()
-
-        QMessageBox.information(self, ui_text("ui_xfbin_audio_ok"), ui_text("ui_xfbin_audio_value_4", p0=t.name))
-
-    def _delete_tone(self):
-        if self._cur_tone < 0 or not self._banks:
-            return
-        bank = self._banks[self._cur_bank]
-        tone = bank.tones[self._cur_tone]
-
-        ans = QMessageBox.question(
-            self,
-            ui_text("dlg_title_confirm_delete"),
-            ui_text("ui_xfbin_audio_value_5", p0=tone.name),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if ans != QMessageBox.StandardButton.Yes:
-            return
-
-        removed = bank.tones.pop(self._cur_tone)
-        if hasattr(bank, '_tone_records'):
-            try:
-                bank._tone_records.remove(removed)
-            except ValueError:
-                pass
-        self._wav_cache = {k: v for k, v in self._wav_cache.items()
-                          if k != (self._cur_bank, self._cur_tone)}
-        self._cur_tone = -1
-        self._populate_tone_list()
-        self._mark_dirty()
-
-    # Duplicate tone
-
-    def _duplicate_tone(self):
-        if self._cur_tone < 0 or not self._banks:
-            return
-        import copy
-        bank     = self._banks[self._cur_bank]
-        src      = bank.tones[self._cur_tone]
-        clone    = copy.deepcopy(src)
-        # append "_copy" suffix (truncate to 15 chars to stay safe)
-        base_name = (src.name or f"tone_{self._cur_tone}")
-        clone.name = (base_name + "_copy")[:15]
-        bank.tones.append(clone)
-        if hasattr(bank, '_tone_records'):
-            bank._tone_records.append(clone)
-        new_idx = len(bank.tones) - 1
-        self._populate_tone_list()
-        self._select_tone(new_idx)
-        self._mark_dirty()
-
-    # Batch export
-
-    def _batch_export(self):
-        """Export all PlaySound tones in the current bank to WAV files."""
-        if not self._banks:
-            return
-        cli = _detect_audio_tool()['decode']
-
-        folder = QFileDialog.getExistingDirectory(
-            self,
-            ui_text("xfa_choose_export_folder_wav"),
-            "")
-        if not folder:
-            return
-
-        bank_idx = self._cur_bank
-        bank  = self._banks[bank_idx]
-        tones = bank.tones
-        ext   = '.wav'
-        export_items = []
-        for i, tone in enumerate(tones):
-            bnsf = get_tone_bnsf(tone)
-            if bnsf and len(bnsf) >= 4:
-                export_items.append((i, tone, bnsf))
-        total = len(export_items)
-        if total == 0:
-            QMessageBox.warning(self, ui_text("dlg_title_error"), ui_text("xfa_no_audio_export"))
-            return
-
-        self._set_busy(
-            True,
-            ui_text("ui_xfbin_audio_wav"),
-            ui_text("xfa_export_progress", done=0, total=total),
-            0,
-            total,
-        )
-
-        def worker():
-            ok = 0; err = 0; errs = []
-            for done, (i, tone, bnsf) in enumerate(export_items, start=1):
-                progress_text = ui_text("xfa_export_progress", done=done, total=total)
-                self._sig_batch_prog.emit(progress_text)
-                self._sig_busy_progress.emit(progress_text, done, total)
-                name = (tone.name or f"tone_{i}").replace('/', '_').replace('\\', '_')
-                try:
-                    key = (bank_idx, i)
-                    data = self._wav_cache.get(key)
-                    if data is None:
-                        data = _decode_bnsf_to_wav(bnsf, cli)
-                        self._wav_cache[key] = data
-                    out_path = os.path.join(folder, name + ext)
-                    with open(out_path, 'wb') as f:
-                        f.write(data)
-                    ok += 1
-                except Exception as e:
-                    err += 1
-                    errs.append(f"{name}: {e}")
-            msg = ui_text("xfa_exported_count", n=ok)
-            if err:
-                msg += "\n" + ui_text("xfa_error_count", n=err) + "\n" + "\n".join(errs[:5])
-                if len(errs) > 5:
-                    msg += "\n" + ui_text("xfa_more_errors", n=len(errs) - 5)
-            self._sig_batch_prog.emit("")
-            self._sig_batch_done.emit(msg)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    # Batch import
+        path, _ = QFileDialog.getOpenFileName(self, ui_text('xfa_import_new_tone_audio'), game_files_dialog_dir(), _AUDIO_OPEN_FILTER)
+        if path:
+            self._import_paths([path])
 
     def _batch_import(self):
-        """Import multiple audio files as new tones in the current bank."""
-        if not self._banks:
+        if self._busy or not self._banks or not self._apply_params():
             return
+        paths, _ = QFileDialog.getOpenFileNames(self, ui_text('xfa_import_audio_files'), game_files_dialog_dir(), _AUDIO_OPEN_FILTER)
+        if paths:
+            self._import_paths(paths)
 
-        paths, _ = QFileDialog.getOpenFileNames(
-            self, ui_text("xfa_import_audio_files"), game_files_dialog_dir(), _AUDIO_OPEN_FILTER)
-        if not paths:
+    def _on_job(self, kind, result, error):
+        self._set_busy(False)
+        if error:
+            self._set_status(error)
+            QMessageBox.critical(self, ui_text('dlg_title_error'), error)
             return
+        if kind == 'import':
+            bank, target, items, errors = result
+            added = 0
+            for name, blob in items:
+                if target is None:
+                    template = self._tone() or (bank.tones[0] if bank.tones else self._templates.get(id(bank)))
+                    if template is None:
+                        errors.append(ui_text('xfa_no_template'))
+                        continue
+                    entry = copy.deepcopy(template)
+                    entry.name = name.encode('ascii', errors='replace').decode()[:253]
+                    bank.tones.append(entry)
+                    bank._tone_records.append(entry)
+                else:
+                    entry = target
+                set_tone_bnsf(entry, blob)
+                added += 1
+            if added:
+                self._fields = {}
+                self._mark_dirty()
+                self._populate_tone_list(len(bank.tones) - 1 if target is None else self._cur_tone)
+            self._set_status(ui_text('xfa_import_result', count=added, errors=len(errors)))
+            if errors:
+                QMessageBox.warning(self, ui_text('dlg_title_error'), '\n'.join(errors[:10]))
+        else:
+            count = result['count'] if isinstance(result, dict) else result
+            self._set_status(ui_text('xfa_exported_count', n=count))
+            if isinstance(result, dict) and result['errors']:
+                QMessageBox.warning(self, ui_text('dlg_title_error'), '\n'.join(result['errors'][:10]))
 
-        bank_idx = self._cur_bank
-        cli = _detect_vgaudio()
+    def _duplicate_tone(self):
+        if self._busy or not self._tone() or not self._apply_params():
+            return
+        bank = self._banks[self._cur_bank]
+        clone = copy.deepcopy(self._tone())
+        clone.name = clone.name.encode('ascii', errors='replace').decode()[:248] + '_copy'
+        bank.tones.append(clone)
+        bank._tone_records.append(clone)
+        self._fields = {}
+        self._mark_dirty()
+        self._populate_tone_list(len(bank.tones) - 1)
 
+    def _delete_tone(self):
+        if self._busy or not self._tone() or not self._apply_params():
+            return
+        if QMessageBox.question(self, ui_text('dlg_title_confirm_delete'),
+            ui_text('xfa_delete_hint', name=self._tone().name),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        bank = self._banks[self._cur_bank]
+        tone = self._tone()
+        # Native references to later TONE slots remain valid.
+        slot = bank._tone_records.index(tone)
+        bank._tone_records[slot] = bytes(12)
+        bank.tones.remove(tone)
+        self._fields = {}
+        self._cur_tone = -1
+        self._stop_playback()
+        self._mark_dirty()
+        self._populate_tone_list()
+
+    def _restore_tone(self):
+        if self._busy or not self._tone():
+            return
+        tone = self._tone()
+        original = self._original(tone)
+        if original is None:
+            return
+        for name in ToneEntry.__slots__:
+            setattr(tone, name, copy.deepcopy(getattr(original, name)))
+        self._fields = {}
+        self._mark_dirty()
+        self._select_tone(self._cur_tone, force=True)
+
+    def _export_tone(self, fmt):
+        if self._busy or not self._tone() or not self._apply_params():
+            return
+        blob = self._preview_source()._bnsf_blob
+        extension = '.wav' if fmt == 'wav' or blob[:4] == b'RIFF' else '.bnsf'
+        path, _ = QFileDialog.getSaveFileName(self, ui_text('ui_sound_extract_audio'),
+            export_filename(self._cur_tone, self._preview_source().name, extension), f'Audio (*{extension})')
+        if path:
+            if not os.path.splitext(path)[1]:
+                path += extension
+            def worker():
+                data = decode_audio(blob) if fmt == 'wav' else blob
+                with open(path, 'wb') as stream:
+                    stream.write(data)
+                return 1
+            self._run_job('export', worker)
+
+    def _batch_export(self):
+        if self._busy or not self._banks or not self._apply_params():
+            return
+        folder = QFileDialog.getExistingDirectory(self, ui_text('xfa_choose_export_folder_wav'))
+        if not folder:
+            return
+        items = [(i, t.name, t._bnsf_blob) for i, t in enumerate(self._banks[self._cur_bank].tones)]
         def worker():
-            bank  = self._banks[bank_idx]
-            ok = 0; err = 0; errs = []
-            for path in paths:
-                name = os.path.splitext(os.path.basename(path))[0][:15]
-                self._sig_batch_prog.emit(ui_text("xfa_converting_name", name=name))
+            count, errors = 0, []
+            for number, (index, name, blob) in enumerate(items, 1):
+                self._sig_progress.emit(ui_text('xfa_export_progress', done=number, total=len(items)))
                 try:
-                    with open(path, 'rb') as f:
-                        audio_data = f.read()
-                    bnsf = _encode_audio_to_bnsf(audio_data, cli, path)
-                    t = ToneEntry()
-                    t.type_id = bank._tone_type_id
-                    t._params_size = getattr(bank, '_tone_param_size', PARAMS_SIZE)
-                    t._raw_params = bytearray(t._params_size)
-                    t.name    = name
-                    set_tone_bnsf(t, bnsf)
-                    bank.tones.append(t)
-                    if hasattr(bank, '_tone_records'):
-                        bank._tone_records.append(t)
-                    ok += 1
-                except Exception as e:
-                    err += 1
-                    errs.append(f"{name}: {e}")
-            self._sig_batch_prog.emit("")
-            msg = ui_text("xfa_imported_count", n=ok)
-            if err:
-                msg += "\n" + ui_text("xfa_error_count", n=err) + "\n" + "\n".join(errs[:5])
-            # Refresh list on main thread via a side-effect signal
-            self._sig_batch_done.emit(msg)
+                    data = decode_audio(blob)
+                    with open(os.path.join(folder, export_filename(index, name, '.wav')), 'wb') as stream:
+                        stream.write(data)
+                    count += 1
+                except Exception as error:
+                    errors.append(f'{name}: {error}')
+            return dict(count=count, errors=errors)
+        self._run_job('export', worker)
 
-        threading.Thread(target=worker, daemon=True).start()
-        # Refresh list after import — connect once to batch_done
-        def _refresh_once(msg):
-            try:
-                self._sig_batch_done.disconnect(_refresh_once)
-            except Exception:
-                pass
-            self._populate_tone_list()
-            self._mark_dirty()
-        self._sig_batch_done.connect(_refresh_once)
-
-    # Batch progress helper
-
-    def _on_batch_done(self, msg: str):
-        self._set_busy(False)
-        QMessageBox.information(self, ui_text("ui_xfbin_audio_ok"), msg)
-
-    def _on_batch_err(self, msg: str):
-        self._set_busy(False)
-        QMessageBox.critical(self, ui_text("dlg_title_error"), msg)
-
-    def _on_batch_prog(self, text: str):
-        if hasattr(self, '_info_lbl'):
-            if text:
-                self._info_lbl.setText(text)
-            elif self._banks:
-                bank = self._banks[self._cur_bank]
-                tones = bank.tones
-                n = len(tones)
-                total = sum(t.pack_size for t in tones)
-                self._info_lbl.setText(ui_text("ui_xfbin_audio_value_value_2", p0=n, p1=_fmt_size(total)))
-
-    def _on_save_done(self, path: str):
-        self._set_busy(False)
-        if self._filepath and os.path.abspath(path) == os.path.abspath(self._filepath):
-            self._dirty = False
-            set_file_label(self._file_lbl, self._filepath)
-        request_and_cascade(self, "Geb")
-        QMessageBox.information(
-            self,
-            ui_text("ui_xfbin_audio_ok"),
-            ui_text("ui_xfbin_audio_saved_value", p0=os.path.basename(path)),
-        )
-
-    def _on_save_err(self, msg: str):
-        self._set_busy(False)
-        QMessageBox.critical(self, ui_text("dlg_title_error"), msg)
-
-    def _mark_dirty(self):
-        if self._dirty:
-            return
-        self._dirty = True
-        if self._filepath:
-            set_file_label(self._file_lbl, self._filepath, dirty=True)
-
-    # Save
-
-    def _save_file(self):
-        if self._filepath is None or self._raw is None:
-            return
-        path = self._filepath
-
-        raw = self._raw
-        banks = self._banks
-
+    def _save_file(self, target_path=None):
+        if self._busy or not self._banks or self._raw is None or not self._apply_params():
+            if hasattr(self, '_file_actions'):
+                self._file_actions.pending_path = None
+                self._file_actions.refresh()
+            return False
+        path = target_path or editor_path(self)
+        if not path:
+            return False
+        self._stop_playback()
+        raw, banks = bytes(self._raw), copy.deepcopy(self._banks)
+        self._set_busy(True)
         def worker():
             try:
                 save_xfbin_audio(path, bytearray(raw), banks)
-                self._sig_save_done.emit(path)
-            except Exception as e:
-                self._sig_save_err.emit(str(e))
+                if not self._closed:
+                    self._sig_save_done.emit(path)
+            except Exception as error:
+                if not self._closed:
+                    self._sig_save_err.emit(str(error))
+        self._pool.submit(worker)
+        return True
 
-        threading.Thread(target=worker, daemon=True).start()
+    def _on_save_done(self, path):
+        self._set_busy(False)
+        commit_save_path(self, path)
+        self._saved_state = self._document_state()
+        self._dirty = False
+        set_file_label(self._file_lbl, path)
+        self._set_status(ui_text('ui_xfbin_audio_saved_value', p0=os.path.basename(path)))
+        request_and_cascade(self, 'Geb')
 
-    # Cleanup
+    def _on_save_err(self, message):
+        self._set_busy(False)
+        self._file_actions.pending_path = None
+        self._file_actions.refresh()
+        self._set_status(message)
+        QMessageBox.critical(self, ui_text('dlg_title_error'), message)
+
+    def hideEvent(self, event):
+        self._stop_playback()
+        super().hideEvent(event)
+
+    def _dispose(self):
+        self._closed = True
+        self._generation += 1
+        if self._player:
+            self._player['stop'].set()
+        self._pool.shutdown(wait=False, cancel_futures=True)
 
     def closeEvent(self, event):
         self._stop_playback()
-        if self._pa:
-            try:
-                self._pa.terminate()
-            except Exception:
-                pass
+        self._dispose()
         super().closeEvent(event)
-
-
-# Style helpers
-
-def _style_accent(btn):
-    btn.setStyleSheet(ss_btn(accent=True))
-
-
-def _style_mid(btn):
-    btn.setStyleSheet(ss_btn())
-
-
-def _grid_row(grid, row: int, label: str, widget, hint: str = ""):
-    shell, shell_layout, _label, _hint = make_editor_field_shell(label, hint, label_font_size=11)
-    grid.addWidget(shell, row, 0)
-    grid.addWidget(widget, row, 1)
-
-
-def _float_spin(lo: float, hi: float, val: float,
-                step: float = 0.1, suffix: str = "") -> QDoubleSpinBox:
-    sp = QDoubleSpinBox()
-    sp.setRange(lo, hi)
-    sp.setValue(val)
-    sp.setSingleStep(step)
-    sp.setDecimals(3)
-    if suffix:
-        sp.setSuffix("  " + suffix)
-    sp.setFixedHeight(28)
-    sp.setFont(QFont("Consolas", 11))
-    sp.setStyleSheet(ss_input())
-    return sp
-
-
-def _int_spin(lo: int, hi: int, val: int, suffix: str = "") -> QSpinBox:
-    sp = QSpinBox()
-    # QSpinBox is limited to signed 32-bit; clamp both bounds and value
-    lo = max(lo, -2147483648)
-    hi = min(hi,  2147483647)
-    sp.setRange(lo, hi)
-    sp.setValue(max(lo, min(hi, int(val))))
-    if suffix:
-        sp.setSuffix("  " + suffix)
-    sp.setFixedHeight(28)
-    sp.setFont(QFont("Consolas", 11))
-    sp.setStyleSheet(ss_input())
-    return sp
-
-
-# Slider helpers
-
-_SLIDER_CSS = (
-    "QSlider::groove:horizontal {{ background: {mid}; height: 6px; border-radius: 3px; }}"
-    "QSlider::sub-page:horizontal {{ background: {acc}; border-radius: 3px; }}"
-    "QSlider::handle:horizontal {{ background: {acc}; width: 16px; height: 16px; "
-    "margin: -5px 0; border-radius: 8px; }}"
-    "QSlider::handle:horizontal:hover {{ background: {acc_dim}; }}"
-)
-
-
-def _make_slider_css():
-    return ss_slider()
-
-
-def _param_slider(label: str, lo: float, hi: float, val: float,
-                  scale: int, fmt: str = ui_text("ui_xfbin_audio_value_7")) -> tuple:
-    """Build a labeled horizontal slider for a float param.
-
-    Returns (container_widget, QSlider, value_QLabel).
-    slider.value() / scale == current float value.
-    """
-    row = QWidget()
-    row.setMinimumWidth(0)
-    row.setStyleSheet(ss_transparent())
-    rl = QVBoxLayout(row)
-    rl.setContentsMargins(0, 2, 0, 4)
-    rl.setSpacing(5)
-
-    top = QWidget()
-    top.setStyleSheet(ss_transparent())
-    top_layout = QHBoxLayout(top)
-    top_layout.setContentsMargins(0, 0, 0, 0)
-    top_layout.setSpacing(8)
-
-    lbl = QLabel(label)
-    lbl.setFont(QFont("Segoe UI", 11))
-    lbl.setStyleSheet(ss_field_label())
-    top_layout.addWidget(lbl, 1)
-
-    val_lbl = QLabel(fmt.format(val))
-    val_lbl.setFont(QFont("Consolas", 13, QFont.Weight.Bold))
-    val_lbl.setStyleSheet(ss_accent_label())
-    val_lbl.setMinimumWidth(56)
-    val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-    top_layout.addWidget(val_lbl)
-    rl.addWidget(top)
-
-    sl = QSlider(Qt.Orientation.Horizontal)
-    sl_lo = int(round(lo * scale))
-    sl_hi = int(round(hi * scale))
-    sl_val = max(sl_lo, min(sl_hi, int(round(val * scale))))
-    sl.setRange(sl_lo, sl_hi)
-    sl.setValue(sl_val)
-    sl.setMinimumWidth(90)
-    sl.setStyleSheet(_make_slider_css())
-    rl.addWidget(sl)
-
-    sl.valueChanged.connect(lambda v, f=fmt, s=scale, vl=val_lbl: vl.setText(f.format(v / s)))
-    return row, sl, val_lbl
-
-
-def _loop_slider(label: str, total: int, val: int, sr: int) -> tuple:
-    """Build a labeled horizontal slider for a loop-point (in samples).
-
-    Returns (container_widget, QSlider, value_QLabel).
-    """
-    row = QWidget()
-    row.setMinimumWidth(0)
-    row.setStyleSheet(ss_transparent())
-    rl = QVBoxLayout(row)
-    rl.setContentsMargins(0, 2, 0, 4)
-    rl.setSpacing(5)
-
-    top = QWidget()
-    top.setStyleSheet(ss_transparent())
-    top_layout = QHBoxLayout(top)
-    top_layout.setContentsMargins(0, 0, 0, 0)
-    top_layout.setSpacing(8)
-
-    lbl = QLabel(label)
-    lbl.setFont(QFont("Segoe UI", 11))
-    lbl.setStyleSheet(ss_field_label())
-    top_layout.addWidget(lbl, 1)
-
-    sl_max = min(total, 0x7FFFFFFF)
-    sl_val = max(0, min(sl_max, val))
-    sl = QSlider(Qt.Orientation.Horizontal)
-    sl.setRange(0, sl_max)
-    sl.setValue(sl_val)
-    sl.setMinimumWidth(90)
-    sl.setStyleSheet(_make_slider_css())
-
-    def _fmt_samp(s):
-        t = s / sr if sr else 0.0
-        return f"{s:,}  ({_fmt_dur(t)})"
-
-    val_lbl = QLabel(_fmt_samp(sl_val))
-    val_lbl.setFont(QFont("Consolas", 10))
-    val_lbl.setStyleSheet(ss_accent_label())
-    val_lbl.setMinimumWidth(118)
-    val_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-    val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-    top_layout.addWidget(val_lbl)
-    rl.addWidget(top)
-
-    rl.addWidget(sl)
-
-    sl.valueChanged.connect(lambda v, vl=val_lbl, _sr=sr: vl.setText(_fmt_samp(v)))
-    return row, sl, val_lbl
-
-
-def _loop_range_slider(label: str, total: int, start: int, end: int, sr: int) -> tuple:
-    row = QWidget()
-    row.setMinimumWidth(0)
-    row.setStyleSheet(ss_transparent())
-    rl = QVBoxLayout(row)
-    rl.setContentsMargins(0, 2, 0, 4)
-    rl.setSpacing(5)
-
-    top = QWidget()
-    top.setStyleSheet(ss_transparent())
-    top_layout = QHBoxLayout(top)
-    top_layout.setContentsMargins(0, 0, 0, 0)
-    top_layout.setSpacing(8)
-
-    lbl = QLabel(label)
-    lbl.setFont(QFont("Segoe UI", 11))
-    lbl.setStyleSheet(ss_field_label())
-    top_layout.addWidget(lbl, 1)
-
-    sl_max = min(total, 0x7FFFFFFF)
-    start = max(0, min(sl_max, start))
-    end = max(start, min(sl_max, end))
-    slider = RangeSlider(0, sl_max, start, end)
-    slider.setMinimumWidth(90)
-
-    def _fmt_samp(s):
-        t = s / sr if sr else 0.0
-        return f"{s:,} ({_fmt_dur(t)})"
-
-    val_lbl = QLabel(ui_text("ui_xfbin_audio_value_value", p0=_fmt_samp(start), p1=_fmt_samp(end)))
-    val_lbl.setFont(QFont("Consolas", 10))
-    val_lbl.setStyleSheet(ss_accent_label())
-    val_lbl.setMinimumWidth(118)
-    val_lbl.setMaximumWidth(220)
-    val_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-    val_lbl.setToolTip(val_lbl.text())
-    val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-    top_layout.addWidget(val_lbl)
-    rl.addWidget(top)
-
-    slider.valueChanged.connect(
-        lambda a, b, vl=val_lbl: (
-            vl.setText(ui_text("ui_xfbin_audio_value_value", p0=_fmt_samp(a), p1=_fmt_samp(b))),
-            vl.setToolTip(vl.text()),
-        ))
-    rl.addWidget(slider)
-    return row, slider, val_lbl
-
-
-# Knob helper
-
-def _param_knob(label: str, lo: int, hi: int, val: int) -> tuple:
-    """Build a labeled KnobWidget column for a pan parameter.
-
-    Returns (container_widget, KnobWidget, value_QLabel).
-    """
-    col = QWidget()
-    col.setStyleSheet(ss_transparent())
-    cl  = QVBoxLayout(col)
-    cl.setContentsMargins(6, 2, 6, 2)
-    cl.setSpacing(2)
-    cl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-    lbl = QLabel(label)
-    lbl.setFont(QFont("Segoe UI", 10))
-    lbl.setStyleSheet(ss_field_label())
-    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    cl.addWidget(lbl)
-
-    knob = KnobWidget(lo, hi, val)
-    cl.addWidget(knob, 0, Qt.AlignmentFlag.AlignCenter)
-
-    val_lbl = QLabel(ui_text("ui_xfbin_audio_value", p0=val))
-    val_lbl.setFont(QFont("Consolas", 13, QFont.Weight.Bold))
-    val_lbl.setStyleSheet(ss_accent_label())
-    val_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    cl.addWidget(val_lbl)
-
-    # L / C / R positional hints
-    hint_w = QWidget(); hint_w.setStyleSheet(ss_transparent())
-    hl = QHBoxLayout(hint_w); hl.setContentsMargins(0, 0, 0, 0)
-    for side in ("L", "C", "R"):
-        sl = QLabel(side)
-        sl.setFont(QFont("Segoe UI", 9))
-        sl.setStyleSheet(ss_dim_label())
-        sl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hl.addWidget(sl)
-    cl.addWidget(hint_w)
-
-    knob.valueChanged.connect(lambda v, vl=val_lbl: vl.setText(ui_text("ui_xfbin_audio_value", p0=v)))
-    return col, knob, val_lbl
-
-

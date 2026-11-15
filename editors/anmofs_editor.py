@@ -1,26 +1,70 @@
 from __future__ import annotations
 
+from core.design_tokens import (
+    Insets,
+    LayoutRole,
+    Size,
+    TypeSize,
+    ui_font,
+)
+from core.style_helpers import (
+    add_editor_card_title,
+    make_editor_card,
+    make_editor_field_shell,
+    make_editor_grid_card,
+    make_empty_state,
+    ss_bg_dark,
+    ss_dim_label,
+    ss_error_label,
+    ss_sidebar_btn,
+    ss_splitter,
+    ss_transparent,
+)
+from core.ui.editor_widgets import (
+    EditorActionRow,
+    EditorListRow,
+    EditorSeparator,
+    EditorSidebar,
+    EditorToolbar,
+    configure_button,
+    configure_card,
+    configure_field,
+    configure_file_label,
+    configure_input,
+    configure_layout,
+    configure_scrollarea,
+    configure_search,
+    configure_table,
+)
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.editor_actions import commit_save_path, editor_path, install_file_actions
 import copy
+import math
 import os
 import threading
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QEvent, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QComboBox,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QLayout,
     QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -29,30 +73,8 @@ from core.editor_file_state import set_file_label, set_file_label_empty
 from core.editor_diff import ChangeItem
 from core.editor_host import confirm_editor_change_summary, notify_editor_file_loaded
 from core.settings import create_backup_on_open, game_files_dialog_dir
-from core.style_helpers import (
-    TOOLBAR_BTN_H,
-    TOOLBAR_H,
-    ss_accent_sep,
-    ss_bg_panel,
-    ss_btn,
-    ss_dim_label,
-    ss_error_label,
-    ss_file_label,
-    ss_input,
-    ss_main_label,
-    ss_scrollarea,
-    ss_scrollarea_transparent,
-    ss_search,
-    ss_sep,
-    ss_sidebar_btn,
-    ss_sidebar_frame,
-    ss_table,
-    ss_transparent,
-    ss_bg_dark,
-    make_editor_card, make_empty_state, make_editor_field_shell, make_editor_grid_card,
-    add_editor_card_title,
-)
 from core.undo_redo import EditorHistory
+from parsers.anmofs_tools import key_states, key_tick, receiver_code, receiver_model_code, active_offset, is_situation_finish_offsets
 from parsers.anmofs_parser import (
     AnmofsEntry,
     append_chunk_page,
@@ -116,131 +138,154 @@ class AnmofsEditor(QWidget):
         self._load_error_signal.connect(self._on_load_error)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        configure_layout(root, LayoutRole.ROOT)
         self._build_ui(root)
+        install_file_actions(self, self._save_btn, save_to=lambda path: self._save_file(target_path=path))
+        install_editor_chrome(self)
 
     def _build_ui(self, root):
-        top = QFrame(self)
-        top.setFixedHeight(TOOLBAR_H)
-        top.setStyleSheet(ss_bg_panel())
-        top_layout = QHBoxLayout(top)
-        top_layout.setContentsMargins(12, 8, 12, 8)
-        top_layout.setSpacing(6)
+        top = EditorToolbar(self)
+
+
+        top_layout = top.content_layout
+
 
         open_btn = QPushButton(self.t("btn_open_file"), top)
-        open_btn.setFixedHeight(TOOLBAR_BTN_H)
-        open_btn.setFont(QFont("Segoe UI", 10))
-        open_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(open_btn, accent=True)
         open_btn.clicked.connect(lambda _checked=False: self._load_file())
+        open_btn.setProperty("designAction", 'open')
         top_layout.addWidget(open_btn)
 
         self._save_btn = QPushButton(self.t("btn_save_file"), top)
-        self._save_btn.setFixedHeight(TOOLBAR_BTN_H)
-        self._save_btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self._save_btn.setEnabled(False)
-        self._save_btn.setStyleSheet(ss_btn(accent=True))
+        configure_button(self._save_btn, accent=True)
         self._save_btn.clicked.connect(self._save_file)
         top_layout.addWidget(self._save_btn)
 
+
         self._file_label = QLabel(self.t("no_file_loaded"), top)
-        self._file_label.setFont(QFont("Consolas", 11))
-        self._file_label.setStyleSheet(ss_file_label())
+
+        configure_file_label(self._file_label)
         top_layout.addWidget(self._file_label, 1)
         root.addWidget(top)
 
-        sep = QFrame(self)
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
+        sep = EditorSeparator(self, accent=True)
+
+
         root.addWidget(sep)
 
         main = QWidget(self)
         main.setStyleSheet(ss_transparent())
         main_layout = QHBoxLayout(main)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        configure_layout(main_layout, LayoutRole.ROOT)
 
         self._build_sidebar(main, main_layout)
 
-        vsep = QFrame(main)
-        vsep.setFixedWidth(1)
-        vsep.setStyleSheet(ss_sep())
+        vsep = EditorSeparator(main, orientation=Qt.Orientation.Vertical)
+
+
         main_layout.addWidget(vsep)
 
         self._editor_scroll = QScrollArea(main)
-        self._editor_scroll.setWidgetResizable(True)
-        self._editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+
         self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._editor_scroll.setStyleSheet(ss_scrollarea())
+        configure_scrollarea(self._editor_scroll)
         self._editor_widget = QWidget()
         self._editor_widget.setStyleSheet(ss_bg_dark())
         self._editor_layout = QVBoxLayout(self._editor_widget)
-        self._editor_layout.setContentsMargins(12, 12, 12, 12)
-        self._editor_layout.setSpacing(10)
+        self._editor_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        configure_layout(self._editor_layout, LayoutRole.PAGE)
         self._editor_scroll.setWidget(self._editor_widget)
-        main_layout.addWidget(self._editor_scroll, 1)
+        self._workspace_splitter = QSplitter(Qt.Orientation.Horizontal, main)
+        self._workspace_splitter.setStyleSheet(ss_splitter())
+        self._workspace_splitter.setChildrenCollapsible(False)
+        self._workspace_splitter.addWidget(self._editor_scroll)
+        from editors.anmofs_preview import AnmofsPreviewPanel
+        self._preview = AnmofsPreviewPanel()
+        self._preview.key_selected.connect(self._preview_key_selected)
+        self._preview_scroll = QScrollArea()
+        configure_scrollarea(self._preview_scroll)
+        self._preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._preview_scroll.setMinimumWidth(self._preview.minimumWidth())
+        self._preview_scroll.setWidget(self._preview)
+        from core.ui.editor_chrome import EditorSidebarPane
+        self._preview_pane = EditorSidebarPane(self._preview_scroll, self, edge="right", resizable=True, label="preview")
+        self._preview_pane.collapsedChanged.connect(lambda hidden: self._preview._stop() if hidden else None)
+        self._workspace_splitter.addWidget(self._preview_pane)
+        self._workspace_splitter.setSizes([640, 520])
+        main_layout.addWidget(self._workspace_splitter, 1)
 
         self._show_placeholder()
         root.addWidget(main, 1)
 
+    def _preview_key_selected(self, row):
+        if self._current_chunk and 0 <= row < len(self._current_chunk.entries):
+            self._table.blockSignals(True)
+            self._table.selectRow(row)
+            self._table.blockSignals(False)
+            self._selected_entry_idx = row
+            self._sync_entry_buttons()
+            self._sync_key_hint()
+
     def _build_sidebar(self, parent, main_layout):
-        side = QFrame(parent)
-        side.setFixedWidth(276)
-        side.setStyleSheet(ss_sidebar_frame())
-        side_layout = QVBoxLayout(side)
-        side_layout.setContentsMargins(8, 8, 8, 4)
-        side_layout.setSpacing(4)
+        side = EditorSidebar(parent, width=276)
+
+
+        side_layout = side.content_layout
+
 
         self._search = QLineEdit(side)
-        self._search.setPlaceholderText(self.t("search_placeholder"))
-        self._search.setFixedHeight(32)
-        self._search.setFont(QFont("Segoe UI", 13))
-        self._search.setStyleSheet(ss_search())
+        configure_search(self._search)
         self._search.textChanged.connect(self._filter_chunks)
         side_layout.addWidget(self._search)
 
-        actions = QWidget(side)
-        actions.setStyleSheet(ss_transparent())
-        actions_layout = QHBoxLayout(actions)
-        actions_layout.setContentsMargins(0, 2, 0, 4)
-        actions_layout.setSpacing(4)
+        actions = EditorActionRow(side)
+
+        actions_layout = actions.content_layout
+
 
         self._add_chunk_btn = QPushButton(self.t("btn_new"), actions)
         self._dup_chunk_btn = QPushButton(self.t("btn_duplicate"), actions)
         self._del_chunk_btn = QPushButton(self.t("btn_delete"), actions)
         for btn in (self._add_chunk_btn, self._dup_chunk_btn, self._del_chunk_btn):
-            btn.setFixedHeight(28)
+            btn.setFixedHeight(Size.COMPACT_CONTROL)
             btn.setEnabled(False)
-            btn.setFont(QFont("Segoe UI", 10))
+            btn.setFont(ui_font(TypeSize.BODY))
             actions_layout.addWidget(btn, 1)
-        self._add_chunk_btn.setStyleSheet(ss_btn())
-        self._dup_chunk_btn.setStyleSheet(ss_btn())
-        self._del_chunk_btn.setStyleSheet(ss_btn(danger=True))
+        configure_button(self._add_chunk_btn)
+        configure_button(self._dup_chunk_btn)
+        configure_button(self._del_chunk_btn, danger=True)
         self._add_chunk_btn.clicked.connect(self._add_chunk)
+        self._add_chunk_btn.setProperty("designAction", 'new')
         self._dup_chunk_btn.clicked.connect(self._duplicate_chunk)
+        self._dup_chunk_btn.setProperty("designAction", 'duplicate')
         self._del_chunk_btn.clicked.connect(self._delete_chunk)
+        self._del_chunk_btn.setProperty("designAction", 'delete')
         side_layout.addWidget(actions)
 
         self._chunk_scroll = QScrollArea(side)
-        self._chunk_scroll.setWidgetResizable(True)
-        self._chunk_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._chunk_scroll.setStyleSheet(ss_scrollarea_transparent())
+
+
+        configure_scrollarea(self._chunk_scroll, transparent=True)
         self._chunk_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._chunk_list_widget = QWidget()
         self._chunk_list_widget.setMinimumWidth(0)
         self._chunk_list_widget.setStyleSheet(ss_transparent())
         self._chunk_list_layout = QVBoxLayout(self._chunk_list_widget)
-        self._chunk_list_layout.setContentsMargins(0, 0, 0, 0)
-        self._chunk_list_layout.setSpacing(0)
+        configure_layout(self._chunk_list_layout, LayoutRole.ROOT)
         self._chunk_list_layout.addStretch()
         self._chunk_scroll.setWidget(self._chunk_list_widget)
         side_layout.addWidget(self._chunk_scroll, 1)
         main_layout.addWidget(side)
 
     def _show_placeholder(self):
+        if hasattr(self, "_preview"):
+            self._preview.set_chunk('', None)
         _clear_layout(self._editor_layout)
         self._fields = {}
-        self._editor_layout.setContentsMargins(12, 12, 12, 12)
+        self._key_fields = {}
+        configure_layout(self._editor_layout, LayoutRole.PAGE)
         card = make_empty_state(
             self._editor_widget,
             title=self.t("no_file_loaded"),
@@ -309,27 +354,25 @@ class AnmofsEditor(QWidget):
         if self._chunks:
             self._select_chunk(self._chunks[0])
 
-    def _save_file(self):
-        if self._xfbin is None or not self._filepath:
+    def _save_file(self, target_path=None):
+        save_path = target_path or editor_path(self)
+        if self._xfbin is None or not save_path:
             return
         self._apply_meta_fields()
         if not confirm_editor_change_summary(self):
             return
         try:
-            save_anmofs_xfbin(self._xfbin, self._filepath, self._chunks)
+            save_anmofs_xfbin(self._xfbin, save_path, self._chunks)
         except Exception as exc:
-            QMessageBox.critical(self, self.t("dlg_title_error"), self.t("msg_save_error", error=exc))
+            QMessageBox.critical(self, self.t('dlg_title_error'), self.t('msg_save_error', error=exc))
             return
+        commit_save_path(self, save_path)
         self._dirty = False
         self._saved_chunks = copy.deepcopy(self._chunks)
         self._chunk_snapshots = {id(item.chunk): copy.deepcopy(item) for item in self._chunks}
-        set_file_label(self._file_label, self._filepath)
+        set_file_label(self._file_label, save_path)
         self._refresh_selected_ui()
-        QMessageBox.information(
-            self,
-            self.t("dlg_title_success"),
-            self.t("msg_save_success", path=os.path.basename(self._filepath)),
-        )
+        QMessageBox.information(self, self.t('dlg_title_success'), self.t('msg_save_success', path=os.path.basename(save_path)))
 
     def _set_controls_enabled(self, enabled):
         self._save_btn.setEnabled(bool(enabled and self._filepath))
@@ -340,35 +383,29 @@ class AnmofsEditor(QWidget):
         _clear_layout(self._chunk_list_layout)
         self._chunk_buttons = []
         for item in self._chunks:
-            btn = QPushButton(self._chunk_list_widget)
-            btn.setFixedHeight(50)
+            btn = EditorListRow(self._chunk_list_widget, height=50)
+
             btn.setMinimumWidth(0)
             btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(ss_sidebar_btn(item is self._current_chunk))
+
+
             btn.clicked.connect(lambda checked=False, chunk=item: self._select_chunk(chunk))
 
-            layout = QVBoxLayout(btn)
-            layout.setContentsMargins(10, 3, 10, 3)
-            layout.setSpacing(0)
-            title_text = item.chunk_name or self.t("ui_anmofs_unnamed_chunk")
-            title = QLabel(_truncate(title_text, 24), btn)
-            title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-            title.setStyleSheet(ss_main_label())
-            title.setMinimumWidth(0)
-            title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-            title.setToolTip(title_text)
-            title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            subtitle_text = item.characode
-            subtitle = QLabel(_truncate(subtitle_text, 30), btn)
-            subtitle.setFont(QFont("Consolas", 11))
-            subtitle.setStyleSheet(ss_dim_label())
-            subtitle.setMinimumWidth(0)
-            subtitle.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            layout = btn.content_layout
+
+
+            title_text = self._receiver_title(item)
+            title = btn.add_title(_truncate(title_text, 24))
+
+
+            title.setToolTip(item.chunk_name)
+
+            subtitle_text = item.anm_name
+            subtitle = btn.add_subtitle(_truncate(subtitle_text, 30))
+
+
             subtitle.setToolTip(subtitle_text)
-            subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            layout.addWidget(title)
-            layout.addWidget(subtitle)
+
 
             self._chunk_list_layout.addWidget(btn)
             self._chunk_buttons.append((btn, item, title, subtitle))
@@ -383,13 +420,14 @@ class AnmofsEditor(QWidget):
                 item.file_path,
                 item.anm_name,
                 item.characode,
+                self._receiver_title(item),
             )).lower()
             btn.setVisible(query in haystack)
 
     def _select_chunk(self, item):
         if item is self._current_chunk:
             return
-        self._apply_meta_fields()
+        self.apply_pending_edits()
         self._current_chunk = item
         self._selected_entry_idx = 0 if item.entries else -1
         self._build_editor(item)
@@ -398,25 +436,56 @@ class AnmofsEditor(QWidget):
     def _refresh_chunk_buttons(self):
         for btn, item, title, subtitle in self._chunk_buttons:
             btn.setStyleSheet(ss_sidebar_btn(item is self._current_chunk))
-            title_text = item.chunk_name or self.t("ui_anmofs_unnamed_chunk")
-            subtitle_text = item.characode
+            title_text = self._receiver_title(item)
+            subtitle_text = item.anm_name
             title.setText(_truncate(title_text, 24))
-            title.setToolTip(title_text)
+            title.setToolTip(item.chunk_name)
             subtitle.setText(_truncate(subtitle_text, 30))
             subtitle.setToolTip(subtitle_text)
+
+    def _receiver_title(self, item):
+        name = self._preview._character_name(receiver_model_code(item))
+        return name + (' · d' if receiver_code(item) != receiver_model_code(item) else '')
 
     def _build_editor(self, item):
         _clear_layout(self._editor_layout)
         self._fields = {}
-        self._editor_layout.setContentsMargins(12, 12, 12, 12)
-        self._editor_layout.setSpacing(8)
+        configure_layout(self._editor_layout, LayoutRole.PAGE)
 
-        self._build_metadata_panel(item)
+        intro, body = self._make_editor_card()
+        attacker = self._preview._character_name(os.path.basename(self._filepath).removesuffix('_anmofs.xfbin'))
+        receiver = self._preview._character_name(receiver_model_code(item))
+        _, self._intro_title, _ = add_editor_card_title(body, self.t('anmofs_edit_pair', attacker=attacker, receiver=receiver), 'fa6s.people-arrows')
+        self._editor_layout.addWidget(intro)
         self._build_entries_panel(item)
+        self._build_metadata_panel(item)
+        reference, body = self._make_editor_card()
+        add_editor_card_title(body, self.t('ui_anmofs_layout_title'), 'fa6s.magnifying-glass')
+        hint = QLabel(self.t('ui_anmofs_layout_hint'), reference)
+        hint.setWordWrap(True)
+        hint.setStyleSheet(ss_dim_label())
+        body.addWidget(hint)
+        self._editor_layout.addWidget(reference)
         self._editor_layout.addStretch()
         self._sync_name_warning()
+        self._preview.set_chunk(self._filepath, item)
+        for label in self._editor_widget.findChildren(QLabel):
+            if label.wordWrap():
+                label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+                label.installEventFilter(self)
+        QTimer.singleShot(0, self._fit_wrapped_labels)
 
-    def _make_editor_card(self, margins=(16, 14, 16, 14), spacing=10):
+    def _fit_wrapped_labels(self):
+        for label in self._editor_widget.findChildren(QLabel):
+            if label.wordWrap():
+                label.setMinimumHeight(max(0, label.heightForWidth(max(1, label.width()))))
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Resize and isinstance(watched, QLabel) and watched.wordWrap():
+            watched.setMinimumHeight(max(0, watched.heightForWidth(max(1, watched.width()))))
+        return super().eventFilter(watched, event)
+
+    def _make_editor_card(self, margins=Insets.CARD, spacing=Size.CARD_GAP):
         card, layout = make_editor_card(self._editor_widget, margins=margins, spacing=spacing)
         self._prep_card(card)
         return card, layout
@@ -429,45 +498,46 @@ class AnmofsEditor(QWidget):
             return min(2, max_columns)
         return max_columns
 
+    def _entry_action_columns(self):
+        return max(1, min(5, (self._editor_scroll.viewport().width() - 24) // 140))
+
     def _prep_card(self, card):
-        card.setMinimumWidth(0)
-        card.setMaximumWidth(1040)
-        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        configure_card(card, maximum_width=16777215)
         return card
 
     def _prep_field(self, wrap, edit):
-        wrap.setMinimumWidth(0)
-        wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        edit.setMinimumWidth(0)
-        edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        configure_field(wrap, edit)
 
     def _make_editor_field(self, label_text, value, key, *, value_font=None, height=30, width=None):
         wrap, layout, _label, _hint = make_editor_field_shell(label_text)
         wrap.setParent(self._editor_widget)
-        edit = QLineEdit(wrap)
-        edit.setText(str(value))
-        edit.setFixedHeight(height)
+        if key in ('anm_name', 'characode'):
+            edit = QComboBox(wrap)
+            edit.setEditable(True)
+            edit.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+            edit.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            edit.addItems(sorted({str(getattr(chunk, key)) for chunk in self._chunks} | {str(value)}))
+            edit.setCurrentText(str(value))
+            edit.lineEdit().textEdited.connect(self._on_meta_changed)
+            edit.activated.connect(self._on_meta_changed)
+        else:
+            edit = QLineEdit(wrap)
+            edit.setText(str(value))
+            edit.textEdited.connect(self._on_meta_changed)
         if width:
             edit.setFixedWidth(width)
-        edit.setFont(value_font or QFont("Consolas", 13))
-        edit.setStyleSheet(ss_input())
+        configure_input(edit, height=height, monospace=True, font=value_font)
         edit.setMinimumWidth(0)
-        edit.setCursorPosition(0)
-        edit.textEdited.connect(self._on_meta_changed)
+        (edit.lineEdit() if isinstance(edit, QComboBox) else edit).setCursorPosition(0)
+        if key in ('anm_name', 'characode', 'chunk_name', 'reserved'):
+            edit.setToolTip(self.t('anmofs_help_' + key))
         self._prep_field(wrap, edit)
         layout.addWidget(edit)
         self._fields[key] = edit
         return wrap, edit
 
     def _build_metadata_panel(self, item):
-        panel, grid = make_editor_grid_card(
-            self._editor_widget,
-            title=item.chunk_name or self.t("ui_anmofs_unnamed_chunk"),
-            icon_name="fa6s.film",
-            subtitle=" / ".join(part for part in (item.anm_name, item.characode) if part),
-            grid_margins=(0, 2, 0, 0),
-            vertical_spacing=10,
-        )
+        panel, grid = make_editor_grid_card(self._editor_widget, title=item.chunk_name or self.t('ui_anmofs_unnamed_chunk'), icon_name='fa6s.film', subtitle=' / '.join((part for part in (item.anm_name, item.characode) if part)))
         self._prep_card(panel)
 
         fields = [
@@ -475,7 +545,6 @@ class AnmofsEditor(QWidget):
             ("file_path", self.t("ui_anmofs_file_path"), item.file_path, None),
             ("anm_name", self.t("ui_anmofs_animation_name"), item.anm_name, None),
             ("characode", self.t("ui_anmofs_characode"), item.characode, None),
-            ("reserved", self.t("ui_anmofs_reserved"), str(item.reserved), 120),
         ]
         columns = self._grid_columns(2)
         self._last_meta_columns = columns
@@ -491,38 +560,81 @@ class AnmofsEditor(QWidget):
 
         self._name_warning = QLabel("", panel)
         self._name_warning.setWordWrap(True)
-        self._name_warning.setFont(QFont("Segoe UI", 10))
-        self._name_warning.setStyleSheet(ss_error_label())
+        self._name_warning.setFont(ui_font(TypeSize.BODY))
+        self._name_warning.setStyleSheet(ss_dim_label())
         grid.addWidget(self._name_warning, warning_row, 0, 1, columns)
 
         self._editor_layout.addWidget(panel)
+        self._metadata_panel = panel
 
     def _build_entries_panel(self, item):
-        panel, layout = self._make_editor_card(margins=(16, 14, 16, 14), spacing=10)
-        add_editor_card_title(layout, self.t("ui_anmofs_col_frame"), "fa6s.table")
+        panel, layout = self._make_editor_card(margins=Insets.CARD, spacing=Size.CARD_GAP)
+        add_editor_card_title(layout, self.t("ui_anmofs_entries"), "fa6s.table")
+
+        self._key_fields = {}
+        selected = QWidget(panel)
+        selected.setStyleSheet(ss_transparent())
+        values = QGridLayout(selected)
+        values.setContentsMargins(*Insets.NONE)
+        values.setHorizontalSpacing(6)
+        values.setVerticalSpacing(Size.GAP_SM)
+        field_names = ('frame', 'value_1', 'value_2', 'value_3', 'value_4', 'value_5', 'value_6')
+        for i, field in enumerate(field_names):
+            if i == 0:
+                row, col, span = 0, 0, 3
+                label = self.t('ui_anmofs_col_frame')
+            else:
+                row, col, span = 2 + (i - 1) // 3 * 2, (i - 1) % 3, 1
+                label = self.t('anmofs_position_axis' if i <= 3 else 'anmofs_rotation_axis', axis='XYZ'[(i - 1) % 3])
+            title = QLabel(label, selected)
+            title.setStyleSheet(ss_dim_label())
+            title.setWordWrap(True)
+            if field == 'frame':
+                self._selected_key_title = title
+            values.addWidget(title, row, col, 1, span)
+            edit = QLineEdit(selected)
+            edit.setMinimumWidth(0)
+            edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            configure_input(edit)
+            edit.setToolTip(self.t('anmofs_edit_value_hint'))
+            edit.editingFinished.connect(lambda key=field: self._apply_key_field(key))
+            values.addWidget(edit, row + 1, col, 1, span)
+            self._key_fields[field] = edit
+        layout.addWidget(selected)
+        self._value_feedback = QLabel('', panel)
+        self._value_feedback.setStyleSheet(ss_error_label())
+        self._value_feedback.setWordWrap(True)
+        self._value_feedback.hide()
+        layout.addWidget(self._value_feedback)
 
         header = QWidget(panel)
         header.setStyleSheet(ss_transparent())
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(8)
-        header_layout.addStretch()
+        header_layout = QGridLayout(header)
+        configure_layout(header_layout, LayoutRole.TITLE)
 
         self._add_entry_btn = QPushButton(self.t("btn_new"), header)
+        self._active_key_btn = QPushButton(self.t('anmofs_select_active_key'), header)
+        self._active_key_btn.setToolTip(self.t('anmofs_select_active_key_hint'))
+        self._active_key_btn.clicked.connect(self._select_active_key)
         self._dup_entry_btn = QPushButton(self.t("btn_duplicate"), header)
         self._del_entry_btn = QPushButton(self.t("btn_delete"), header)
         self._sort_entry_btn = QPushButton(self.t("ui_anmofs_sort_entries"), header)
         self._reset_chunk_btn = QPushButton(self.t("ui_anmofs_reset_chunk"), header)
-        for btn in (self._add_entry_btn, self._dup_entry_btn, self._sort_entry_btn, self._reset_chunk_btn):
-            btn.setFixedHeight(28)
-            btn.setStyleSheet(ss_btn())
-            header_layout.addWidget(btn)
-        self._del_entry_btn.setFixedHeight(28)
-        self._del_entry_btn.setStyleSheet(ss_btn(danger=True))
-        header_layout.addWidget(self._del_entry_btn)
+        self._reset_chunk_btn.hide()
+        for btn in (self._active_key_btn, self._add_entry_btn, self._dup_entry_btn, self._sort_entry_btn, self._reset_chunk_btn):
+            configure_button(btn, height=Size.COMPACT_CONTROL)
+        configure_button(self._del_entry_btn, danger=True, height=Size.COMPACT_CONTROL)
+        self._last_action_columns = self._entry_action_columns()
+        for i, btn in enumerate((self._active_key_btn, self._add_entry_btn, self._dup_entry_btn, self._sort_entry_btn,
+                                 self._del_entry_btn)):
+            row, col = divmod(i, self._last_action_columns)
+            header_layout.addWidget(btn, row, col)
         self._add_entry_btn.clicked.connect(self._add_entry)
+        self._add_entry_btn.setProperty("designAction", 'new')
         self._dup_entry_btn.clicked.connect(self._duplicate_entry)
+        self._dup_entry_btn.setProperty("designAction", 'duplicate')
         self._del_entry_btn.clicked.connect(self._delete_entry)
+        self._del_entry_btn.setProperty("designAction", 'delete')
         self._sort_entry_btn.clicked.connect(self._sort_entries)
         self._reset_chunk_btn.clicked.connect(self._reset_chunk)
         layout.addWidget(header)
@@ -539,7 +651,7 @@ class AnmofsEditor(QWidget):
             self.t("ui_anmofs_col_value_5"),
             self.t("ui_anmofs_col_value_6"),
         ])
-        self._table.setStyleSheet(ss_table())
+        configure_table(self._table)
         self._table.setShowGrid(True)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -558,8 +670,63 @@ class AnmofsEditor(QWidget):
         self._table.itemSelectionChanged.connect(self._on_table_selection_changed)
         layout.addWidget(self._table)
 
+        self._key_hint = QLabel(panel)
+        self._key_hint.setWordWrap(True)
+        self._key_hint.setStyleSheet(ss_dim_label())
+        layout.addWidget(self._key_hint)
+
         self._editor_layout.addWidget(panel)
         self._rebuild_table(item)
+
+    def _apply_key_field(self, field):
+        row = self._selected_entry_idx
+        if self._rebuilding or self._current_chunk is None or not 0 <= row < len(self._current_chunk.entries):
+            return
+        edit = self._key_fields[field]
+        previous = getattr(self._current_chunk.entries[row], field)
+        try:
+            text = edit.text().strip()
+            base = 0 if text.lower().lstrip('+-').startswith(('0x', '0b', '0o')) else 10
+            value = int(text, base) if field == 'frame' else float(text)
+            valid = -0x80000000 <= value <= 0x7fffffff if field == 'frame' else math.isfinite(value) and abs(value) <= 3.4028234663852886e38
+            if not valid:
+                raise ValueError
+        except ValueError:
+            edit.setText(str(previous) if field == 'frame' else self._fmt_float(previous))
+            self._value_feedback.setText(self.t('anmofs_invalid_value'))
+            self._value_feedback.show()
+            return
+        self._value_feedback.hide()
+        if value != previous:
+            self._table.item(row, ENTRY_FIELDS.index(field) + 1).setText(str(value) if field == 'frame' else text)
+        self._sync_key_fields()
+
+    def _sync_key_fields(self):
+        row = self._selected_entry_idx
+        entries = self._current_chunk.entries if self._current_chunk else []
+        if hasattr(self, '_selected_key_title'):
+            self._selected_key_title.setText(self.t('anmofs_selected_key', index=row) if 0 <= row < len(entries)
+                                             else self.t('ui_anmofs_no_entry_selected'))
+        for field, edit in getattr(self, '_key_fields', {}).items():
+            edit.setEnabled(0 <= row < len(entries))
+            if 0 <= row < len(entries):
+                value = getattr(entries[row], field)
+                text = str(value) if field == 'frame' else self._fmt_float(value)
+                edit.setText(text)
+                edit.setToolTip(self.t('anmofs_edit_value_hint') + '\n' + text)
+            else:
+                edit.clear()
+
+    def _select_active_key(self):
+        if self._current_chunk is None:
+            return
+        row = active_offset(self._current_chunk.entries, self._preview._frame, self._preview.view_rate)
+        if row is not None:
+            self._preview_key_selected(row)
+            self._value_feedback.hide()
+        else:
+            self._value_feedback.setText(self.t('anmofs_no_active_key'))
+            self._value_feedback.show()
 
     def _add_line_field(self, grid, row, col, key, label_text, value, width=None):
         wrap, _edit = self._make_editor_field(label_text, value, key, width=width)
@@ -569,6 +736,7 @@ class AnmofsEditor(QWidget):
     def _rebuild_table(self, item):
         self._rebuilding = True
         self._table.setRowCount(len(item.entries))
+        states = key_states(item.entries)
         for row, entry in enumerate(item.entries):
             values = [
                 str(row),
@@ -582,6 +750,7 @@ class AnmofsEditor(QWidget):
             ]
             for col, value in enumerate(values):
                 cell = QTableWidgetItem(value)
+                cell.setToolTip(self.t('anmofs_key_' + states[row]))
                 if col == 0:
                     cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self._table.setItem(row, col, cell)
@@ -589,59 +758,65 @@ class AnmofsEditor(QWidget):
             self._table.selectRow(self._selected_entry_idx)
         self._rebuilding = False
         self._sync_entry_buttons()
+        self._sync_key_hint()
+        if hasattr(self, "_preview") and self._current_chunk:
+            self._preview.set_chunk(self._filepath, self._current_chunk)
 
     @staticmethod
     def _fmt_float(value):
-        return f"{float(value):.6g}"
+        return f"{float(value):.9g}"
 
-    def _on_meta_changed(self):
+    def _on_meta_changed(self, *_args):
         self._push_undo_state()
         self._apply_meta_fields()
         self._sync_name_warning()
         self._refresh_chunk_buttons()
         self._filter_chunks()
         self._mark_dirty()
+        self._preview.set_chunk(self._filepath, self._current_chunk)
 
     def _apply_meta_fields(self):
         item = self._current_chunk
         if item is None or not self._fields:
             return
-        item.chunk_name = self._fields["chunk_name"].text().strip()
-        item.file_path = self._fields["file_path"].text().strip()
-        item.anm_name = self._fields["anm_name"].text().strip()
-        item.characode = self._fields["characode"].text().strip()
-        try:
-            reserved = int(self._fields["reserved"].text().strip() or "0", 0)
-            if 0 <= reserved <= 0xFFFFFFFF:
-                item.reserved = reserved
-        except ValueError:
-            pass
+        item.chunk_name = self._fields["chunk_name"].text()
+        item.file_path = self._fields["file_path"].text()
+        item.anm_name = self._fields["anm_name"].currentText()
+        item.characode = self._fields["characode"].currentText()
 
     def _sync_name_warning(self):
         item = self._current_chunk
         if item is None or not hasattr(self, "_name_warning"):
             return
-        expected = item.expected_chunk_name
-        if expected and item.chunk_name != expected:
-            self._name_warning.setText(self.t("ui_anmofs_name_mismatch", expected=expected))
-            self._name_warning.setVisible(True)
-        else:
-            self._name_warning.setText("")
-            self._name_warning.setVisible(False)
+        if hasattr(self, '_intro_title'):
+            attacker = self._preview._character_name(os.path.basename(self._filepath).removesuffix('_anmofs.xfbin'))
+            if is_situation_finish_offsets(self._filepath):
+                attacker = self.t('anmofs_situation_finish')
+            receiver = self._preview._character_name(receiver_model_code(item))
+            self._intro_title.setText(self.t('anmofs_edit_pair', attacker=attacker, receiver=receiver))
+        code = receiver_code(item)
+        text = self.t('anmofs_receiver_route', receiver=code, header=item.characode)
+        if item.expected_chunk_name and item.chunk_name != item.expected_chunk_name:
+            text += '\n' + self.t('ui_anmofs_name_mismatch', expected=item.expected_chunk_name)
+        self._name_warning.setText(text)
+        self._name_warning.setVisible(True)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self._current_chunk is None or self._last_meta_columns is None:
             return
         columns = self._grid_columns(2)
-        if columns == self._last_meta_columns:
+        if columns == self._last_meta_columns and self._entry_action_columns() == getattr(self, '_last_action_columns', None):
             return
         self._apply_meta_fields()
         QTimer.singleShot(0, self._rebuild_current_chunk_for_width)
 
     def _rebuild_current_chunk_for_width(self):
         if self._current_chunk is not None:
+            from core.ui.editor_chrome import capture_pending_fields
+            restore = capture_pending_fields(self)
             self._build_editor(self._current_chunk)
+            restore()
 
     def _on_table_selection_changed(self):
         if self._rebuilding or self._current_chunk is None:
@@ -649,6 +824,23 @@ class AnmofsEditor(QWidget):
         rows = self._table.selectionModel().selectedRows()
         self._selected_entry_idx = rows[0].row() if rows else -1
         self._sync_entry_buttons()
+        if self._selected_entry_idx >= 0:
+            self._preview.seek_key(self._selected_entry_idx)
+        self._sync_key_hint()
+
+    def _sync_key_hint(self):
+        self._sync_key_fields()
+        if not hasattr(self, '_key_hint'):
+            return
+        row = self._selected_entry_idx
+        entries = self._current_chunk.entries if self._current_chunk else []
+        if not 0 <= row < len(entries):
+            self._key_hint.setText(self.t('ui_anmofs_no_entry_selected'))
+            return
+        entry = entries[row]
+        self._key_hint.setText(self.t('anmofs_key_detail', index=row, frame=entry.frame,
+                                     ticks=key_tick(entry.frame, 60), seconds=entry.frame / 30)
+                               + '\n' + self.t('anmofs_key_' + key_states(entries)[row]))
 
     def _on_table_item_changed(self, item):
         if self._rebuilding or self._current_chunk is None:
@@ -662,7 +854,7 @@ class AnmofsEditor(QWidget):
         try:
             if col == 1:
                 value = int(text or "0", 0)
-                if not (0 <= value <= 0xFFFFFFFF):
+                if not (-0x80000000 <= value <= 0x7FFFFFFF):
                     raise ValueError
                 old_value = entry.frame
                 if old_value != value:
@@ -670,6 +862,8 @@ class AnmofsEditor(QWidget):
                     entry.frame = value
             else:
                 value = float(text or "0")
+                if not math.isfinite(value) or abs(value) > 3.4028234663852886e38:
+                    raise ValueError
                 old_value = getattr(entry, ENTRY_FIELDS[col - 1])
                 if old_value != value:
                     self._push_undo_state()
@@ -681,6 +875,12 @@ class AnmofsEditor(QWidget):
             self._rebuilding = False
             return
         self._mark_dirty()
+        self._preview.set_chunk(self._filepath, self._current_chunk)
+        states = key_states(self._current_chunk.entries)
+        for r, state in enumerate(states):
+            for c in range(self._table.columnCount()):
+                self._table.item(r, c).setToolTip(self.t('anmofs_key_' + state))
+        self._sync_key_hint()
 
     def _sync_entry_buttons(self):
         has_chunk = self._current_chunk is not None
@@ -888,6 +1088,10 @@ class AnmofsEditor(QWidget):
         return True
 
     def apply_pending_edits(self):
+        pending = {field: edit.text() for field, edit in getattr(self, '_key_fields', {}).items()}
+        for field, text in pending.items():
+            self._key_fields[field].setText(text)
+            self._apply_key_field(field)
         self._apply_meta_fields()
 
     def get_saved_state(self):

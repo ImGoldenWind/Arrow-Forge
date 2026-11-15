@@ -1,4 +1,5 @@
 from typing import Dict, List
+import copy
 
 from .binary_reader import BrStruct, BinaryReader, Endian, Whence
 from .iterative_dict import IterativeDict
@@ -31,6 +32,9 @@ class BrXfbin(BrStruct):
         # The first chunk across the whole file is always a null chunk
         initial_null            = BrNuccChunkNull()
         initial_null.nuccChunk  = NuccChunkNull()
+        metadata = getattr(xfbin, 'initial_null_header', None)
+        if metadata is not None:
+            initial_null.envelope = metadata
         br_pages.write_struct(BrChunk(), initial_null, IterativeDict())
 
         chunk_map_dict   = IterativeDict()
@@ -48,6 +52,9 @@ class BrXfbin(BrStruct):
             all_references.extend(br_page.chunk_references)
             all_indices.extend(br_page.chunk_index_dict.keys())
 
+        # Register external references even when they have no page payload.
+        chunk_map_dict.update_or_next(ref.chunk for ref in all_references)
+
         # Stage 2: build chunk table
         br_table = BrChunkTable()
         br_table.chunk_map_dict          = chunk_map_dict
@@ -58,7 +65,7 @@ class BrXfbin(BrStruct):
             br_table_buf.write_struct(br_table)
 
             # Stage 3: write header + table + pages
-            hdr = BrNuccHeader()
+            hdr = copy.copy(getattr(xfbin, 'nucc_header', None)) or BrNuccHeader()
             hdr.chunk_table_size = br_table_buf.size() - br_table.chunk_map_references_size
 
             br.write_struct(hdr)
@@ -80,7 +87,7 @@ class BrNuccHeader(BrStruct):
         if self.magic != 'NUCC':
             raise ValueError(f'Invalid XFBIN magic: {self.magic!r}')
         self.nucc_id        = br.read_uint32()
-        br.seek(8, Whence.CUR)          # 8 padding bytes
+        self.padding       = br.read_bytes(8)
         self.chunk_table_size = br.read_uint32()
         self.min_page_size  = br.read_uint32()
         self.nucc_id2       = br.read_uint16()
@@ -88,12 +95,12 @@ class BrNuccHeader(BrStruct):
 
     def __br_write__(self, br: BinaryReader):
         br.write_str('NUCC')
-        br.write_uint32(0x79)
-        br.write_uint64(0)              # padding
+        br.write_uint32(getattr(self, 'nucc_id', 0x79))
+        br.write_bytes(getattr(self, 'padding', bytes(8)))
         br.write_uint32(self.chunk_table_size)
-        br.write_uint32(3)
-        br.write_uint16(0x79)
-        br.write_uint16(0)
+        br.write_uint32(getattr(self, 'min_page_size', 3))
+        br.write_uint16(getattr(self, 'nucc_id2', 0x79))
+        br.write_uint16(getattr(self, 'unk', 0))
 
 
 # Chunk-table structures
@@ -240,9 +247,12 @@ class BrChunk(BrStruct):
             br.write_uint32(br_inner.size())
             br.write_uint32(chunk_idx)
 
-            if hasattr(br_nucc.nuccChunk, 'nucc_version'):
+            if hasattr(br_nucc, 'envelope'):
+                br.write_uint16(br_nucc.envelope[0])
+                br.write_uint16(br_nucc.envelope[1])
+            elif hasattr(br_nucc.nuccChunk, 'nucc_version'):
                 br.write_uint16(br_nucc.nuccChunk.nucc_version)
-                br.write_uint16(0)
+                br.write_uint16(getattr(br_nucc.nuccChunk, 'nucc_unk', 0))
             else:
                 br.write_uint16(0x79)
                 br.write_uint16(0)
@@ -260,6 +270,8 @@ class BrPage(BrStruct):
 
         while True:
             br_chunk = br.read_struct(BrChunk)
+            if not hasattr(br_xfbin, 'initial_null_header'):
+                br_xfbin.initial_null_header = (br_chunk.nucc_id, br_chunk.unk)
             chunk    = br_xfbin.chunk_table.get_br_nucc_chunk(
                 br_chunk, br_xfbin.cur_page_start
             )
@@ -287,7 +299,8 @@ class BrPage(BrStruct):
 
         # Every page starts with a null chunk
         null           = BrNuccChunkNull()
-        null.nuccChunk = NuccChunkNull()
+        null.nuccChunk = next((c for c in page if isinstance(c, NuccChunkNull)), NuccChunkNull())
+        self._set_envelope(null, page)
         br.write_struct(BrChunk(), null, self.chunk_index_dict)
 
         for nucc_chunk in page:
@@ -299,11 +312,20 @@ class BrPage(BrStruct):
                 else BrNuccChunk()
             )
             br_nucc.nuccChunk = nucc_chunk
+            self._set_envelope(br_nucc, page)
             br.write_struct(BrChunk(), br_nucc, self.chunk_index_dict)
 
         self.chunk_references: List[ChunkReference] = list(page.chunk_references)
 
         page_chunk           = BrNuccChunkPage()
-        page_chunk.nuccChunk = NuccChunkPage()
+        page_chunk.nuccChunk = next((c for c in page if isinstance(c, NuccChunkPage)), NuccChunkPage())
+        self._set_envelope(page_chunk, page)
         br.write_struct(BrChunk(), page_chunk,
                         self.chunk_index_dict, self.chunk_references)
+
+    @staticmethod
+    def _set_envelope(br_nucc, page):
+        for chunk, version, unknown in getattr(page, 'nucc_envelopes', ()):
+            if chunk is br_nucc.nuccChunk:
+                br_nucc.envelope = (version, unknown)
+                break

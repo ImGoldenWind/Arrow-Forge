@@ -1003,4 +1003,8 @@ def apply_theme(theme_key: str):
     theme_key = normalize_theme_key(theme_key)
     P.clear()
     P.update(THEMES[theme_key])
+    from PyQt6.QtWidgets import QApplication
+    from core.design_tokens import ui_font
+    if QApplication.instance() is not None:
+        QApplication.instance().setFont(ui_font())
     return theme_key

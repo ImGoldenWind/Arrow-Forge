@@ -12,14 +12,19 @@ Binary layout (XFBIN container):
 
 Each entry is ENTRY_SIZE = 24 bytes (6 × LE u32):
   [0x00:0x04]  entry_id    LE u32  – sequential entry index (0-57, read-only)
-  [0x04:0x08]  eff_a       LE u32  – On-hit Effect A  (spark/flash); 0xFFFFFFFF = none
-  [0x08:0x0C]  eff_b       LE u32  – On-hit Effect B  (main hit particle)
-  [0x0C:0x10]  eff_c       LE u32  – On-hit Effect C  (secondary / screen effect); 0xFFFFFFFF = none
-  [0x10:0x14]  eff_d       LE u32  – On-hit Effect D  (hit impact type)
-  [0x14:0x18]  eff_e       LE u32  – On-hit Effect E  (flash overlay); 0xFFFFFFFF = none
+  [0x04:0x08]  eff_a       LE u32  – Channel A (stock: offset/character effects)
+  [0x08:0x0C]  eff_b       LE u32  – Channel B (stock: hit effects)
+  [0x0C:0x10]  eff_c       LE u32  – Channel C (stock: symbols/smoke)
+  [0x10:0x14]  eff_d       LE u32  – Channel D (stock: guard effects)
+  [0x14:0x18]  eff_e       LE u32  – Channel E (stock: stand effects)
+
+These descriptions summarize authored catalog names, not universal runtime
+restrictions. Native loader RVA 3BFF0C copies all six u32 words unchanged.
 """
 
+import os
 import struct
+import tempfile
 
 ENTRY_SIZE = 24
 _NONE_VAL  = 0xFFFFFFFF   # sentinel "no effect"
@@ -27,6 +32,8 @@ _NONE_VAL  = 0xFFFFFFFF   # sentinel "no effect"
 
 def _find_binary_chunk(raw):
     """Return (hdr_offset, data_offset, chunk_size) for the nuccChunkBinary."""
+    if len(raw) < 28 or raw[:4] != b'NUCC':
+        raise ValueError('Not an XFBIN file')
     chunk_table_size = struct.unpack('>I', raw[16:20])[0]
     chunk_data_start = 28 + chunk_table_size
 
@@ -34,6 +41,8 @@ def _find_binary_chunk(raw):
     while offset + 12 <= len(raw):
         chunk_size = struct.unpack('>I', raw[offset:offset + 4])[0]
         map_idx    = struct.unpack('>I', raw[offset + 4:offset + 8])[0]
+        if offset + 12 + chunk_size > len(raw):
+            raise ValueError('Truncated XFBIN chunk')
         if map_idx == 1 and chunk_size > 0:
             return offset, offset + 12, chunk_size
         if chunk_size == 0:
@@ -62,8 +71,12 @@ def parse_damageeff_xfbin(filepath):
 
     bin_hdr_off, bin_data_off, bin_chunk_size = _find_binary_chunk(raw)
     payload = raw[bin_data_off:bin_data_off + bin_chunk_size]
+    if len(payload) < 8:
+        raise ValueError('Truncated damage-effect header')
 
     entry_count  = struct.unpack('<I', payload[4:8])[0]
+    if entry_count > (len(payload) - 8) // ENTRY_SIZE:
+        raise ValueError('Damage-effect count exceeds chunk size')
     entries_data = payload[8:]
 
     entries = []
@@ -95,8 +108,8 @@ def parse_damageeff_xfbin(filepath):
 def save_damageeff_xfbin(filepath, raw, result):
     """Serialise entries back into the XFBIN and write to *filepath*.
 
-    Entry count is preserved; the 24-byte per-entry layout is reconstructed
-    exactly so the game can parse the file without issues.
+    Fixed-size edits patch only their words. Structural edits rebuild the table
+    while retaining the opaque trailer. Replace atomically after validation.
     """
     entries      = result['entries']
     bin_hdr_off  = result['bin_hdr_offset']
@@ -134,7 +147,20 @@ def save_damageeff_xfbin(filepath, raw, result):
     new_hdr = bytearray(raw[bin_hdr_off:bin_hdr_off + 12])
     struct.pack_into('>I', new_hdr, 0, new_chunk_size)
 
-    buf = raw[:bin_hdr_off] + new_hdr + payload + raw[old_chunk_end:]
+    if entry_count == struct.unpack_from('<I', raw, bin_data_off + 4)[0]:
+        buf = bytearray(raw)
+        buf[bin_data_off + 8:bin_data_off + 8 + len(entries_bytes)] = entries_bytes
+    else:
+        buf = raw[:bin_hdr_off] + new_hdr + payload + raw[old_chunk_end:]
 
-    with open(filepath, 'wb') as f:
-        f.write(buf)
+    destination = os.path.abspath(filepath)
+    fd, temporary = tempfile.mkstemp(prefix='.arrow-damage-effects-', dir=os.path.dirname(destination))
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(buf)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)

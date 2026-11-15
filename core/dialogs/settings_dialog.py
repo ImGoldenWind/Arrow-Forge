@@ -1,3 +1,6 @@
+from core.design_tokens import TypeSize
+from core.design_tokens import mono_font, ui_font
+from core.ui.editor_widgets import configure_search
 import os
 
 from PyQt6.QtCore import QSize, Qt, QUrl
@@ -66,12 +69,12 @@ class SettingsDialogMixin:
 
         back_btn = _make_styled_btn(
             "\u2190 " + self.t("back"), P["mid"], P["bg_card_hov"], P["secondary"],
-            QFont("Segoe UI", 13), width=100, height=30)
+            ui_font(TypeSize.TITLE), width=100, height=30)
         back_btn.clicked.connect(self._close_settings_inline)
         bar_layout.addWidget(back_btn)
 
         settings_lbl = QLabel(self.t("settings"))
-        settings_lbl.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        settings_lbl.setFont(ui_font(TypeSize.SUBHEADING, QFont.Weight.Bold))
         settings_lbl.setStyleSheet(f"color: {P['accent']};")
         bar_layout.addWidget(settings_lbl)
         bar_layout.addStretch()
@@ -116,7 +119,7 @@ class SettingsDialogMixin:
 
         def _settings_checkbox(text_key, setting_key, callback, indent=0, default=True):
             checkbox = QCheckBox(self.t(text_key))
-            checkbox.setFont(QFont("Segoe UI", 14))
+            checkbox.setFont(ui_font(TypeSize.SUBHEADING))
             checkbox.setChecked(self._settings.get(setting_key, default))
             style = ss_settings_check()
             if indent:
@@ -134,14 +137,14 @@ class SettingsDialogMixin:
         lang_card_layout.setContentsMargins(20, 18, 20, 18)
 
         lang_title = QLabel(self.t("language"))
-        lang_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        lang_title.setFont(ui_font(TypeSize.LARGE, QFont.Weight.Bold))
         lang_title.setStyleSheet(f"color: {P['accent']}; border: none;")
         lang_card_layout.addWidget(lang_title)
 
         lang_group = QButtonGroup(lang_card)
         for code, name in available_languages(TRANSLATIONS):
             rb = QRadioButton(name)
-            rb.setFont(QFont("Segoe UI", 14))
+            rb.setFont(ui_font(TypeSize.SUBHEADING))
             rb.setStyleSheet(
                 f"QRadioButton {{ color: {P['text_main']}; border: none; spacing: 8px; }}"
                 f"QRadioButton::indicator {{ width: 14px; height: 14px; border-radius: 7px; border: 2px solid {P['secondary']}; background: transparent; }}"
@@ -154,13 +157,13 @@ class SettingsDialogMixin:
             lang_card_layout.addWidget(rb)
 
         lang_hint = QLabel(self.t("lang_hint"))
-        lang_hint.setFont(QFont("Segoe UI", 12))
+        lang_hint.setFont(ui_font(TypeSize.LABEL))
         lang_hint.setStyleSheet(f"color: {P['text_dim']}; font-style: italic; border: none;")
         lang_hint.setWordWrap(True)
         lang_card_layout.addWidget(lang_hint)
 
         lang_share = QLabel(self.t("lang_share"))
-        lang_share.setFont(QFont("Segoe UI", 12))
+        lang_share.setFont(ui_font(TypeSize.LABEL))
         lang_share.setStyleSheet(f"color: {P['text_dim']}; font-style: italic; border: none;")
         lang_share.setWordWrap(True)
         lang_card_layout.addWidget(lang_share)
@@ -175,12 +178,12 @@ class SettingsDialogMixin:
         tool_list_layout.setContentsMargins(20, 18, 20, 18)
 
         tool_list_title = QLabel(self.t("tool_list_title"))
-        tool_list_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        tool_list_title.setFont(ui_font(TypeSize.LARGE, QFont.Weight.Bold))
         tool_list_title.setStyleSheet(f"color: {P['accent']}; border: none;")
         tool_list_layout.addWidget(tool_list_title)
 
         tool_list_hint = QLabel(self.t("tool_list_hint"))
-        tool_list_hint.setFont(QFont("Segoe UI", 12))
+        tool_list_hint.setFont(ui_font(TypeSize.LABEL))
         tool_list_hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
         tool_list_hint.setWordWrap(True)
         tool_list_layout.addWidget(tool_list_hint)
@@ -207,7 +210,7 @@ class SettingsDialogMixin:
         theme_card_layout.setContentsMargins(20, 18, 20, 18)
 
         theme_title = QLabel(self.t("color_scheme"))
-        theme_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        theme_title.setFont(ui_font(TypeSize.LARGE, QFont.Weight.Bold))
         theme_title.setStyleSheet(f"color: {P['accent']}; border: none;")
         theme_card_layout.addWidget(theme_title)
 
@@ -223,7 +226,7 @@ class SettingsDialogMixin:
 
             if is_open:
                 rb = QRadioButton(ui_text("ui_ASBR-Tools_value", p0=theme_data['name']))
-                rb.setFont(QFont("Segoe UI", 14))
+                rb.setFont(ui_font(TypeSize.SUBHEADING))
                 rb.setStyleSheet(
                     f"QRadioButton {{ color: {P['text_main']}; border: none; spacing: 8px; }}"
                     f"QRadioButton::indicator {{ width: 14px; height: 14px; border-radius: 7px; border: 2px solid {P['secondary']}; background: transparent; }}"
@@ -244,7 +247,7 @@ class SettingsDialogMixin:
                 row_layout.addWidget(lock_btn)
 
                 name_lbl = QLabel(ui_text("ui_ASBR-Tools_value", p0=theme_data['name']))
-                name_lbl.setFont(QFont("Segoe UI", 14))
+                name_lbl.setFont(ui_font(TypeSize.SUBHEADING))
                 name_lbl.setStyleSheet(ss_locked_theme_name())
                 row_layout.addWidget(name_lbl, 1)
 
@@ -268,7 +271,7 @@ class SettingsDialogMixin:
 
         if special_themes:
             special_title = QLabel(self.t("color_scheme_special"))
-            special_title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+            special_title.setFont(ui_font(TypeSize.LABEL, QFont.Weight.Bold))
             special_title.setStyleSheet(f"color: {P['text_sec']}; border: none; background: transparent;")
             theme_card_layout.addSpacing(8)
             theme_card_layout.addWidget(special_title)
@@ -285,12 +288,12 @@ class SettingsDialogMixin:
         animations_layout.setContentsMargins(20, 18, 20, 18)
 
         animations_title = QLabel(self.t("animations_title"))
-        animations_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        animations_title.setFont(ui_font(TypeSize.LARGE, QFont.Weight.Bold))
         animations_title.setStyleSheet(f"color: {P['accent']}; border: none;")
         animations_layout.addWidget(animations_title)
 
         animations_hint = QLabel(self.t("animations_hint"))
-        animations_hint.setFont(QFont("Segoe UI", 12))
+        animations_hint.setFont(ui_font(TypeSize.LABEL))
         animations_hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
         animations_hint.setWordWrap(True)
         animations_layout.addWidget(animations_hint)
@@ -342,12 +345,12 @@ class SettingsDialogMixin:
         game_dir_layout.setContentsMargins(20, 18, 20, 18)
 
         game_dir_title = QLabel(self.t("game_files_dir_title"))
-        game_dir_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        game_dir_title.setFont(ui_font(TypeSize.LARGE, QFont.Weight.Bold))
         game_dir_title.setStyleSheet(f"color: {P['accent']}; border: none;")
         game_dir_layout.addWidget(game_dir_title)
 
         game_dir_hint = QLabel(self.t("game_files_dir_hint"))
-        game_dir_hint.setFont(QFont("Segoe UI", 12))
+        game_dir_hint.setFont(ui_font(TypeSize.LABEL))
         game_dir_hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
         game_dir_hint.setWordWrap(True)
         game_dir_layout.addWidget(game_dir_hint)
@@ -362,7 +365,7 @@ class SettingsDialogMixin:
         self._game_files_dir_edit = QLineEdit(self._settings.get("game_files_dir", ""))
         self._game_files_dir_edit.setReadOnly(True)
         self._game_files_dir_edit.setPlaceholderText(self.t("game_files_dir_placeholder"))
-        self._game_files_dir_edit.setFont(QFont("Segoe UI", 11))
+        self._game_files_dir_edit.setFont(ui_font(TypeSize.CODE))
         self._game_files_dir_edit.setStyleSheet(
             f"QLineEdit {{ background: {P.get('input_bg', P['bg_dark'])}; color: {P['text_main']}; "
             f"border: 1px solid {P.get('input_border', P['border'])}; border-radius: 8px; padding: 7px 9px; }}"
@@ -371,13 +374,13 @@ class SettingsDialogMixin:
 
         browse_btn = _make_styled_btn(
             self.t("browse"), P["mid"], P["bg_card_hov"], P["secondary"],
-            QFont("Segoe UI", 12), width=100, height=32)
+            ui_font(TypeSize.LABEL), width=100, height=32)
         browse_btn.clicked.connect(self._select_game_files_dir)
         game_dir_row_layout.addWidget(browse_btn)
 
         clear_btn = _make_styled_btn(
             self.t("clear"), P["mid"], P["bg_card_hov"], P["secondary"],
-            QFont("Segoe UI", 12), width=90, height=32)
+            ui_font(TypeSize.LABEL), width=90, height=32)
         clear_btn.clicked.connect(self._clear_game_files_dir)
         game_dir_row_layout.addWidget(clear_btn)
 
@@ -393,19 +396,19 @@ class SettingsDialogMixin:
         backup_layout.setContentsMargins(20, 18, 20, 18)
 
         backup_title = QLabel(self.t("backup_on_open_title"))
-        backup_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        backup_title.setFont(ui_font(TypeSize.LARGE, QFont.Weight.Bold))
         backup_title.setStyleSheet(f"color: {P['accent']}; border: none;")
         backup_layout.addWidget(backup_title)
 
         backup_checkbox = QCheckBox(self.t("backup_on_open"))
-        backup_checkbox.setFont(QFont("Segoe UI", 14))
+        backup_checkbox.setFont(ui_font(TypeSize.SUBHEADING))
         backup_checkbox.setChecked(self._settings.get("backup_on_open", True))
         backup_checkbox.setStyleSheet(ss_settings_check())
         backup_checkbox.toggled.connect(self._set_backup_on_open)
         backup_layout.addWidget(backup_checkbox)
 
         backup_hint = QLabel(self.t("backup_on_open_hint"))
-        backup_hint.setFont(QFont("Segoe UI", 12))
+        backup_hint.setFont(ui_font(TypeSize.LABEL))
         backup_hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
         backup_hint.setWordWrap(True)
         backup_layout.addWidget(backup_hint)
@@ -422,19 +425,19 @@ class SettingsDialogMixin:
         updates_layout.setContentsMargins(20, 18, 20, 18)
 
         updates_title = QLabel(self.t("updates_title"))
-        updates_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        updates_title.setFont(ui_font(TypeSize.LARGE, QFont.Weight.Bold))
         updates_title.setStyleSheet(f"color: {P['accent']}; border: none;")
         updates_layout.addWidget(updates_title)
 
         updates_hint = QLabel(self.t("updates_hint", version=updater.APP_VERSION))
-        updates_hint.setFont(QFont("Segoe UI", 12))
+        updates_hint.setFont(ui_font(TypeSize.LABEL))
         updates_hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
         updates_hint.setWordWrap(True)
         updates_layout.addWidget(updates_hint)
         updates_layout.addSpacing(8)
 
         updates_checkbox = QCheckBox(self.t("updates_check_on_startup"))
-        updates_checkbox.setFont(QFont("Segoe UI", 14))
+        updates_checkbox.setFont(ui_font(TypeSize.SUBHEADING))
         updates_checkbox.setChecked(self._settings.get("check_updates_on_startup", True))
         updates_checkbox.setStyleSheet(ss_settings_check())
         updates_checkbox.toggled.connect(self._set_check_updates_on_startup)
@@ -448,12 +451,12 @@ class SettingsDialogMixin:
 
         check_updates_btn = _make_styled_btn(
             self.t("updates_check_now"), P["mid"], P["bg_card_hov"], P["secondary"],
-            QFont("Segoe UI", 12), width=150, height=32)
+            ui_font(TypeSize.LABEL), width=150, height=32)
         check_updates_btn.clicked.connect(lambda: self._check_for_updates(manual=True))
         updates_row_layout.addWidget(check_updates_btn)
 
         self._update_status_label = QLabel(self.t("updates_idle", version=updater.APP_VERSION))
-        self._update_status_label.setFont(QFont("Segoe UI", 12))
+        self._update_status_label.setFont(ui_font(TypeSize.LABEL))
         self._update_status_label.setStyleSheet(f"color: {P['text_dim']}; border: none;")
         self._update_status_label.setWordWrap(True)
         updates_row_layout.addWidget(self._update_status_label, 1)
@@ -473,12 +476,12 @@ class SettingsDialogMixin:
         guide_card_layout.setContentsMargins(20, 18, 20, 18)
 
         guide_title = QLabel(self.t("guide_char_title"))
-        guide_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        guide_title.setFont(ui_font(TypeSize.LARGE, QFont.Weight.Bold))
         guide_title.setStyleSheet(f"color: {P['accent']}; border: none;")
         guide_card_layout.addWidget(guide_title)
 
         guide_hint = QLabel(ui_text("ui_ASBR-Tools_hide_guide_character_if_you_don_t_need_tips"))
-        guide_hint.setFont(QFont("Segoe UI", 9))
+        guide_hint.setFont(ui_font(TypeSize.HINT))
         guide_hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
         guide_card_layout.addWidget(guide_hint)
         guide_card_layout.addSpacing(6)
@@ -487,7 +490,7 @@ class SettingsDialogMixin:
         current_show_guide = self._settings.get("show_guide", True)
         for val, label_key in ((True, "guide_show"), (False, "guide_hide")):
             rb = QRadioButton(self.t(label_key))
-            rb.setFont(QFont("Segoe UI", 14))
+            rb.setFont(ui_font(TypeSize.SUBHEADING))
             rb.setStyleSheet(
                 f"QRadioButton {{ color: {P['text_main']}; border: none; spacing: 8px; }}"
                 f"QRadioButton::indicator {{ width: 14px; height: 14px; border-radius: 7px; border: 2px solid {P['secondary']}; background: transparent; }}"
@@ -519,12 +522,12 @@ class SettingsDialogMixin:
         intro_layout.setSpacing(10)
 
         title = QLabel(self.t("tools_visibility_title"))
-        title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        title.setFont(ui_font(TypeSize.LARGE, QFont.Weight.Bold))
         title.setStyleSheet(f"color: {P['accent']}; border: none;")
         intro_layout.addWidget(title)
 
         hint = QLabel(self.t("tools_visibility_hint"))
-        hint.setFont(QFont("Segoe UI", 12))
+        hint.setFont(ui_font(TypeSize.LABEL))
         hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
         hint.setWordWrap(True)
         intro_layout.addWidget(hint)
@@ -537,25 +540,25 @@ class SettingsDialogMixin:
 
         enable_all = _make_styled_btn(
             self.t("tools_visibility_enable_all"), P["accent"], P["secondary"], P["bg_dark"],
-            QFont("Segoe UI", 10, QFont.Weight.Bold), width=132, height=30)
+            ui_font(TypeSize.BODY, QFont.Weight.Bold), width=132, height=30)
         enable_all.clicked.connect(lambda _checked=False: self._set_all_tools_enabled(True))
         actions_layout.addWidget(enable_all)
 
         disable_all = _make_styled_btn(
             self.t("tools_visibility_disable_all"), P["mid"], P["bg_card_hov"], P["secondary"],
-            QFont("Segoe UI", 10), width=132, height=30)
+            ui_font(TypeSize.BODY), width=132, height=30)
         disable_all.clicked.connect(lambda _checked=False: self._set_all_tools_enabled(False))
         actions_layout.addWidget(disable_all)
         actions_layout.addStretch()
 
         self._tool_visibility_total_label = QLabel()
-        self._tool_visibility_total_label.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self._tool_visibility_total_label.setFont(ui_font(TypeSize.CODE, QFont.Weight.Bold))
         self._tool_visibility_total_label.setStyleSheet(f"color: {P['text_sec']}; border: none;")
         actions_layout.addWidget(self._tool_visibility_total_label)
         intro_layout.addWidget(actions)
 
         apply_hint = QLabel(self.t("tools_visibility_apply_hint"))
-        apply_hint.setFont(QFont("Segoe UI", 10))
+        apply_hint.setFont(ui_font(TypeSize.BODY))
         apply_hint.setStyleSheet(f"color: {P['text_dim']}; font-style: italic; border: none;")
         apply_hint.setWordWrap(True)
         intro_layout.addWidget(apply_hint)
@@ -590,7 +593,7 @@ class SettingsDialogMixin:
 
             category_check = QCheckBox(self.t(CAT_META[cat_key][1]))
             category_check.setTristate(True)
-            category_check.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+            category_check.setFont(ui_font(TypeSize.SUBHEADING, QFont.Weight.Bold))
             category_check.setStyleSheet(ss_settings_check())
             category_check.clicked.connect(
                 lambda checked, category=cat_key: self._set_category_tools_enabled(category, checked)
@@ -599,7 +602,7 @@ class SettingsDialogMixin:
             header_layout.addWidget(category_check, 1)
 
             status = QLabel()
-            status.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+            status.setFont(ui_font(TypeSize.BODY, QFont.Weight.Bold))
             status.setStyleSheet(
                 f"color: {P['text_sec']}; background: {P['bg_card']}; border: 1px solid {P['border']}; "
                 "border-radius: 9px; padding: 3px 8px;"
@@ -636,7 +639,7 @@ class SettingsDialogMixin:
                 details_layout.setSpacing(2)
 
                 checkbox = QCheckBox(self.t(title_key))
-                checkbox.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+                checkbox.setFont(ui_font(TypeSize.CODE, QFont.Weight.Bold))
                 checkbox.setStyleSheet(ss_settings_check())
                 checkbox.toggled.connect(
                     lambda enabled, current_tool_id=tool_id:
@@ -646,7 +649,7 @@ class SettingsDialogMixin:
                 details_layout.addWidget(checkbox)
 
                 file_label = QLabel(file_hint)
-                file_label.setFont(QFont("Consolas", 9))
+                file_label.setFont(mono_font(TypeSize.HINT))
                 file_label.setStyleSheet(f"color: {P['text_dim']}; background: transparent; border: none;")
                 file_label.setWordWrap(True)
                 details_layout.addWidget(file_label)
@@ -730,19 +733,19 @@ class SettingsDialogMixin:
         intro_layout.setSpacing(10)
 
         title = QLabel(self.t("shortcuts_title"))
-        title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        title.setFont(ui_font(TypeSize.LARGE, QFont.Weight.Bold))
         title.setStyleSheet(f"color: {P['accent']}; border: none;")
         intro_layout.addWidget(title)
 
         hint = QLabel(self.t("shortcuts_hint"))
-        hint.setFont(QFont("Segoe UI", 12))
+        hint.setFont(ui_font(TypeSize.LABEL))
         hint.setStyleSheet(f"color: {P['text_dim']}; border: none;")
         hint.setWordWrap(True)
         intro_layout.addWidget(hint)
 
         reset_all = QPushButton(self.t("shortcut_reset_all"))
         reset_all.setFixedHeight(30)
-        reset_all.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        reset_all.setFont(ui_font(TypeSize.BODY, QFont.Weight.Bold))
         reset_all.setStyleSheet(ss_btn())
         reset_all.clicked.connect(self._reset_all_shortcuts)
         intro_layout.addWidget(reset_all, 0, Qt.AlignmentFlag.AlignLeft)
@@ -758,7 +761,7 @@ class SettingsDialogMixin:
             card_layout.setSpacing(8)
 
             group_title = QLabel(self.t(group_key))
-            group_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+            group_title.setFont(ui_font(TypeSize.LARGE, QFont.Weight.Bold))
             group_title.setStyleSheet(f"color: {P['accent']}; border: none;")
             card_layout.addWidget(group_title)
 
@@ -770,7 +773,7 @@ class SettingsDialogMixin:
             header_layout.addSpacing(260)
             for key in ("shortcut_primary", "shortcut_secondary"):
                 label = QLabel(self.t(key))
-                label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+                label.setFont(ui_font(TypeSize.BODY, QFont.Weight.Bold))
                 label.setStyleSheet(f"color: {P['text_sec']}; border: none;")
                 label.setFixedWidth(150)
                 header_layout.addWidget(label)
@@ -794,7 +797,9 @@ class SettingsDialogMixin:
         row_layout.setSpacing(8)
 
         label = QLabel(self.t(action.label_key))
-        label.setFont(QFont("Segoe UI", 12))
+        label.setWordWrap(True)
+        label.setToolTip(label.text())
+        label.setFont(ui_font(TypeSize.LABEL))
         label.setStyleSheet(f"color: {P['text_main']}; border: none;")
         label.setFixedWidth(252)
         row_layout.addWidget(label)
@@ -804,7 +809,7 @@ class SettingsDialogMixin:
             editor = QKeySequenceEdit()
             editor.setFixedWidth(150)
             editor.setFixedHeight(30)
-            editor.setFont(QFont("Segoe UI", 10))
+            editor.setFont(ui_font(TypeSize.BODY))
             editor.setStyleSheet(ss_input())
             if index < len(current):
                 editor.setKeySequence(QKeySequence(current[index]))
@@ -817,7 +822,7 @@ class SettingsDialogMixin:
 
         reset_btn = QPushButton(self.t("shortcut_reset"))
         reset_btn.setFixedHeight(30)
-        reset_btn.setFont(QFont("Segoe UI", 10))
+        reset_btn.setFont(ui_font(TypeSize.BODY))
         reset_btn.setStyleSheet(ss_btn())
         reset_btn.clicked.connect(lambda _checked=False, action_id=action.action_id: self._reset_shortcut(action_id))
         row_layout.addWidget(reset_btn)
@@ -896,15 +901,12 @@ class SettingsDialogMixin:
         card_layout.setSpacing(10)
 
         title = QLabel(self.t("qol_backup_manager_title"))
-        title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        title.setFont(ui_font(TypeSize.LARGE, QFont.Weight.Bold))
         title.setStyleSheet(f"color: {P['accent']}; border: none;")
         card_layout.addWidget(title)
 
         self._backup_manager_search = QLineEdit()
-        self._backup_manager_search.setPlaceholderText(self.t("qol_backup_search"))
-        self._backup_manager_search.setFixedHeight(30)
-        self._backup_manager_search.setFont(QFont("Segoe UI", 11))
-        self._backup_manager_search.setStyleSheet(ss_input())
+        configure_search(self._backup_manager_search)
         self._backup_manager_search.textChanged.connect(self._refresh_backup_manager)
         card_layout.addWidget(self._backup_manager_search)
 
@@ -963,7 +965,7 @@ class SettingsDialogMixin:
                 break
         if not shown:
             empty = QLabel(self.t("qol_backup_empty"))
-            empty.setFont(QFont("Segoe UI", 11))
+            empty.setFont(ui_font(TypeSize.CODE))
             empty.setStyleSheet(f"color: {P['text_dim']}; border: none;")
             layout.addWidget(empty)
 
@@ -983,7 +985,7 @@ class SettingsDialogMixin:
             reason=entry.get("reason", ""),
             status=self.t("qol_backup_status_ok") if exists else self.t("qol_backup_status_missing"),
         ))
-        label.setFont(QFont("Segoe UI", 11))
+        label.setFont(ui_font(TypeSize.CODE))
         label.setToolTip(f"{backup_path}\n{source_path}")
         label.setStyleSheet(f"color: {P['text_main'] if exists else P['text_dim']}; border: none; background: transparent;")
         row_layout.addWidget(label, 1)
@@ -1178,18 +1180,18 @@ class SettingsDialogMixin:
 
         back_btn = _make_styled_btn(
             "\u2190 " + self.t("back"), P["mid"], P["bg_card_hov"], P["secondary"],
-            QFont("Segoe UI", 13), width=100, height=30)
+            ui_font(TypeSize.TITLE), width=100, height=30)
         back_btn.clicked.connect(self._close_settings_inline)
         bar_layout.addWidget(back_btn)
 
         title_lbl = QLabel(ui_text("ui_ASBR-Tools_credits"))
-        title_lbl.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        title_lbl.setFont(ui_font(TypeSize.SUBHEADING, QFont.Weight.Bold))
         title_lbl.setStyleSheet(f"color: {P['accent']};")
         bar_layout.addWidget(title_lbl)
         bar_layout.addStretch()
         support_top_btn = _make_styled_btn(
             self.t("credit_support_button"), P["accent"], P["secondary"], P["bg_dark"],
-            QFont("Segoe UI", 11, QFont.Weight.Bold), width=132, height=30)
+            ui_font(TypeSize.CODE, QFont.Weight.Bold), width=132, height=30)
         bar_layout.addWidget(support_top_btn)
         panel_layout.addWidget(bar)
 
@@ -1218,7 +1220,7 @@ class SettingsDialogMixin:
 
         def _section_label(text):
             lbl = QLabel(text)
-            lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
+            lbl.setFont(ui_font(TypeSize.SECTION, QFont.Weight.Bold))
             lbl.setStyleSheet(f"color: {P['accent']}; border: none; background: transparent;")
             return lbl
 
@@ -1236,7 +1238,7 @@ class SettingsDialogMixin:
             hbox.setSpacing(5)
 
             name_lbl = QLabel(name)
-            name_lbl.setFont(QFont("Segoe UI", 13))
+            name_lbl.setFont(ui_font(TypeSize.TITLE))
             name_lbl.setStyleSheet(f"color: {P['text_main']}; border: none; background: transparent;")
             hbox.addWidget(name_lbl)
 
@@ -1261,7 +1263,7 @@ class SettingsDialogMixin:
 
             if desc:
                 desc_lbl = QLabel(desc)
-                desc_lbl.setFont(QFont("Segoe UI", 11))
+                desc_lbl.setFont(ui_font(TypeSize.CODE))
                 desc_lbl.setStyleSheet(f"color: {P['text_sec']}; border: none; background: transparent;")
                 desc_lbl.setWordWrap(True)
                 vbox.addWidget(desc_lbl)
@@ -1269,7 +1271,7 @@ class SettingsDialogMixin:
             return w
 
         support_status_lbl = QLabel("")
-        support_status_lbl.setFont(QFont("Segoe UI", 9))
+        support_status_lbl.setFont(ui_font(TypeSize.HINT))
         support_status_lbl.setStyleSheet(f"color: {P['accent']}; border: none; background: transparent;")
 
         _SUPPORT_WALLETS = (
@@ -1302,20 +1304,20 @@ class SettingsDialogMixin:
 
             name_lbl = QLabel(name)
             name_lbl.setMinimumWidth(86)
-            name_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            name_lbl.setFont(ui_font(TypeSize.HINT, QFont.Weight.Bold))
             name_lbl.setStyleSheet(f"color: {P['accent']}; border: none; background: transparent;")
             row_l.addWidget(name_lbl)
 
             address_lbl = QLabel(address)
             address_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            address_lbl.setFont(QFont("Consolas", 9))
+            address_lbl.setFont(mono_font(TypeSize.HINT))
             address_lbl.setStyleSheet(f"color: {P['text_main']}; border: none; background: transparent;")
             address_lbl.setWordWrap(True)
             row_l.addWidget(address_lbl, 1)
 
             copy_btn = _make_styled_btn(
                 self.t("credit_support_copy"), P["mid"], P["bg_card_hov"], P["secondary"],
-                QFont("Segoe UI", 9), width=96, height=26)
+                ui_font(TypeSize.HINT), width=96, height=26)
             copy_btn.clicked.connect(lambda checked=False, value=address: _copy_support_text(value))
             row_l.addWidget(copy_btn)
             return row
@@ -1338,19 +1340,19 @@ class SettingsDialogMixin:
             head_l.setSpacing(10)
 
             title = QLabel(self.t("credit_support_title"))
-            title.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
+            title.setFont(ui_font(TypeSize.SECTION, QFont.Weight.Bold))
             title.setStyleSheet(f"color: {P['accent']}; border: none; background: transparent;")
             head_l.addWidget(title, 1)
 
             copy_all_btn = _make_styled_btn(
                 self.t("credit_support_button"), P["accent"], P["secondary"], P["bg_dark"],
-                QFont("Segoe UI", 10, QFont.Weight.Bold), width=132, height=30)
+                ui_font(TypeSize.BODY, QFont.Weight.Bold), width=132, height=30)
             copy_all_btn.clicked.connect(lambda checked=False: _copy_all_support())
             head_l.addWidget(copy_all_btn)
             support_l.addWidget(head)
 
             note = QLabel(self.t("credit_support_note"))
-            note.setFont(QFont("Segoe UI", 10))
+            note.setFont(ui_font(TypeSize.BODY))
             note.setWordWrap(True)
             note.setStyleSheet(f"color: {P['text_sec']}; border: none; background: transparent;")
             support_l.addWidget(note)
@@ -1378,7 +1380,7 @@ class SettingsDialogMixin:
             ("GitHub",    "https://github.com/KojoBailey"),
             ("NexusMods", "https://www.nexusmods.com/profile/KojoBailey"),
             ("YouTube",   "https://www.youtube.com/@KojoBailey"),
-        ], desc="for 010 editor templates that I used to develop the editors in this toolbox"))
+        ], desc="for 010 editor templates and help with the messageinfo editor"))
         card_layout.addWidget(_credit_entry("Xemasklyr", [
             ("NexusMods", "https://www.nexusmods.com/profile/Xemasklyr/mods"),
             ("YouTube",   "https://www.youtube.com/@Xemasklyr/featured"),

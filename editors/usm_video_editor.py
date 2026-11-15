@@ -1,126 +1,39 @@
+"""Visual USM workspace. Media plans and validation live in core.usm_tools."""
 import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import replace
 
-from PyQt6.QtCore import QProcess, QSize, Qt, pyqtSignal
-from PyQt6.QtCore import QUrl
+from PyQt6.QtCore import (QObject, QRunnable, QThreadPool, QProcess, QSignalBlocker, QTimer,
+                          QSize, Qt, QUrl, pyqtSignal)
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QVideoWidget
-from PyQt6.QtWidgets import (
-    QBoxLayout,
-    QFileDialog,
-    QCheckBox,
-    QFrame,
-    QGridLayout,
-    QHBoxLayout,
-    QLabel,
-    QMessageBox,
-    QProgressBar,
-    QPushButton,
-    QScrollArea,
-    QSlider,
-    QSizePolicy,
-    QStackedLayout,
-    QStyle,
-    QVBoxLayout,
-    QWidget,
-)
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QBoxLayout, QLabel,
+    QPushButton, QComboBox, QDoubleSpinBox, QFileDialog, QMessageBox, QScrollArea,
+    QSizePolicy, QStackedLayout, QProgressBar, QCheckBox)
 
+from core.design_tokens import LayoutRole, Insets
 from core.editor_file_state import set_file_label, set_file_label_empty
-from core.external_tools import (
-    find_ffmpeg,
-    find_ffprobe,
-    find_sofdec2_encoder,
-    find_sofdec2_h264_encoder,
-    tool_command,
-)
+from core.external_tools import find_ffmpeg, find_ffprobe, find_sofdec2_encoder, tool_command
 from core.settings import create_backup_on_open, game_files_dialog_dir
-from core.style_helpers import (
-    TOOLBAR_BTN_H,
-    TOOLBAR_H,
-    add_editor_card_title,
-    ss_bg_dark,
-    ss_bg_panel,
-    ss_btn,
-    ss_accent_sep,
-    ss_blocking_overlay,
-    ss_blocking_overlay_card,
-    ss_check,
-    ss_dim_label,
-    ss_editor_card,
-    ss_file_label,
-    ss_main_label,
-    ss_progressbar,
-    ss_scrollarea,
-    ss_section_label,
-    ss_sep,
-    ss_slider,
-    ss_transparent,
-    ss_video_matte,
-)
 from core.translations import ui_text
+from core.style_helpers import (ss_bg_dark, ss_video_matte, ss_dim_label, ss_error_label,
+    ss_check, ss_progressbar, make_editor_card, add_editor_card_title,
+    make_editor_field_shell)
+from core.ui.editor_widgets import (EditorToolbar, EditorSeparator, configure_layout,
+    configure_button, configure_file_label, configure_input, configure_scrollarea)
+from core.ui.editor_actions import install_file_actions, refresh_file_actions
+from core.ui.editor_chrome import install_editor_chrome
+from core.ui.timeline_controls import timeline_icon_button, TimelineZoomControls
+from core.ui.video_timeline import VideoTimeline, VideoTimelineOverview
+from core.ui.number_input import SliderInput
+from core.usm_tools import (MediaInfo, VideoEdits, parse_media, check_usm, prepare_args,
+    encoder_args, preview_args, video_timing_args, validate_output, intermediate_bytes, atomic_copy_usm)
 
-
-@dataclass
-class MediaInfo:
-    path: str = ""
-    duration: float = 0.0
-    video_codec: str = ""
-    width: int = 0
-    height: int = 0
-    fps_text: str = ""
-    fps: float = 0.0
-    audio_codec: str = ""
-    audio_channels: int = 0
-    audio_layout: str = ""
-    audio_rate: int = 0
-
-
-PREVIEW_MAX_WIDTH = 640
 PREVIEW_MIN_WIDTH = 220
-MAX_IMPORT_DURATION_SECONDS = 10 * 60
-
-
-def _ensure_ext(path: str, ext: str) -> str:
-    return path if os.path.splitext(path)[1] else path + ext
-
-
-def _parse_rate(value: str) -> tuple[str, float]:
-    if not value or value == "0/0":
-        return "", 0.0
-    if "/" in value:
-        num, den = value.split("/", 1)
-        try:
-            den_f = float(den)
-            fps = float(num) / den_f if den_f else 0.0
-        except ValueError:
-            return value, 0.0
-        return value, fps
-    try:
-        return value, float(value)
-    except ValueError:
-        return value, 0.0
-
-
-def _to_seconds(value: str | int | float | None) -> float:
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _ffmpeg_time_to_seconds(value: str) -> float:
-    hours, minutes, seconds = value.split(":", 2)
-    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
-
-
-def _probe_creation_flags() -> int:
-    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 class AspectRatioWidget(QWidget):
@@ -129,994 +42,1095 @@ class AspectRatioWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._aspect_ratio = 16 / 9
+        self._height_limit = None
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.timeout.connect(self._sync_height)
         self.setMinimumWidth(PREVIEW_MIN_WIDTH)
-        self.setMaximumWidth(PREVIEW_MAX_WIDTH)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-    def set_widescreen_aspect(self):
-        self._aspect_ratio = 16 / 9
+    def set_aspect(self, width, height):
+        self._aspect_ratio = width / height if width and height else 16 / 9
         self.updateGeometry()
         self._sync_height()
 
-    def hasHeightForWidth(self) -> bool:
+    def hasHeightForWidth(self):
         return True
 
-    def heightForWidth(self, width: int) -> int:
-        return max(1, round(width / self._aspect_ratio))
+    def heightForWidth(self, width):
+        height = max(1, round(width / self._aspect_ratio))
+        return min(height, self._height_limit) if self._height_limit else height
 
-    def sizeHint(self) -> QSize:
-        return QSize(PREVIEW_MAX_WIDTH, self.heightForWidth(PREVIEW_MAX_WIDTH))
+    def set_height_limit(self, limit):
+        if self._height_limit != limit:
+            self._height_limit = limit
+            self.updateGeometry()
+            self._resize_timer.start(0)
 
-    def minimumSizeHint(self) -> QSize:
+    def sizeHint(self):
+        return QSize(640, self.heightForWidth(640))
+
+    def minimumSizeHint(self):
         return QSize(PREVIEW_MIN_WIDTH, self.heightForWidth(PREVIEW_MIN_WIDTH))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._sync_height()
+        self._resize_timer.start(0)
         self.resized.emit()
 
     def _sync_height(self):
-        width = self.width()
-        if width <= 0:
+        if getattr(self, '_syncing', False):
             return
-        target = self.heightForWidth(width)
+        target = self.heightForWidth(self.width())
         if self.height() != target:
-            self.setFixedHeight(target)
+            self._syncing = True
+            try:
+                self.setFixedHeight(target)
+            finally:
+                self._syncing = False
+
+
+class _CopySignals(QObject):
+    finished = pyqtSignal(str, str)
+
+
+class _CopyJob(QRunnable):
+    def __init__(self, source, target, signals, temporary_directory):
+        super().__init__()
+        self.source, self.target, self.signals = source, target, signals
+        self.temporary_directory = temporary_directory
+
+    def run(self):
+        try:
+            atomic_copy_usm(self.source, self.target)
+            error = ''
+        except Exception as exc:
+            error = str(exc)
+        self.signals.finished.emit(self.target, error)
 
 
 class UsmVideoEditor(QWidget):
+    defer_file_load_notification = True
+
     def __init__(self, parent=None, lang_func=None, embedded=False):
         super().__init__(parent)
-        self.t = lang_func or (lambda key, **kw: ui_text(key, **kw))
-        self._original_path = ""
-        self._import_path = ""
-        self._staged_path = ""
-        self._original_info = MediaInfo()
-        self._import_info = MediaInfo()
+        self.t = lang_func or ui_text
+        self._original_path = self._filepath = self._import_path = self._staged_path = ''
+        self._original_info = self._import_info = self._staged_info = MediaInfo()
         self._dirty = False
+        self._saved_edits = self._staged_edits = None
+        self._snapshot_pending = None
         self._process = None
-        self._process_done = None
-        self._process_log = []
-        self._process_duration = 0.0
-        self._process_duration_limit = 0.0
-        self._process_workdir = ""
-        self._tmpdir = tempfile.TemporaryDirectory(prefix="arrowforge_usm_")
-        self._preview_path = ""
+        self._copying = self._closing = self._cancelled = False
+        self._tmpdir = tempfile.TemporaryDirectory(prefix='arrowforge_usm_')
+        self._serial = 0
+        self._video_fit_timer = QTimer(self)
+        self._video_fit_timer.setSingleShot(True)
+        self._video_fit_timer.timeout.connect(self._fit_video_height)
+        self._proxy_cache = {}
+        self._external_temporaries = set()
         self._preview_ready = False
-        self._poster_path = ""
-        self._poster_pixmap = QPixmap()
+        self._preview_path = self._preview_kind = ''
         self._poster_process = None
-        self._poster_token = 0
-        self._seeking = False
-
+        self._poster_pixmap = QPixmap()
+        self._copy_signals = _CopySignals()
+        self._copy_signals.finished.connect(self._on_copy_done)
         self._build_ui()
+        self.destroyed.connect(lambda: self._dispose())
+        install_file_actions(self, self._save_btn, save_to=self._save_to, asynchronous=True)
+        install_editor_chrome(self)
         self._refresh_state()
 
-    def _build_ui(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-        self.setStyleSheet(ss_bg_dark())
+    def _button(self, key, callback, *, accent=False):
+        button = configure_button(QPushButton(self.t(key)), accent=accent)
+        button.clicked.connect(callback)
+        return button
 
-        toolbar = QFrame()
-        toolbar.setFixedHeight(TOOLBAR_H)
-        toolbar.setStyleSheet(ss_bg_panel())
-        toolbar_layout = QHBoxLayout(toolbar)
-
-        self._open_btn = self._toolbar_button("btn_open_file", accent=True)
-        self._open_btn.clicked.connect(self._load_file)
-        toolbar_layout.addWidget(self._open_btn)
-
-        self._save_btn = self._toolbar_button("btn_save_file", accent=True)
-        self._save_btn.clicked.connect(self._save_file)
-        toolbar_layout.addWidget(self._save_btn)
-
-        self._file_label = QLabel(self.t("no_file_loaded"))
-        self._file_label.setStyleSheet(ss_file_label())
-        self._file_label.setMinimumWidth(0)
-        self._file_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        toolbar_layout.addWidget(self._file_label, 1)
-
-        root.addWidget(toolbar)
-
-        sep = QFrame()
-        sep.setFixedHeight(2)
-        sep.setStyleSheet(ss_accent_sep())
-        root.addWidget(sep)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet(ss_scrollarea())
-
-        body = QWidget()
-        body.setStyleSheet(ss_bg_dark())
-        body_layout = QHBoxLayout(body)
-        body_layout.setContentsMargins(14, 14, 14, 14)
-        body_layout.setSpacing(14)
-        body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self._body = body
-        self._body_layout = body_layout
-        self._compact_layout = None
-
-        preview = self._panel()
-        self._preview_panel = preview
-        preview.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
-        preview_layout = QVBoxLayout(preview)
-        preview_layout.setContentsMargins(16, 14, 16, 14)
-        preview_layout.setSpacing(10)
-        preview_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        add_editor_card_title(preview_layout, self.t("usm_section_preview"), "fa6s.film")
-
-        self._preview_inner = QWidget()
-        self._preview_inner.setStyleSheet(ss_transparent())
-        self._preview_inner.setMinimumWidth(0)
-        self._preview_inner.setMaximumWidth(PREVIEW_MAX_WIDTH)
-        self._preview_inner.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        preview_inner_layout = QVBoxLayout(self._preview_inner)
-        preview_inner_layout.setContentsMargins(0, 0, 0, 0)
-        preview_inner_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-        self._preview_surface = AspectRatioWidget()
-        self._preview_surface.setStyleSheet(ss_video_matte())
-        self._preview_surface.resized.connect(self._render_poster_pixmap)
-        self._preview_stack = QStackedLayout(self._preview_surface)
-        self._preview_stack.setContentsMargins(0, 0, 0, 0)
-
-        self._poster_label = QLabel()
-        self._poster_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._poster_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._poster_label.setStyleSheet(ss_video_matte())
-
-        self._video_widget = QVideoWidget()
-        self._video_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._video_widget.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
-        self._video_widget.setStyleSheet(ss_video_matte())
-        self._preview_stack.addWidget(self._poster_label)
-        self._preview_stack.addWidget(self._video_widget)
-        preview_inner_layout.addWidget(self._preview_surface)
-
-        self._stretch_video_chk = QCheckBox(self.t("usm_toggle_stretch_video"))
-        self._stretch_video_chk.setStyleSheet(ss_check())
-        preview_inner_layout.addWidget(self._stretch_video_chk)
-
-        controls = QHBoxLayout()
-        self._play_btn = QPushButton()
-        self._play_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
-        self._play_btn.setFixedHeight(TOOLBAR_BTN_H)
-        self._play_btn.setStyleSheet(ss_btn())
-        self._play_btn.setToolTip(self.t("usm_preview_play"))
-        self._play_btn.clicked.connect(self._toggle_preview_playback)
-        controls.addWidget(self._play_btn)
-
-        self._stop_btn = QPushButton()
-        self._stop_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
-        self._stop_btn.setFixedHeight(TOOLBAR_BTN_H)
-        self._stop_btn.setStyleSheet(ss_btn())
-        self._stop_btn.setToolTip(self.t("usm_preview_stop"))
-        self._stop_btn.clicked.connect(self._stop_preview)
-        controls.addWidget(self._stop_btn)
-
-        self._position_slider = QSlider(Qt.Orientation.Horizontal)
-        self._position_slider.setRange(0, 0)
-        self._position_slider.setStyleSheet(ss_slider())
-        self._position_slider.sliderPressed.connect(self._on_seek_start)
-        self._position_slider.sliderReleased.connect(self._on_seek_finish)
-        controls.addWidget(self._position_slider, 1)
-
-        self._time_label = QLabel(self.t("usm_preview_time_empty"))
-        self._time_label.setStyleSheet(ss_dim_label())
-        controls.addWidget(self._time_label)
-        preview_inner_layout.addLayout(controls)
-
-        video_actions = QHBoxLayout()
-        video_actions.setContentsMargins(0, 0, 0, 0)
-        video_actions.setSpacing(8)
-        self._export_btn = self._toolbar_button("usm_btn_export")
-        self._export_btn.clicked.connect(self._export_video)
-        video_actions.addWidget(self._export_btn)
-
-        self._import_btn = self._toolbar_button("usm_btn_import")
-        self._import_btn.clicked.connect(self._import_video)
-        video_actions.addWidget(self._import_btn)
-        preview_inner_layout.addLayout(video_actions)
-
-        preview_layout.addWidget(self._preview_inner, 0, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        body_layout.addWidget(preview, 0, Qt.AlignmentFlag.AlignTop)
-
-        summary = self._panel()
-        self._summary_panel = summary
-        summary.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        summary_layout = QVBoxLayout(summary)
-        summary_layout.setContentsMargins(16, 14, 16, 14)
-        summary_layout.setSpacing(10)
-        add_editor_card_title(summary_layout, self.t("usm_section_media"), "fa6s.circle-info")
-        grid = QGridLayout()
-        grid.setColumnStretch(0, 0)
-        grid.setColumnStretch(1, 1)
-        grid.setHorizontalSpacing(max(0, self.style().pixelMetric(QStyle.PixelMetric.PM_LayoutHorizontalSpacing)))
-        grid.setVerticalSpacing(max(0, self.style().pixelMetric(QStyle.PixelMetric.PM_LayoutVerticalSpacing)))
-        self._source_value = self._value_label()
-        self._original_value = self._value_label()
-        self._import_value = self._value_label()
-        self._staged_value = self._value_label()
-        self._add_row(grid, "usm_label_source", self._source_value)
-        self._add_row(grid, "usm_label_original", self._original_value)
-        self._add_row(grid, "usm_label_imported", self._import_value)
-        self._add_row(grid, "usm_label_staged", self._staged_value)
-        summary_layout.addLayout(grid)
-        summary_layout.addStretch()
-        body_layout.addWidget(summary, 1, Qt.AlignmentFlag.AlignTop)
-
-        scroll.setWidget(body)
-        root.addWidget(scroll, 1)
-        self._build_busy_overlay()
-        self._build_preview_player()
-        self._apply_responsive_layout()
-
-    def _toolbar_button(self, key: str, *, accent: bool = False) -> QPushButton:
-        btn = QPushButton(self.t(key))
-        btn.setFixedHeight(TOOLBAR_BTN_H)
-        btn.setStyleSheet(ss_btn(accent=accent))
-        return btn
-
-    def _panel(self) -> QFrame:
-        panel = QFrame()
-        panel.setObjectName("EditorCard")
-        panel.setStyleSheet(ss_editor_card())
-        return panel
-
-    def _section_label(self, key: str) -> QLabel:
+    def _hint(self, layout, key):
         label = QLabel(self.t(key))
-        label.setStyleSheet(ss_section_label())
-        return label
-
-    def _value_label(self) -> QLabel:
-        label = QLabel(self.t("usm_value_empty"))
+        label.setTextFormat(Qt.TextFormat.PlainText)
         label.setWordWrap(True)
         label.setMinimumWidth(0)
-        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        label.setStyleSheet(ss_main_label())
+        label.setStyleSheet(ss_dim_label())
+        layout.addWidget(label)
         return label
 
-    def _add_row(self, grid: QGridLayout, key: str, value: QLabel):
-        row = grid.rowCount()
-        label = QLabel(self.t(key))
-        label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
-        label.setStyleSheet(ss_dim_label())
-        grid.addWidget(label, row, 0, Qt.AlignmentFlag.AlignTop)
-        grid.addWidget(value, row, 1, Qt.AlignmentFlag.AlignTop)
+    def _field(self, layout, key, control, hint=''):
+        frame, inner, label, _ = make_editor_field_shell(self.t(key))
+        control.setAccessibleName(self.t(key))
+        if hint:
+            control.setToolTip(self.t(hint))
+        label.setBuddy(control)
+        inner.addWidget(control)
+        layout.addWidget(frame)
 
-    def _set_dirty(self, dirty: bool):
-        self._dirty = dirty
-        if self._original_path:
-            set_file_label(self._file_label, self._original_path, dirty=dirty)
-
-    def has_unsaved_changes(self):
-        return self._dirty
-
-    def load_file(self, path: str):
-        self._open_usm(path)
-
-    def _load_file(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            self.t("usm_open_title"),
-            game_files_dialog_dir(target_patterns=("*.usm",)),
-            self.t("usm_filter_usm"),
-        )
-        if path:
-            self._open_usm(path)
-
-    def _open_usm(self, path: str):
-        if self._is_busy():
-            return
-        if not path or os.path.splitext(path)[1].lower() != ".usm":
-            QMessageBox.warning(self, self.t("dlg_title_warning"), self.t("usm_warning_not_usm"))
-            return
-        create_backup_on_open(path)
-        self._original_path = path
-        self._import_path = ""
-        self._staged_path = ""
-        self._import_info = MediaInfo()
-        set_file_label_empty(self._file_label, self.t("loading"))
-        try:
-            self._original_info = self._probe_media(path)
-        except Exception as exc:
-            self._original_info = MediaInfo(path=path)
-            QMessageBox.warning(self, self.t("dlg_title_warning"), self.t("usm_status_probe_failed", error=exc))
-        self._set_dirty(False)
-        self._set_preview_source(path)
-        self._refresh_state()
-
-    def _probe_media(self, path: str) -> MediaInfo:
-        ffprobe = find_ffprobe()
-        if not ffprobe:
-            raise RuntimeError(self.t("usm_error_ffprobe_missing"))
-        result = subprocess.run(
-            [
-                *tool_command(ffprobe),
-                "-v",
-                "error",
-                "-print_format",
-                "json",
-                "-show_streams",
-                "-show_format",
-                path,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            creationflags=_probe_creation_flags(),
-        )
-        if result.returncode != 0:
-            raise RuntimeError((result.stderr or result.stdout or self.t("no_output")).strip())
-        data = json.loads(result.stdout or "{}")
-        streams = data.get("streams") or []
-        video = next((stream for stream in streams if stream.get("codec_type") == "video"), {})
-        audio = next((stream for stream in streams if stream.get("codec_type") == "audio"), {})
-        fps_text, fps = _parse_rate(video.get("avg_frame_rate") or video.get("r_frame_rate") or "")
-        duration = _to_seconds(video.get("duration")) or _to_seconds((data.get("format") or {}).get("duration"))
-        return MediaInfo(
-            path=path,
-            duration=duration,
-            video_codec=str(video.get("codec_name") or ""),
-            width=int(video.get("width") or 0),
-            height=int(video.get("height") or 0),
-            fps_text=fps_text,
-            fps=fps,
-            audio_codec=str(audio.get("codec_name") or ""),
-            audio_channels=int(audio.get("channels") or 0),
-            audio_layout=str(audio.get("channel_layout") or ""),
-            audio_rate=int(audio.get("sample_rate") or 0),
-        )
-
-    def _refresh_state(self):
-        has_original = bool(self._original_path)
-        has_import = bool(self._import_path)
-        has_staged = bool(self._staged_path)
-        busy = self._is_busy()
-        self._export_btn.setEnabled(has_original and not busy)
-        self._import_btn.setEnabled(has_original and not busy)
-        self._save_btn.setEnabled(has_original and (has_import or has_staged) and not busy)
-        self._source_value.setText(os.path.basename(self._original_path) if has_original else self.t("usm_value_empty"))
-        self._original_value.setText(self._describe_info(self._original_info) if has_original else self.t("usm_value_empty"))
-        self._import_value.setText(self._describe_info(self._import_info) if has_import else self.t("usm_value_empty"))
-        self._staged_value.setText(os.path.basename(self._staged_path) if has_staged else self.t("usm_value_empty"))
-        self._update_preview_controls()
-        self._apply_responsive_layout()
-
-    def _apply_responsive_layout(self):
-        if not hasattr(self, "_body_layout"):
-            return
-        compact = self.width() < 980
-        if compact != self._compact_layout:
-            direction = QBoxLayout.Direction.TopToBottom if compact else QBoxLayout.Direction.LeftToRight
-            self._body_layout.setDirection(direction)
-            self._preview_panel.setSizePolicy(
-                QSizePolicy.Policy.Expanding if compact else QSizePolicy.Policy.Maximum,
-                QSizePolicy.Policy.Preferred,
-            )
-            self._summary_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            self._compact_layout = compact
-
-        margins = self._body_layout.contentsMargins()
-        available = max(0, self.width() - margins.left() - margins.right() - 32)
-        preview_width = min(PREVIEW_MAX_WIDTH, max(PREVIEW_MIN_WIDTH, available))
-        if compact:
-            self._preview_panel.setMaximumWidth(16777215)
-            self._summary_panel.setMaximumWidth(16777215)
-            self._preview_inner.setMaximumWidth(preview_width)
-            self._preview_surface.setMaximumWidth(preview_width)
-            return
-
-        self._preview_panel.setMaximumWidth(PREVIEW_MAX_WIDTH + 32)
-        self._summary_panel.setMaximumWidth(620)
-        self._preview_inner.setMaximumWidth(PREVIEW_MAX_WIDTH)
-        self._preview_surface.setMaximumWidth(PREVIEW_MAX_WIDTH)
-
-    def _describe_info(self, info: MediaInfo) -> str:
-        if not info.path:
-            return self.t("usm_value_empty")
-        resolution = self.t("usm_value_unknown")
-        if info.width and info.height:
-            resolution = self.t("usm_value_resolution", width=info.width, height=info.height)
-        fps = info.fps_text or self.t("usm_value_unknown")
-        duration = self.t("usm_value_duration", seconds=f"{info.duration:.2f}") if info.duration else self.t("usm_value_unknown")
-        audio = self.t("usm_value_no_audio")
-        if info.audio_codec:
-            audio = self.t(
-                "usm_value_audio",
-                codec=info.audio_codec,
-                channels=info.audio_channels or self.t("usm_value_unknown"),
-                rate=info.audio_rate or self.t("usm_value_unknown"),
-            )
-        return self.t(
-            "usm_value_media_info",
-            video=info.video_codec or self.t("usm_value_unknown"),
-            resolution=resolution,
-            fps=fps,
-            duration=duration,
-            audio=audio,
-        )
-
-    def _export_video(self):
-        if not self._original_path or self._is_busy():
-            return
-        ffmpeg = self._require_ffmpeg()
-        if not ffmpeg:
-            return
-
-        stem = os.path.splitext(os.path.basename(self._original_path))[0]
-
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            self.t("usm_export_video_title"),
-            os.path.join(game_files_dialog_dir(self._original_path), f"{stem}.mp4"),
-            self.t("usm_filter_mp4"),
-        )
-        if not path:
-            return
-        self._start_process(
-            self.t("usm_status_exporting"),
-            *self._command_export_video(ffmpeg, _ensure_ext(path, ".mp4")),
-        )
-
-    def _command_export_video(self, ffmpeg: str, output_path: str):
-        args = ["-y", "-i", self._original_path, "-map", "0:v:0", "-map", "0:a?"]
-        args += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"]
-        args += ["-movflags", "+faststart", output_path]
-        return ffmpeg, args, lambda ok: self._on_export_done(ok, output_path)
-
-    def _on_export_done(self, ok: bool, output_path: str):
-        if ok:
-            self._set_preview_source(output_path)
-            QMessageBox.information(self, self.t("dlg_title_success"), self.t("usm_status_exported", name=os.path.basename(output_path)))
-
-    def _import_video(self):
-        if not self._original_path or self._is_busy():
-            return
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            self.t("usm_import_title"),
-            game_files_dialog_dir(self._original_path),
-            self.t("usm_filter_media"),
-        )
-        if not path:
-            return
-
-        try:
-            info = self._probe_media(path)
-        except Exception as exc:
-            QMessageBox.critical(self, self.t("dlg_title_error"), self.t("usm_status_probe_failed", error=exc))
-            return
-
-        self._import_path = path
-        self._import_info = info
-
-        ffmpeg = self._require_ffmpeg()
-        if not ffmpeg:
-            return
-        sofdec2 = self._require_sofdec2_encoder()
-        if not sofdec2:
-            return
-        prepared = os.path.join(self._tmpdir.name, "asbr_compatible.avi")
-        staged = os.path.join(self._tmpdir.name, "asbr_compatible.usm")
-        args = self._prepare_avi_args(path, prepared)
-        self._start_process(
-            self.t("usm_status_preparing_media"),
-            ffmpeg,
-            args,
-            lambda ok: self._on_prepare_done(ok, prepared, staged),
-            progress_duration=self._import_progress_duration(),
-        )
-
-    def _prepare_avi_args(self, input_path: str, output_path: str) -> list[str]:
-        original = self._original_info
-        args = ["-y", "-i", input_path, "-map", "0:v:0", "-map", "0:a?"]
-        filters = []
-        if original.width and original.height:
-            filters.append(self._video_fit_filter(original.width, original.height))
-        if original.fps_text:
-            filters.append(f"fps={original.fps_text}")
-        if filters:
-            args += ["-vf", ",".join(filters)]
-        args += ["-t", str(MAX_IMPORT_DURATION_SECONDS)]
-        args += ["-c:v", "rawvideo", "-pix_fmt", "bgr24"]
-        if original.audio_codec or self._import_info.audio_codec:
-            args += ["-c:a", "pcm_s16le"]
-            if original.audio_channels:
-                args += ["-ac", str(original.audio_channels)]
-            if original.audio_rate:
-                args += ["-ar", str(original.audio_rate)]
-        else:
-            args += ["-an"]
-        args += ["-shortest", output_path]
-        return args
-
-    def _video_fit_filter(self, width: int, height: int) -> str:
-        if self._stretch_video_chk.isChecked():
-            return f"scale={width}:{height},setsar=1"
-        return (
-            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
-        )
-
-    def _import_progress_duration(self) -> float:
-        duration = self._import_info.duration or self._original_info.duration
-        if duration:
-            return min(duration, MAX_IMPORT_DURATION_SECONDS)
-        return MAX_IMPORT_DURATION_SECONDS
-
-    def _sofdec2_args(self, input_path: str, output_path: str) -> tuple[str, list[str]]:
-        encoder = find_sofdec2_encoder()
-        if self._original_info.video_codec == "h264":
-            h264_encoder = find_sofdec2_h264_encoder()
-            if h264_encoder:
-                return h264_encoder, [
-                    f"-in={input_path}",
-                    "-target=ps4",
-                    f"-out={output_path}",
-                    "-hca=ON",
-                    "-hca_quality=4",
-                ]
-        return encoder, [f"-in={input_path}", f"-out={output_path}"]
-
-    def _on_prepare_done(self, ok: bool, prepared: str, staged: str):
-        if not ok:
-            return
-        encoder, args = self._sofdec2_args(prepared, staged)
-        self._start_process(
-            self.t("usm_status_encoding_usm"),
-            encoder,
-            args,
-            lambda done: self._on_transcode_done(done, staged),
-            workdir=os.path.dirname(encoder),
-        )
-
-    def _on_transcode_done(self, ok: bool, staged: str):
-        if not ok:
-            return
-        self._staged_path = staged
-        self._set_dirty(True)
-        self._set_preview_source(staged)
-        self._refresh_state()
-        QMessageBox.information(self, self.t("dlg_title_success"), self.t("usm_status_transcoded", name=os.path.basename(staged)))
-
-    def _save_file(self):
-        self._save_repack()
-
-    def _save_repack(self):
-        if not self._original_path or self._is_busy():
-            return
-        media_path = self._staged_path or self._import_path
-        if not media_path:
-            QMessageBox.warning(self, self.t("dlg_title_warning"), self.t("usm_warning_import_first"))
-            return
-
-        stem = os.path.splitext(os.path.basename(self._original_path))[0]
-        default_path = os.path.join(os.path.dirname(self._original_path), self.t("usm_repack_default_name", stem=stem))
-        output_path, _ = QFileDialog.getSaveFileName(
-            self,
-            self.t("usm_repack_title"),
-            default_path,
-            self.t("usm_filter_usm"),
-        )
-        if not output_path:
-            return
-        output_path = _ensure_ext(output_path, ".usm")
-        if os.path.exists(output_path):
-            answer = QMessageBox.question(
-                self,
-                self.t("dlg_title_warning"),
-                self.t("usm_confirm_overwrite", name=os.path.basename(output_path)),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                return
-            create_backup_on_open(output_path)
-
-        try:
-            shutil.copy2(media_path, output_path)
-        except OSError as exc:
-            QMessageBox.critical(self, self.t("dlg_title_error"), self.t("msg_save_error", error=exc))
-            return
-        self._on_repack_done(True, output_path)
-
-    def _on_repack_done(self, ok: bool, output_path: str):
-        if ok:
-            self._set_dirty(False)
-            QMessageBox.information(self, self.t("dlg_title_success"), self.t("usm_status_repacked", name=os.path.basename(output_path)))
-
-    def _require_ffmpeg(self) -> str:
-        ffmpeg = find_ffmpeg()
-        if not ffmpeg:
-            QMessageBox.critical(self, self.t("dlg_title_error"), self.t("usm_error_ffmpeg_missing"))
-            return ""
-        return ffmpeg
-
-    def _require_sofdec2_encoder(self) -> str:
-        sofdec2 = find_sofdec2_encoder()
-        if not sofdec2:
-            QMessageBox.critical(self, self.t("dlg_title_error"), self.t("usm_error_sofdec2_missing"))
-            return ""
-        return sofdec2
-
-    def _run_queue(self, commands: list[tuple[str, list[str], object]], title: str):
-        if not commands:
-            return
-
-        def run_next(index: int):
-            program, args, done = commands[index]
-
-            def after(ok: bool):
-                done(ok)
-                if ok and index + 1 < len(commands):
-                    run_next(index + 1)
-
-            self._start_process(title, program, args, after)
-
-        run_next(0)
-
-    def _build_busy_overlay(self):
-        self._busy_overlay = QFrame(self)
-        self._busy_overlay.setObjectName("BlockingOverlay")
-        self._busy_overlay.setStyleSheet(ss_blocking_overlay())
-        self._busy_overlay.hide()
-
-        overlay_layout = QVBoxLayout(self._busy_overlay)
-        overlay_layout.setContentsMargins(0, 0, 0, 0)
-        overlay_layout.addStretch()
-
-        card = QFrame()
-        card.setObjectName("BlockingOverlayCard")
-        card.setFixedWidth(360)
-        card.setStyleSheet(ss_blocking_overlay_card())
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(22, 18, 22, 18)
-        card_layout.setSpacing(10)
-
-        self._busy_title_lbl = QLabel(self.t("loading"))
-        self._busy_title_lbl.setStyleSheet(ss_section_label())
-        self._busy_title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        card_layout.addWidget(self._busy_title_lbl)
-
-        self._busy_detail_lbl = QLabel("")
-        self._busy_detail_lbl.setStyleSheet(ss_dim_label())
-        self._busy_detail_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        card_layout.addWidget(self._busy_detail_lbl)
-
-        self._busy_bar = QProgressBar()
-        self._busy_bar.setRange(0, 100)
-        self._busy_bar.setValue(0)
-        self._busy_bar.setTextVisible(False)
-        self._busy_bar.setStyleSheet(ss_progressbar())
-        card_layout.addWidget(self._busy_bar)
-
-        row = QHBoxLayout()
-        row.addStretch()
-        row.addWidget(card)
-        row.addStretch()
-        overlay_layout.addLayout(row)
-        overlay_layout.addStretch()
-        self._busy_overlay.setGeometry(self.rect())
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._apply_responsive_layout()
-        if hasattr(self, "_busy_overlay"):
-            self._busy_overlay.setGeometry(self.rect())
-        self._render_poster_pixmap()
-
-    def _set_busy(self, active: bool, title: str = "", detail: str = "", done: int = 0, total: int = 0):
-        if not hasattr(self, "_busy_overlay"):
-            return
-        if active:
-            self._busy_title_lbl.setText(title or self.t("loading"))
-            self._on_busy_progress(detail, done, total)
-            self._busy_overlay.setGeometry(self.rect())
-            self._busy_overlay.raise_()
-            self._busy_overlay.show()
-            return
-        self._busy_overlay.hide()
-
-    def _on_busy_progress(self, text: str, done: int, total: int):
-        if not hasattr(self, "_busy_bar"):
-            return
-        self._busy_detail_lbl.setText(text or "")
-        if total > 0:
-            self._busy_bar.setRange(0, total)
-            self._busy_bar.setValue(max(0, min(done, total)))
-        else:
-            self._busy_bar.setRange(0, 0)
-
-    def _start_process(self, title: str, program: str, args: list[str], done_callback, *, workdir: str = "", progress_duration: float = 0.0):
-        if self._is_busy():
-            return
-        self._process_log = []
-        self._process_done = done_callback
-        self._process_duration = progress_duration or self._original_info.duration or self._import_info.duration
-        self._process_duration_limit = progress_duration
-        self._set_busy(True, title, "", 0, 100 if self._process_duration else 0)
-        if self._process_duration:
-            self._on_busy_progress("", 0, 100)
-        else:
-            self._on_busy_progress("", 0, 0)
-
-        process = QProcess(self)
-        command = tool_command(program)
-        process.setProgram(command[0])
-        process.setArguments([*command[1:], *args])
-        if workdir:
-            process.setWorkingDirectory(workdir)
-        process.readyReadStandardError.connect(self._read_process_output)
-        process.readyReadStandardOutput.connect(self._read_process_output)
-        process.finished.connect(self._on_process_finished)
-        process.errorOccurred.connect(self._on_process_error)
-        self._process = process
-        self._refresh_state()
-        process.start()
-
-    def _read_process_output(self):
-        if not self._process:
-            return
-        chunks = [
-            bytes(self._process.readAllStandardError()).decode(errors="replace"),
-            bytes(self._process.readAllStandardOutput()).decode(errors="replace"),
-        ]
-        text = "".join(chunks)
-        if not text:
-            return
-        self._process_log.append(text)
-        duration_match = re.search(r"Duration:\s*(\d+:\d+:\d+(?:\.\d+)?)", text)
-        if duration_match:
-            duration = _ffmpeg_time_to_seconds(duration_match.group(1))
-            if self._process_duration_limit:
-                duration = min(duration, self._process_duration_limit)
-            self._process_duration = duration
-            self._on_busy_progress("", 0, 100)
-        time_matches = re.findall(r"time=(\d+:\d+:\d+(?:\.\d+)?)", text)
-        if time_matches and self._process_duration:
-            current = _ffmpeg_time_to_seconds(time_matches[-1])
-            value = max(0, min(100, int((current / self._process_duration) * 100)))
-            self._on_busy_progress(self.t("usm_status_progress", percent=value), value, 100)
-            return
-        percent_matches = re.findall(r"(\d+(?:\.\d+)?)%\s*/\s*100%", text)
-        if percent_matches:
-            value = max(0, min(100, int(float(percent_matches[-1]))))
-            self._on_busy_progress(self.t("usm_status_progress", percent=value), value, 100)
-            return
-        frame_matches = re.findall(r"\(\s*(\d+)\s*/\s*(\d+)\s*\)", text)
-        if frame_matches:
-            done, total = frame_matches[-1]
-            done_i = int(done)
-            total_i = max(1, int(total))
-            value = max(0, min(100, int((done_i / total_i) * 100)))
-            self._on_busy_progress(self.t("usm_status_progress", percent=value), value, 100)
-
-    def _on_process_error(self, error):
-        self._finish_process(False, self.t("usm_error_process", error=error))
-
-    def _on_process_finished(self, exit_code: int, exit_status):
-        ok = exit_code == 0 and exit_status == QProcess.ExitStatus.NormalExit
-        error_text = ""
-        if not ok:
-            error_text = "".join(self._process_log).strip()[-2000:] or self.t("no_output")
-        self._finish_process(ok, error_text)
-
-    def _finish_process(self, ok: bool, error_text: str = ""):
-        callback = self._process_done
-        self._process_done = None
-        if self._process:
-            self._process.deleteLater()
-            self._process = None
-        self._process_duration_limit = 0.0
-        self._set_busy(False)
-        self._refresh_state()
-        if not ok:
-            QMessageBox.critical(self, self.t("dlg_title_error"), error_text)
-        if callback:
-            callback(ok)
-
-    def _is_busy(self) -> bool:
-        return self._process is not None
-
-    def _build_preview_player(self):
+    def _build_ui(self):
+        root = configure_layout(QVBoxLayout(self), LayoutRole.ROOT)
+        self.setStyleSheet(ss_bg_dark())
+        toolbar = EditorToolbar()
+        self._open_btn = self._button('btn_open_file', self._load_file, accent=True)
+        self._open_btn.setProperty('designAction', 'open')
+        self._save_btn = self._button('btn_save_file', self._save_file, accent=True)
+        toolbar.content_layout.addWidget(self._open_btn)
+        toolbar.content_layout.addWidget(self._save_btn)
+        self._file_label = configure_file_label(QLabel())
+        self._file_label.setMinimumWidth(0)
+        self._file_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        toolbar.content_layout.addWidget(self._file_label, 1)
+        root.addWidget(toolbar)
+        root.addWidget(EditorSeparator(accent=True))
+        self._scroll = configure_scrollarea(QScrollArea())
+        body = QWidget()
+        self._body_layout = configure_layout(QHBoxLayout(body), LayoutRole.PAGE)
+        self._body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._compact = None
+        self._preview_panel, preview = make_editor_card()
+        preview.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._preview_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        add_editor_card_title(preview, self.t('usm_section_preview'), 'fa6s.film')
+        self._source_combo = configure_input(QComboBox(), monospace=False)
+        self._source_combo.currentIndexChanged.connect(self._change_preview)
+        self._field(preview, 'usm_preview_source', self._source_combo, 'usm_preview_scope')
+        self._preview_surface = AspectRatioWidget()
+        self._preview_surface.setStyleSheet(ss_video_matte())
+        self._preview_surface.resized.connect(self._render_poster)
+        self._preview_stack = QStackedLayout(self._preview_surface)
+        self._preview_stack.setContentsMargins(*Insets.NONE)
+        self._video_widget = QVideoWidget()
+        self._video_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self._video_widget.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+        self._video_widget.setStyleSheet(ss_video_matte())
+        self._poster_label = QLabel(self.t('usm_empty_preview'))
+        self._poster_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self._poster_label.setWordWrap(True)
+        self._poster_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._poster_label.setStyleSheet(ss_video_matte())
+        self._preview_stack.addWidget(self._poster_label)
+        self._preview_stack.addWidget(self._video_widget)
+        preview.addWidget(self._preview_surface)
+        transport = configure_layout(QHBoxLayout(), LayoutRole.FIELD)
+        self._play_btn = timeline_icon_button(self.t('usm_preview_play'), 'fa6s.play', self._toggle_preview_playback)
+        self._stop_btn = timeline_icon_button(self.t('usm_preview_stop'), 'fa6s.stop', self._stop_preview)
+        self._back_btn = timeline_icon_button(self.t('usm_previous_frame'), 'fa6s.backward-step', lambda: self._step_frame(-1))
+        self._next_btn = timeline_icon_button(self.t('usm_next_frame'), 'fa6s.forward-step', lambda: self._step_frame(1))
+        for button in (self._play_btn, self._stop_btn, self._back_btn, self._next_btn):
+            transport.addWidget(button)
+        self._time_label = QLabel(self.t('usm_preview_time_empty'))
+        self._time_label.setStyleSheet(ss_dim_label())
+        transport.addWidget(self._time_label, 1)
+        preview.addLayout(transport)
+        self._timeline = VideoTimeline()
+        self._timeline.playheadScrubbed.connect(lambda seconds: self._seek_to(round(seconds * 1000)))
+        self._timeline.intervalChanged.connect(self._timeline_trim)
+        preview.addWidget(self._timeline)
+        self._overview = VideoTimelineOverview()
+        self._overview.viewRangeChanged.connect(self._timeline.set_view_range)
+        self._timeline.viewRangeChanged.connect(self._refresh_overview)
+        preview.addWidget(self._overview)
+        timeline_nav = configure_layout(QHBoxLayout(), LayoutRole.FIELD)
+        self._zoom = TimelineZoomControls(self._timeline)
+        timeline_nav.addWidget(self._zoom)
+        seek_row = configure_layout(QHBoxLayout(), LayoutRole.FIELD)
+        self._seek_input = self._seconds_input()
+        self._seek_input.setAccessibleName(self.t('usm_seek'))
+        self._seek_input.editingFinished.connect(lambda: self._seek_to(round(self._seek_input.value() * 1000)))
+        seek_row.addWidget(self._seek_input)
+        self._mute = QCheckBox(self.t('usm_mute'))
+        self._mute.setStyleSheet(ss_check())
+        seek_row.addWidget(self._mute)
+        self._loop = QCheckBox(self.t('usm_loop'))
+        self._loop.setStyleSheet(ss_check())
+        seek_row.addWidget(self._loop)
+        preview.addLayout(seek_row)
+        preview.addLayout(timeline_nav)
+        self._volume = SliderInput(self.t('usm_monitor_volume'), 0, 100, 80)
+        self._volume.setToolTip(self.t('usm_monitor_hint'))
+        preview.addWidget(self._volume)
+        self._preview_status = self._hint(preview, 'usm_preview_scope')
+        self._preview_status.hide()
+        self._retry_btn = self._button('usm_retry_preview', self._change_preview)
+        self._retry_btn.hide()
+        preview.addWidget(self._retry_btn)
+        actions = configure_layout(QHBoxLayout(), LayoutRole.FIELD)
+        self._export_btn = self._button('usm_btn_export', self._export_video)
+        self._import_btn = self._button('usm_btn_import', self._import_video)
+        actions.addWidget(self._export_btn)
+        actions.addWidget(self._import_btn)
+        preview.addLayout(actions)
+        self._body_layout.addWidget(self._preview_panel, 3)
+        self._settings_panel, settings = make_editor_card()
+        settings.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._settings_panel.setMaximumWidth(520)
+        self._settings_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        add_editor_card_title(settings, self.t('usm_replacement_settings'), 'fa6s.sliders')
+        self._original_value = self._hint(settings, 'usm_value_empty')
+        self._import_value = self._hint(settings, 'usm_import_instruction')
+        self._fit_combo = configure_input(QComboBox(), monospace=False)
+        for key, value in (('usm_fit_letterbox', 'fit'), ('usm_fit_crop', 'crop'), ('usm_fit_stretch', 'stretch')):
+            self._fit_combo.addItem(self.t(key), value)
+        self._field(settings, 'usm_fit_mode', self._fit_combo, 'usm_fit_hint')
+        self._audio_combo = configure_input(QComboBox(), monospace=False)
+        for key, value in (('usm_audio_import', 'import'), ('usm_audio_original', 'original'), ('usm_audio_silent', 'silent')):
+            self._audio_combo.addItem(self.t(key), value)
+        self._field(settings, 'usm_audio_source', self._audio_combo, 'usm_audio_hint')
+        trim = configure_layout(QHBoxLayout(), LayoutRole.FIELD)
+        self._trim_start, self._trim_end = self._seconds_input(), self._seconds_input()
+        for key, spin in (('usm_trim_start', self._trim_start), ('usm_trim_end', self._trim_end)):
+            self._field(trim, key, spin)
+        settings.addLayout(trim)
+        markers = configure_layout(QHBoxLayout(), LayoutRole.FIELD)
+        self._mark_in = self._button('usm_mark_in', lambda: self._mark_trim(False))
+        self._mark_out = self._button('usm_mark_out', lambda: self._mark_trim(True))
+        markers.addWidget(self._mark_in)
+        markers.addWidget(self._mark_out)
+        settings.addLayout(markers)
+        self._plan_value = self._hint(settings, 'usm_import_instruction')
+        self._validation = self._hint(settings, 'usm_value_empty')
+        self._build_btn = self._button('usm_build_replacement', self._build_replacement, accent=True)
+        self._build_btn.setToolTip(self.t('usm_build_hint'))
+        settings.addWidget(self._build_btn)
+        self._restore_btn = self._button('usm_discard_replacement', self._discard_replacement)
+        settings.addWidget(self._restore_btn)
+        self._restore_btn.hide()
+        self._body_layout.addWidget(self._settings_panel, 2)
+        self._scroll.setWidget(body)
+        root.addWidget(self._scroll, 1)
+        self._operation = QWidget()
+        progress = configure_layout(QHBoxLayout(self._operation), LayoutRole.PAGE)
+        self._status_label = QLabel()
+        self._status_label.setMinimumWidth(0)
+        self._status_label.setWordWrap(True)
+        self._status_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._status_label.setStyleSheet(ss_dim_label())
+        progress.addWidget(self._status_label, 1)
+        self._progress = QProgressBar()
+        self._progress.setStyleSheet(ss_progressbar())
+        self._progress.setRange(0, 0)
+        progress.addWidget(self._progress, 1)
+        self._cancel_btn = self._button('usm_cancel_operation', self._cancel_process)
+        progress.addWidget(self._cancel_btn)
+        root.addWidget(self._operation)
+        self._operation.hide()
+        for control in (self._trim_start, self._trim_end):
+            control.valueChanged.connect(self._edits_changed)
+        for control in (self._fit_combo, self._audio_combo):
+            control.currentIndexChanged.connect(self._edits_changed)
         self._audio_output = QAudioOutput(self)
+        self._audio_output.setVolume(.8)
+        self._volume.value_changed.connect(lambda value: self._audio_output.setVolume(value / 100))
+        self._mute.toggled.connect(self._audio_output.setMuted)
         self._player = QMediaPlayer(self)
         self._player.setAudioOutput(self._audio_output)
         self._player.setVideoOutput(self._video_widget)
         self._player.durationChanged.connect(self._on_preview_duration)
         self._player.positionChanged.connect(self._on_preview_position)
         self._player.playbackStateChanged.connect(self._on_preview_state)
+        self._player.mediaStatusChanged.connect(self._media_status)
         self._player.errorOccurred.connect(self._on_preview_error)
 
-    def _set_preview_source(self, path: str):
-        self._preview_path = path or ""
-        self._preview_ready = bool(path)
-        self._player.stop()
-        self._update_preview_aspect()
-        self._player.setSource(QUrl.fromLocalFile(path) if path else QUrl())
-        self._clear_preview_poster()
-        if path:
-            self._show_poster()
-            self._start_preview_poster(path)
-        else:
-            self._show_video()
-        self._position_slider.setValue(0)
-        self._time_label.setText(self.t("usm_preview_time_empty"))
-        self._update_preview_controls()
+    def _seconds_input(self):
+        spin = configure_input(QDoubleSpinBox())
+        spin.setDecimals(3)
+        spin.setRange(0, 0)
+        spin.setSuffix(' s')
+        spin.setKeyboardTracking(False)
+        spin.setMinimumWidth(0)
+        return spin
 
-    def _update_preview_aspect(self):
-        if not hasattr(self, "_preview_surface"):
+    def _error(self, error):
+        value = str(error)
+        return self.t(value) if value.startswith('usm_') else value
+
+    def _show_error(self, error):
+        QMessageBox.critical(self, self.t('dlg_title_error'), self._error(error))
+
+    def _edits(self):
+        return VideoEdits(self._trim_start.value(), self._trim_end.value(),
+                          self._fit_combo.currentData(), self._audio_combo.currentData())
+
+    def _valid_edits(self):
+        if not self._import_path:
+            return False
+        try:
+            self._edits().validate(self._original_info, self._import_info)
+            return True
+        except ValueError:
+            return False
+
+    def _set_dirty(self, value):
+        self._dirty = value
+        if self._filepath:
+            set_file_label(self._file_label, self._filepath, dirty=value)
+        else:
+            set_file_label_empty(self._file_label, self.t('no_file_loaded'))
+
+    def has_unsaved_changes(self):
+        return self._dirty
+
+    def _confirm_discard(self):
+        return not self._dirty or QMessageBox.question(self, self.t('dlg_title_warning'),
+            self.t('usm_confirm_discard'), QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        ) == QMessageBox.StandardButton.Yes
+
+    def load_file(self, path):
+        return self._open_usm(path)
+
+    def _load_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, self.t('usm_open_title'),
+            game_files_dialog_dir(target_patterns=('*.usm',)), self.t('usm_filter_usm'))
+        if path:
+            self._open_usm(path)
+
+    def _open_usm(self, path):
+        if self._is_busy() or not path or not self._confirm_discard():
+            return False
+        try:
+            check_usm(path)
+        except (OSError, ValueError) as exc:
+            self._show_error(exc)
+            return False
+
+        def opened(info):
+            if info.format_name != 'usm':
+                raise ValueError('usm_error_container')
+            create_backup_on_open(path)
+            self._release_previews()
+            if self._staged_path:
+                self._remove_work_tree(os.path.dirname(self._staged_path))
+            self._original_path = self._filepath = path
+            self._original_info = info
+            self._clear_replacement()
+            self._set_dirty(False)
+            self._refresh_sources('original')
+            self._refresh_state()
+            self._change_preview()
+        self._probe(path, opened)
+        return True
+
+    def _probe(self, path, done, failed=None):
+        probe = find_ffprobe()
+        if not probe:
+            self._show_error(self.t('usm_error_ffprobe_missing'))
+            if failed:
+                failed()
             return
-        self._preview_surface.set_widescreen_aspect()
-        self._render_poster_pixmap()
+
+        def probed(ok):
+            if ok:
+                try:
+                    info = parse_media(json.loads(self._stdout), path)
+                    done(info)
+                    return
+                except Exception as exc:
+                    self._show_error(exc)
+            if failed:
+                failed()
+            self._refresh_state()
+        self._start_process(self.t('usm_reading_media'), probe,
+            ['-v', 'error', '-of', 'json', '-show_streams', '-show_format', path], probed, timeout=30000)
+
+    def _import_video(self):
+        if not self._original_path or self._is_busy():
+            return
+        path, _ = QFileDialog.getOpenFileName(self, self.t('usm_import_title'),
+            game_files_dialog_dir(self._original_path), self.t('usm_filter_media'))
+        if path:
+            self._import_media(path)
+
+    def _import_media(self, path):
+        if self._is_busy() or not self._original_path or not self._confirm_discard():
+            return
+
+        def imported(info):
+            if not info.duration:
+                raise ValueError('usm_error_timing')
+            self._release_previews(keep_original=True)
+            if self._staged_path:
+                self._remove_work_tree(os.path.dirname(self._staged_path))
+            self._import_path, self._import_info = path, info
+            self._staged_path, self._staged_edits, self._saved_edits = '', None, None
+            for spin in (self._trim_start, self._trim_end):
+                with QSignalBlocker(spin):
+                    spin.setRange(0, info.duration)
+                    spin.setSingleStep(1 / info.fps if info.fps else .001)
+            with QSignalBlocker(self._trim_start):
+                self._trim_start.setValue(0)
+            with QSignalBlocker(self._trim_end):
+                self._trim_end.setValue(int(info.duration * 1000) / 1000)
+            with QSignalBlocker(self._audio_combo):
+                self._audio_combo.setCurrentIndex(0 if info.audio_codec else (1 if self._original_info.audio_codec else 2))
+            self._set_dirty(True)
+            self._refresh_sources('import')
+            self._refresh_state()
+            self._change_preview()
+        self._probe(path, imported)
+
+    def _clear_replacement(self):
+        self._import_path = self._staged_path = ''
+        self._import_info = self._staged_info = MediaInfo()
+        self._saved_edits = self._staged_edits = None
+
+    def _discard_replacement(self):
+        if self._is_busy() or not self._confirm_discard():
+            return
+        self._release_previews(keep_original=True)
+        if self._staged_path:
+            self._remove_work_tree(os.path.dirname(self._staged_path))
+        self._clear_replacement()
+        self._filepath = self._original_path
+        self._set_dirty(self._original_info.path != self._original_path)
+        self._refresh_sources('original')
+        self._refresh_state()
+        self._change_preview()
+
+    def _release_previews(self, keep_original=False):
+        self._player.stop()
+        self._player.setSource(QUrl())
+        self._stop_poster()
+        self._preview_ready = False
+        for key, value in list(self._proxy_cache.items()):
+            if not keep_original or key[0] != self._original_info.path:
+                self._remove_work_file(value)
+                del self._proxy_cache[key]
+        self._preview_path = self._preview_kind = ''
+
+    def _edits_changed(self, *_):
+        if self._import_path:
+            self._set_dirty(self._saved_edits != self._edits())
+        self._refresh_state()
+
+    def _describe_info(self, info):
+        return self.t('usm_value_media_info', video=info.video_codec,
+            resolution=f'{info.width} × {info.height}', fps=f'{info.fps:.3f}',
+            duration=f'{info.duration:.3f} s', audio=(self.t('usm_value_audio', codec=info.audio_codec,
+            channels=info.audio_channels, rate=info.audio_rate) if info.audio_codec else self.t('usm_value_no_audio')))
+
+    def _refresh_state(self):
+        busy = self._is_busy()
+        loaded, imported = bool(self._original_path), bool(self._import_path)
+        valid = self._valid_edits()
+        self._open_btn.setEnabled(not busy)
+        self._save_btn.setEnabled(loaded and not busy and (not imported or valid))
+        self._import_btn.setEnabled(loaded and not busy)
+        self._export_btn.setEnabled(loaded and not busy)
+        for control in (self._fit_combo, self._audio_combo, self._trim_start, self._trim_end):
+            control.setEnabled(imported and not busy)
+        for index, available in ((0, self._import_info.audio_codec), (1, self._original_info.audio_codec)):
+            self._audio_combo.model().item(index).setEnabled(bool(available))
+        self._build_btn.setEnabled(valid and not busy)
+        self._restore_btn.setEnabled(imported and not busy)
+        self._mark_in.setEnabled(imported and self._preview_kind == 'import' and self._preview_ready and not busy)
+        self._mark_out.setEnabled(self._mark_in.isEnabled())
+        self._original_value.setText((os.path.basename(self._original_path) + '\n' + self._describe_info(self._original_info))
+                                     if loaded else self.t('usm_open_instruction'))
+        self._import_value.setText((os.path.basename(self._import_path) + '\n' + self._describe_info(self._import_info))
+                                   if imported else self.t('usm_import_instruction'))
+        self._plan_value.setText('')
+        error = ''
+        if imported:
+            edits = self._edits()
+            try:
+                edits.validate(self._original_info, self._import_info)
+                estimate = intermediate_bytes(self._original_info, edits)
+                self._plan_value.setText(self.t('usm_output_plan', width=self._original_info.width,
+                    height=self._original_info.height, fps=f'{self._original_info.fps:.3f}',
+                    seconds=f'{edits.duration:.3f}') + (self.t('usm_disk_estimate', gib=f'{estimate / 1024**3:.2f}') if estimate else ''))
+            except ValueError as exc:
+                error = self._error(exc)
+        self._validation.setStyleSheet(ss_error_label() if error else ss_dim_label())
+        self._validation.setText(error or (self.t('usm_replacement_ready') if self._staged_path and self._staged_edits == self._edits()
+                                          else self.t('usm_build_hint') if imported else ''))
+        staged_index = self._source_combo.findData('staged')
+        if staged_index >= 0:
+            self._source_combo.setItemText(staged_index, self.t('usm_encoded_source' if self._staged_edits == self._edits() else 'usm_previous_result'))
+        enabled = self._preview_ready and not busy
+        for control in (self._play_btn, self._stop_btn, self._back_btn, self._next_btn,
+                        self._seek_input, self._timeline, self._overview, self._zoom):
+            control.setEnabled(enabled)
+        self._sync_timeline()
+        self._source_combo.setEnabled(loaded and not busy)
+        refresh_file_actions(self, loaded=loaded)
+        if hasattr(self, '_file_actions'):
+            self._file_actions.button.setEnabled(self._save_btn.isEnabled() and not self._file_actions.pending_path)
+        self._apply_responsive_layout()
+
+    def _refresh_sources(self, selected=None):
+        selected = selected or self._source_combo.currentData()
+        with QSignalBlocker(self._source_combo):
+            self._source_combo.clear()
+            for kind, available, key in (('original', self._original_path, 'usm_label_original'),
+                    ('import', self._import_path, 'usm_label_imported'), ('staged', self._staged_path, 'usm_encoded_source')):
+                if available:
+                    self._source_combo.addItem(self.t(key), kind)
+            self._source_combo.setCurrentIndex(max(0, self._source_combo.findData(selected)))
+
+    def _selected_media(self):
+        return {'original': self._original_info, 'import': self._import_info,
+                'staged': self._staged_info}.get(self._source_combo.currentData(), MediaInfo())
+
+    def _change_preview(self, *_):
+        if self._is_busy():
+            return
+        info = self._selected_media()
+        if not info.path:
+            return
+        position = self._player.position()
+        was_playing = self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        old_kind, new_kind = self._preview_kind, self._source_combo.currentData()
+        trim_offset = round((self._staged_edits.start if self._staged_edits else self._edits().start) * 1000)
+        if old_kind == 'import' and new_kind != 'import':
+            position = max(0, position - trim_offset)
+        elif old_kind != 'import' and new_kind == 'import':
+            position += trim_offset
+        self._preview_kind = self._source_combo.currentData()
+        try:
+            key = (info.path, os.path.getmtime(info.path), os.path.getsize(info.path))
+        except OSError as exc:
+            self._show_error(exc)
+            return
+        cached = self._proxy_cache.get(key)
+        if cached and os.path.isfile(cached):
+            self._set_preview_source(cached, info, position, was_playing)
+            return
+        ffmpeg = find_ffmpeg()
+        if not ffmpeg:
+            self._show_error(self.t('usm_error_ffmpeg_missing'))
+            return
+        self._player.stop()
+        self._preview_ready = False
+        self._serial += 1
+        output = os.path.join(self._tmpdir.name, f'preview-{self._serial}.mp4')
+
+        def preview_done(ok):
+            if ok and os.path.isfile(output):
+                self._proxy_cache[key] = output
+                while len(self._proxy_cache) > 3:
+                    old = next(iter(self._proxy_cache))
+                    old_path = self._proxy_cache.pop(old)
+                    if old_path != self._preview_path:
+                        self._remove_work_file(old_path)
+                self._set_preview_source(output, info, position, was_playing)
+            else:
+                self._remove_work_file(output)
+                self._preview_status.setText(self.t('usm_preview_failed'))
+                self._preview_status.show()
+                self._retry_btn.show()
+            self._refresh_state()
+        self._start_process(self.t('usm_preparing_preview'), ffmpeg, preview_args(info.path, output, info),
+                            preview_done, duration=info.duration)
+
+    def _set_preview_source(self, path, info, position=0, play=False):
+        self._player.stop()
+        self._preview_path = path
+        self._preview_ready = True
+        self._resume_position, self._resume_play = min(position, round(info.duration * 1000)), play
+        self._preview_surface.set_aspect(info.width, info.height)
+        self._preview_status.setText(self.t('usm_preview_scope'))
+        self._preview_status.setStyleSheet(ss_dim_label())
+        self._preview_status.hide()
+        self._retry_btn.hide()
+        self._player.setSource(QUrl.fromLocalFile(path))
+        self._start_poster(path)
+        self._refresh_state()
+
+    def _start_poster(self, path):
+        self._stop_poster()
+        self._poster_pixmap = QPixmap()
+        self._poster_label.clear()
+        self._preview_stack.setCurrentWidget(self._poster_label)
+        ffmpeg = find_ffmpeg()
+        if not ffmpeg:
+            return
+        self._serial += 1
+        poster = os.path.join(self._tmpdir.name, f'poster-{self._serial}.jpg')
+        process = QProcess(self)
+        command = tool_command(ffmpeg)
+        process.setProgram(command[0])
+        process.setArguments([*command[1:], '-v', 'error', '-nostdin', '-y', '-i', path, '-frames:v', '1', poster])
+        process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+
+        def finished(code, _status):
+            if self._poster_process is process:
+                self._poster_process = None
+                if code == 0:
+                    self._poster_pixmap = QPixmap(poster)
+                    self._render_poster()
+            self._remove_work_file(poster)
+            process.deleteLater()
+        process.finished.connect(finished)
+        self._poster_process = process
+        process.start()
+
+    def _stop_poster(self):
+        process, self._poster_process = self._poster_process, None
+        if process:
+            process.kill()
+            process.waitForFinished(2000)
+            process.deleteLater()
+
+    def _render_poster(self):
+        if not self._poster_pixmap.isNull():
+            self._poster_label.setPixmap(self._poster_pixmap.scaled(self._preview_surface.size(),
+                Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
+    def _media_status(self, status):
+        if status == QMediaPlayer.MediaStatus.LoadedMedia:
+            self._seek_to(getattr(self, '_resume_position', 0))
+            if getattr(self, '_resume_play', False):
+                self._player.play()
+            self._resume_play = False
+        elif status == QMediaPlayer.MediaStatus.EndOfMedia and self._loop.isChecked():
+            self._player.setPosition(0)
+            self._player.play()
 
     def _toggle_preview_playback(self):
         if not self._preview_ready:
             return
         if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self._player.pause()
-            return
-        self._show_video()
-        self._player.play()
+        else:
+            self._preview_stack.setCurrentWidget(self._video_widget)
+            self._player.play()
 
     def _stop_preview(self):
         self._player.stop()
         self._player.setPosition(0)
-        self._show_poster()
-
-    def _on_seek_start(self):
-        self._seeking = True
-
-    def _on_seek_finish(self):
-        self._seeking = False
-        if self._position_slider.value() > 0:
-            self._show_video()
-        else:
-            self._show_poster()
-        self._player.setPosition(self._position_slider.value())
-
-    def _on_preview_duration(self, duration: int):
-        self._position_slider.setRange(0, max(0, duration))
-        self._update_time_label(self._player.position(), duration)
-
-    def _on_preview_position(self, position: int):
-        if not self._seeking:
-            self._position_slider.setValue(position)
-        self._update_time_label(position, self._player.duration())
+        self._preview_stack.setCurrentWidget(self._poster_label)
 
     def _on_preview_state(self, state):
-        if state == QMediaPlayer.PlaybackState.PlayingState:
-            self._show_video()
-            self._play_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause))
-            self._play_btn.setToolTip(self.t("usm_preview_pause"))
-        else:
-            self._play_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
-            self._play_btn.setToolTip(self.t("usm_preview_play"))
-
-    def _start_preview_poster(self, source_path: str):
-        self._stop_preview_poster()
-        ffmpeg = find_ffmpeg()
-        if not ffmpeg:
-            return
-        self._poster_token += 1
-        token = self._poster_token
-        poster_path = os.path.join(self._tmpdir.name, f"preview_poster_{token}.jpg")
-        args = [
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-ss",
-            "0",
-            "-i",
-            source_path,
-            "-frames:v",
-            "1",
-            "-q:v",
-            "2",
-            poster_path,
-        ]
-        process = QProcess(self)
-        command = tool_command(ffmpeg)
-        process.setProgram(command[0])
-        process.setArguments([*command[1:], *args])
-        process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        process.finished.connect(lambda exit_code, _status, p=poster_path, t=token: self._on_preview_poster_done(t, p, exit_code == 0))
-        self._poster_process = process
-        process.start()
-
-    def _stop_preview_poster(self):
-        process = getattr(self, "_poster_process", None)
-        if not process:
-            return
-        if process.state() != QProcess.ProcessState.NotRunning:
-            process.kill()
-            process.waitForFinished()
-        process.deleteLater()
-        self._poster_process = None
-
-    def _on_preview_poster_done(self, token: int, poster_path: str, ok: bool):
-        process = self.sender()
-        if process:
-            process.deleteLater()
-        if getattr(self, "_poster_process", None) is process:
-            self._poster_process = None
-        if token != self._poster_token or not ok or not os.path.exists(poster_path):
-            return
-        pixmap = QPixmap(poster_path)
-        if pixmap.isNull():
-            return
-        self._poster_path = poster_path
-        self._poster_pixmap = pixmap
-        self._render_poster_pixmap()
-        if self._player.playbackState() != QMediaPlayer.PlaybackState.PlayingState and self._player.position() == 0:
-            self._show_poster()
-
-    def _clear_preview_poster(self):
-        self._stop_preview_poster()
-        self._poster_path = ""
-        self._poster_pixmap = QPixmap()
-        if hasattr(self, "_poster_label"):
-            self._poster_label.clear()
-
-    def _render_poster_pixmap(self):
-        if not hasattr(self, "_poster_label") or self._poster_pixmap.isNull():
-            return
-        size = self._preview_surface.size() if hasattr(self, "_preview_surface") else self._poster_label.size()
-        if not size.isValid() or size.width() <= 0 or size.height() <= 0:
-            return
-        scaled = self._poster_pixmap.scaled(
-            size,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self._poster_label.setPixmap(scaled)
-
-    def _show_poster(self):
-        if hasattr(self, "_preview_stack"):
-            self._preview_stack.setCurrentWidget(self._poster_label)
-
-    def _show_video(self):
-        if hasattr(self, "_preview_stack"):
+        from core.icons import _themed_icon
+        from core.themes import P
+        playing = state == QMediaPlayer.PlaybackState.PlayingState
+        self._play_btn.setIcon(_themed_icon('fa6s.pause' if playing else 'fa6s.play', color=P['text_main'], size=16))
+        self._play_btn.setToolTip(self.t('usm_preview_pause' if playing else 'usm_preview_play'))
+        if playing:
             self._preview_stack.setCurrentWidget(self._video_widget)
 
-    def _on_preview_error(self, error, error_string: str):
-        if error != QMediaPlayer.Error.NoError and error_string:
-            set_file_label(self._file_label, self._preview_path or self._original_path, dirty=self._dirty)
+    def _on_preview_error(self, error, message):
+        if error != QMediaPlayer.Error.NoError:
+            self._preview_ready = False
+            self._preview_status.setStyleSheet(ss_error_label())
+            self._preview_status.setText(self.t('usm_player_error', error=message))
+            self._preview_status.show()
+            self._retry_btn.show()
+            self._refresh_state()
 
-    def _update_preview_controls(self):
-        enabled = bool(getattr(self, "_preview_ready", False)) and not self._is_busy()
-        if hasattr(self, "_play_btn"):
-            self._play_btn.setEnabled(enabled)
-            self._stop_btn.setEnabled(enabled)
-            self._position_slider.setEnabled(enabled)
-        if hasattr(self, "_stretch_video_chk"):
-            self._stretch_video_chk.setEnabled(not self._is_busy())
+    def _seek_to(self, value):
+        self._player.setPosition(max(0, min(value, self._player.duration())))
+        if value > 0:
+            self._preview_stack.setCurrentWidget(self._video_widget)
 
-    def _update_time_label(self, position: int, duration: int):
-        self._time_label.setText(self.t(
-            "usm_preview_time",
-            position=self._format_ms(position),
-            duration=self._format_ms(duration),
-        ))
+    def _step_frame(self, direction):
+        self._player.pause()
+        fps = self._selected_media().fps
+        if fps:
+            frame = round(self._player.position() * fps / 1000) + direction
+            self._seek_to(round(frame * 1000 / fps))
 
-    def _format_ms(self, value: int) -> str:
-        total = max(0, int(value // 1000))
-        minutes, seconds = divmod(total, 60)
-        hours, minutes = divmod(minutes, 60)
-        if hours:
-            return f"{hours}:{minutes:02d}:{seconds:02d}"
-        return f"{minutes}:{seconds:02d}"
+    def _mark_trim(self, end):
+        if self._preview_kind == 'import':
+            (self._trim_end if end else self._trim_start).setValue(self._player.position() / 1000)
 
-    def closeEvent(self, event):
-        if hasattr(self, "_player"):
-            self._player.stop()
-        self._stop_preview_poster()
+    def _timeline_trim(self, start, end):
+        if self._preview_kind != 'import':
+            return
+        for spin, value in ((self._trim_start, start), (self._trim_end, end)):
+            with QSignalBlocker(spin):
+                spin.setValue(value)
+        self._edits_changed()
+
+    def _sync_timeline(self):
+        if not hasattr(self, '_timeline'):
+            return
+        info = self._selected_media()
+        editable = self._preview_kind == 'import' and self._valid_edits()
+        start, end = (self._trim_start.value(), self._trim_end.value()) if editable else (0., info.duration)
+        self._timeline.set_media(info.duration, start, end, label=os.path.basename(info.path), editable=editable, fps=info.fps)
+        self._refresh_overview()
+
+    def _refresh_overview(self, *_):
+        self._overview.set_data(self._timeline._keys, self._timeline.timeline_duration(), *self._timeline.view_range())
+
+    def _on_preview_duration(self, duration):
+        with QSignalBlocker(self._seek_input):
+            self._seek_input.setRange(0, max(0, duration) / 1000)
+        self._on_preview_position(self._player.position())
+
+    def _on_preview_position(self, position):
+        self._timeline.set_playhead_time(position / 1000)
+        if not self._seek_input.hasFocus():
+            with QSignalBlocker(self._seek_input):
+                self._seek_input.setValue(position / 1000)
+        self._time_label.setText(self.t('usm_preview_time', position=self._format_ms(position),
+                                      duration=self._format_ms(self._player.duration())))
+
+    @staticmethod
+    def _format_ms(value):
+        seconds, ms = divmod(max(0, int(value)), 1000)
+        minutes, seconds = divmod(seconds, 60)
+        return f'{minutes}:{seconds:02d}.{ms:03d}'
+
+    def _build_replacement(self, checked=False, after=None):
+        if self._is_busy() or not self._valid_edits():
+            return
+        edits = self._edits()
+        if self._staged_path and self._staged_edits == edits:
+            if after:
+                after()
+            else:
+                self._refresh_sources('staged')
+                self._change_preview()
+            return
+        ffmpeg, encoder = find_ffmpeg(), find_sofdec2_encoder()
+        if not ffmpeg or not encoder:
+            self._show_error(self.t('usm_error_ffmpeg_missing' if not ffmpeg else 'usm_error_sofdec2_missing'))
+            self._clear_pending_save()
+            return
+        estimate = intermediate_bytes(self._original_info, edits)
+        if estimate * 1.05 + 64 * 1024**2 > shutil.disk_usage(self._tmpdir.name).free:
+            self._show_error(self.t('usm_error_disk', gib=f'{estimate / 1024**3:.2f}'))
+            self._clear_pending_save()
+            return
+        self._serial += 1
+        work = os.path.join(self._tmpdir.name, f'build-{self._serial}')
+        os.makedirs(work)
+        video = os.path.join(work, 'video.264' if self._original_info.video_codec == 'h264' else 'video.avi')
+        audio, output = os.path.join(work, 'audio.wav'), os.path.join(work, 'replacement.usm')
+
+        def failed():
+            self._clear_pending_save()
+            self._remove_work_tree(work)
+
+        def verified(info):
+            check_usm(output)
+            validate_output(info, self._original_info, self._import_info, edits)
+
+            def decoded(ok):
+                if not ok:
+                    failed()
+                    return
+                previous = self._staged_path
+                self._staged_path, self._staged_info, self._staged_edits = output, info, edits
+                self._remove_work_file(video)
+                self._remove_work_file(audio)
+                if previous:
+                    self._remove_work_tree(os.path.dirname(previous))
+                self._refresh_sources('staged')
+                self._refresh_state()
+                if after:
+                    after()
+                else:
+                    self._change_preview()
+            self._start_process(self.t('usm_checking_result'), ffmpeg,
+                ['-v', 'error', '-nostdin', '-xerror', '-i', output, '-map', '0:v:0',
+                 '-map', '0:a?', '-f', 'null', '-'], decoded, duration=edits.duration)
+
+        def encoded(ok):
+            if not ok:
+                failed()
+                return
+            try:
+                check_usm(output)
+            except Exception as exc:
+                failed()
+                self._show_error(exc)
+                return
+            self._probe(output, verified, failed)
+
+        def prepared(ok):
+            if not ok:
+                failed()
+                return
+            self._start_process(self.t('usm_status_encoding_usm'), encoder,
+                encoder_args(self._original_info, self._import_info, edits, video, audio, output),
+                encoded, workdir=os.path.dirname(encoder), duration=edits.duration)
+        self._player.pause()
+        self._start_process(self.t('usm_status_preparing_media'), ffmpeg,
+            prepare_args(self._original_info, self._import_info, edits, video, audio),
+            prepared, duration=edits.duration)
+
+    def _save_file(self):
+        if self._filepath:
+            self._save_to(self._filepath)
+
+    def _save_to(self, path):
+        if self._is_busy():
+            return
+        if os.path.splitext(path)[1].lower() != '.usm':
+            self._show_error(self.t('usm_warning_not_usm'))
+            self._clear_pending_save()
+            return
+        if self._import_path and not self._valid_edits():
+            self._clear_pending_save()
+            return
+        if self._import_path and (not self._staged_path or self._staged_edits != self._edits()):
+            self._build_replacement(after=lambda: self._save_to(path))
+            return
+        source = self._staged_path or self._original_info.path
+        if not source:
+            self._clear_pending_save()
+            return
+        try:
+            check_usm(source)
+            if os.path.exists(path) and os.path.abspath(source) != os.path.abspath(path):
+                create_backup_on_open(path)
+        except Exception as exc:
+            self._show_error(exc)
+            self._clear_pending_save()
+            return
+        # Preserve the opened bytes for comparison when Save replaces that file.
+        destination_key = os.path.normcase(os.path.abspath(path))
+        for media_info, name in ((self._original_info, 'opened.usm'), (self._import_info, 'imported.usm')):
+            if self._import_path and media_info.path and destination_key == os.path.normcase(os.path.abspath(media_info.path)):
+                self._serial += 1
+                snapshot_path = os.path.join(self._tmpdir.name, f'{self._serial}-{name}')
+                self._snapshot_pending = (path, media_info.path)
+                source, path = media_info.path, snapshot_path
+                break
+        self._player.pause()
+        self._copying = True
+        self._status_label.setText(self.t('usm_status_repacking'))
+        self._progress.setRange(0, 0)
+        self._operation.show()
+        self._cancel_btn.setEnabled(False)
+        self._refresh_state()
+        QThreadPool.globalInstance().start(_CopyJob(source, path, self._copy_signals, self._tmpdir))
+
+    def _on_copy_done(self, path, error):
+        self._copying = False
+        self._operation.hide()
+        if self._snapshot_pending:
+            (destination, previous_source), self._snapshot_pending = self._snapshot_pending, None
+            if error:
+                self._show_error(error)
+                self._clear_pending_save()
+                self._refresh_state()
+            else:
+                for attribute in ('_original_info', '_import_info'):
+                    media_info = getattr(self, attribute)
+                    if os.path.normcase(os.path.abspath(media_info.path)) == os.path.normcase(os.path.abspath(previous_source)):
+                        setattr(self, attribute, replace(media_info, path=path))
+                self._save_to(destination)
+            return
+        if error:
+            self._show_error(error)
+        else:
+            self._filepath = path
+            self._saved_edits = self._edits() if self._import_path else None
+            self._set_dirty(False)
+        self._clear_pending_save()
+        self._refresh_state()
+
+    def _clear_pending_save(self):
+        if hasattr(self, '_file_actions'):
+            self._file_actions.pending_path = None
+            self._file_actions.refresh()
+
+    def _export_video(self):
+        if self._is_busy():
+            return
+        info = self._selected_media()
+        if not info.path:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, self.t('usm_export_video_title'),
+            os.path.splitext(self._filepath)[0] + '.mp4', self.t('usm_filter_mp4'))
+        if not path:
+            return
+        if not os.path.splitext(path)[1]:
+            path += '.mp4'
+        if os.path.normcase(os.path.abspath(path)) in {os.path.normcase(os.path.abspath(p)) for p in
+                (self._original_path, self._import_path, self._staged_path) if p}:
+            self._show_error(self.t('usm_error_export_source'))
+            return
+        ffmpeg = find_ffmpeg()
+        if not ffmpeg:
+            self._show_error(self.t('usm_error_ffmpeg_missing'))
+            return
+        try:
+            fd, temporary = tempfile.mkstemp(prefix='.arrowforge-video-', suffix='.mp4', dir=os.path.dirname(os.path.abspath(path)))
+        except OSError as exc:
+            self._show_error(exc)
+            return
+        os.close(fd)
+        self._external_temporaries.add(temporary)
+        timing, options = video_timing_args(info)
+        args = ['-hide_banner', '-nostdin', '-y', '-i', info.path, '-map', '0:v:0', '-map', '0:a?']
+        if timing:
+            args += ['-vf', timing, *options]
+        args += ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-movflags', '+faststart', temporary]
+
+        def exported(ok):
+            try:
+                if ok:
+                    os.replace(temporary, path)
+            except OSError as exc:
+                self._show_error(exc)
+            finally:
+                self._remove_work_file(temporary)
+                self._external_temporaries.discard(temporary)
+        self._start_process(self.t('usm_status_exporting'), ffmpeg, args, exported, duration=info.duration)
+
+    def _start_process(self, title, program, args, callback, *, workdir='', duration=0, timeout=0):
+        if self._is_busy() or self._closing:
+            return
+        self._stdout, self._log = '', ''
+        self._cancelled = False
+        self._done = callback
+        self._duration = duration
+        self._status_label.setText(title)
+        self._progress.setRange(0, 0)
+        self._cancel_btn.setEnabled(True)
+        self._operation.show()
+        process = QProcess(self)
+        command = tool_command(program)
+        process.setProgram(command[0])
+        process.setArguments([*command[1:], *args])
+        if workdir:
+            process.setWorkingDirectory(workdir)
+        process.readyReadStandardOutput.connect(lambda: self._read_output(process))
+        process.readyReadStandardError.connect(lambda: self._read_output(process))
+        process.finished.connect(lambda code, status: self._process_finished(process,
+            code == 0 and status == QProcess.ExitStatus.NormalExit))
+        process.errorOccurred.connect(lambda error: self._process_error(process, error))
+        self._process = process
+        if timeout:
+            timer = QTimer(process)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda: self._timeout_process(process))
+            timer.start(timeout)
+        self._refresh_state()
+        process.start()
+
+    def _read_output(self, process):
+        if self._process is not process:
+            return
+        stdout = bytes(process.readAllStandardOutput()).decode('utf-8', errors='replace')
+        stderr = bytes(process.readAllStandardError()).decode('utf-8', errors='replace')
+        self._stdout = (self._stdout + stdout)[-4 * 1024 * 1024:]
+        self._log = (self._log + stdout + stderr)[-16000:]
+        text = self._log[-2000:]
+        times = re.findall(r'time=(\d+):(\d+):(\d+(?:\.\d+)?)', text)
+        frames = re.findall(r'\(\s*(\d+)\s*/\s*(\d+)\s*\)', text)
+        value = None
+        if times and self._duration:
+            h, m, s = map(float, times[-1])
+            value = (h * 3600 + m * 60 + s) * 100 / self._duration
+        elif frames:
+            n, d = map(int, frames[-1])
+            value = n * 100 / max(1, d)
+        if value is not None:
+            self._progress.setRange(0, 100)
+            self._progress.setValue(max(0, min(100, int(value))))
+
+    def _process_error(self, process, error):
+        if error == QProcess.ProcessError.FailedToStart:
+            self._process_finished(process, False, process.errorString())
+
+    def _process_finished(self, process, ok, error=''):
+        if self._process is not process:
+            return
+        if self._closing:
+            self._process = None
+            process.deleteLater()
+            return
+        self._read_output(process)
+        callback, self._done = self._done, None
+        cancelled = self._cancelled or self._closing
+        self._process = None
+        process.deleteLater()
+        self._operation.hide()
+        self._refresh_state()
+        if not ok and not cancelled:
+            self._show_error(error or self._log[-3000:] or self.t('no_output'))
+        if callback and not self._closing:
+            callback(ok and not cancelled)
+        if (not ok or cancelled) and not self._is_busy():
+            self._clear_pending_save()
+
+    def _timeout_process(self, process):
+        if self._process is process:
+            self._log += '\n' + self.t('usm_process_timeout')
+            process.kill()
+
+    @property
+    def _busy(self):
+        return self._is_busy()
+
+    def _cancel_process(self):
+        if self._process:
+            self._cancelled = True
+            self._cancel_btn.setEnabled(False)
+            self._process.kill()
+
+    def _is_busy(self):
+        return self._process is not None or self._copying
+
+    @staticmethod
+    def _remove_work_file(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    def _remove_work_tree(self, path):
+        root, resolved = os.path.realpath(self._tmpdir.name), os.path.realpath(path)
+        if os.path.commonpath((root, resolved)) == root and resolved != root:
+            shutil.rmtree(resolved, ignore_errors=True)
+
+    def _apply_responsive_layout(self):
+        if not hasattr(self, '_body_layout'):
+            return
+        compact = self.width() < 1050
+        if compact != self._compact:
+            self._body_layout.setDirection(QBoxLayout.Direction.TopToBottom if compact else QBoxLayout.Direction.LeftToRight)
+            self._settings_panel.setMaximumWidth(16777215 if compact else 520)
+            self._compact = compact
+        self._video_fit_timer.start(0)
+
+    def _fit_video_height(self):
+        if self._closing:
+            return
+        if self._compact:
+            self._preview_surface.set_height_limit(None)
+            return
+        # Measure the actual translated controls instead of reserving a fixed
+        # toolbar/form height. The video remains letterboxed with its own aspect.
+        margins = self._body_layout.contentsMargins()
+        available = self._scroll.viewport().height() - margins.top() - margins.bottom()
+        controls = self._preview_panel.layout().totalSizeHint().height() - self._preview_surface.height()
+        self._preview_surface.set_height_limit(max(160, available - controls))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_responsive_layout()
+
+    def hideEvent(self, event):
+        self._player.pause()
+        super().hideEvent(event)
+
+    def _dispose(self):
+        if self._closing:
+            return
+        self._closing = True
+        self._player.stop()
+        self._player.setSource(QUrl())
+        self._stop_poster()
         if self._process:
             self._process.kill()
-            self._process.waitForFinished()
-        self._tmpdir.cleanup()
+            self._process.waitForFinished(3000)
+        for path in self._external_temporaries:
+            self._remove_work_file(path)
+        self._external_temporaries.clear()
+        # A background atomic copy holds the directory until its last read.
+        if not self._copying:
+            self._tmpdir.cleanup()
+
+    def closeEvent(self, event):
+        if self._copying:
+            event.ignore()
+            return
+        if not self._confirm_discard():
+            event.ignore()
+            return
+        self._dispose()
         super().closeEvent(event)

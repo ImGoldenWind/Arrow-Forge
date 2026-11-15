@@ -3,6 +3,7 @@ import json
 import os
 
 from core.runtime_paths import app_path, settings_path
+from core.translation_aliases import TRANSLATION_ALIASES
 
 def _locales_dir():
     """Return the external locales directory for source and packaged builds."""
@@ -23,6 +24,10 @@ def load_translations():
                     translations[code] = json.load(f)
             except (json.JSONDecodeError, OSError):
                 continue
+    for data in translations.values():
+        for alias, canonical in TRANSLATION_ALIASES.items():
+            if canonical in data:
+                data[alias] = data[canonical]
     return translations
 
 def available_languages(translations):
