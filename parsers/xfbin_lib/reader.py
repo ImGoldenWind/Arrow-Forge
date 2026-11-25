@@ -4,7 +4,7 @@ from .nucc import NuccChunk
 from .xfbin_types import Page, Xfbin, ChunkReference
 
 
-def read_xfbin(path: str) -> Xfbin:
+def read_xfbin(path: str, *, preserve_source: bool = False) -> Xfbin:
     """Read an XFBIN file from disk and return an Xfbin object."""
     with open(path, 'rb') as fh:
         data = fh.read()
@@ -23,8 +23,16 @@ def read_xfbin(path: str) -> Xfbin:
     xfbin = Xfbin()
     xfbin.nucc_header = br_xfbin.header
     xfbin.initial_null_header = getattr(br_xfbin, 'initial_null_header', None)
-    for br_page in br_xfbin.pages:
+    if preserve_source:
+        from .source_writer import SourceLayout
+        xfbin.source_layout = SourceLayout(data, br_xfbin)
+        for index, chunk in enumerate(chunks):
+            chunk.source_map_index = index
+    reference_index = 0
+    for page_index, br_page in enumerate(br_xfbin.pages):
         page = Page()
+        if preserve_source:
+            page.source_page_index = page_index
         page.nucc_envelopes = []
 
         # Populate initial_page_chunks (used by writer for page metadata)
@@ -38,6 +46,10 @@ def read_xfbin(path: str) -> Xfbin:
             )
             for ref in br_page.page_chunk_references
         ]
+        if preserve_source:
+            for ref in page.chunk_references:
+                ref.source_reference_index = reference_index
+                reference_index += 1
 
         # Initialise each chunk with its parsed binary data
         for local_idx, br_nucc in br_page.chunks_dict.items():

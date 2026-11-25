@@ -380,7 +380,7 @@ def entry_editable(entry):
 # Load xfbin
 def load_xfbin(path: str, *, decode_images=True):
     """Read an xfbin and return (Xfbin, [TextureEntry])."""
-    xfbin = _read_xfbin(path)
+    xfbin = _read_xfbin(path, preserve_source=True)
     entries: list[TextureEntry] = []
 
     for page_idx, page in enumerate(xfbin.pages):
@@ -532,6 +532,9 @@ def delete_texture_entry(xfbin, entry: TextureEntry) -> bool:
         return False
 
     for page in xfbin.pages:
+        # Authored payloads can address these reference slots by position.
+        if hasattr(page, 'source_page_index'):
+            continue
         page.chunk_references = [
             ref for ref in page.chunk_references
             if getattr(ref, 'chunk', None) is not chunk

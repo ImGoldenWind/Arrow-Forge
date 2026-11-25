@@ -25,15 +25,16 @@ from parsers.xfbin_lib import (
     NuccChunkBinary,
     Page,
     read_xfbin,
-    write_xfbin_to_path,
+    write_xfbin,
 )
+from parsers.xfbin_lib.writer import write_bytes_atomically
 
 
 ENTRY_SIZE = 40
 HEADER_SIZE = 2
 
-ANIMATION_MAX = 15
-TAG_MAX = 7
+ANIMATION_MAX = 16
+TAG_MAX = 8
 
 OBSERVED_ANIMATION_TOKENS = [
     "PL_ANM_LIP_NO_N",
@@ -58,6 +59,7 @@ class LipKey:
     tag_a: str = ""
     tag_b: str = ""
     value: float = 100.0
+    _source_record: bytes = field(default=b'', repr=False, compare=False)
 
 
 @dataclass
@@ -80,8 +82,14 @@ def _read_fixed_ascii(data: bytes | bytearray, off: int, length: int) -> str:
 
 
 def _write_fixed_ascii(buf: bytearray, off: int, text: str, length: int) -> None:
-    encoded = text.encode("ascii", errors="replace")[:max(0, length - 1)]
-    buf[off:off + length] = encoded + b"\x00" * (length - len(encoded))
+    encoded = text.encode("ascii", errors="replace")[:length]
+    end = off + length
+    old_end = buf.find(b'\x00', off, end)
+    # Replace the visible string and its terminator. Leave any opaque bytes
+    # beyond the old terminator alone unless the new string occupies them.
+    if old_end >= 0 and len(encoded) < length:
+        end = max(old_end + 1, off + len(encoded) + 1)
+    buf[off:end] = encoded.ljust(end - off, b'\x00')
 
 
 def _looks_like_lip_binary(data: bytes | bytearray) -> bool:
@@ -116,6 +124,7 @@ def _parse_keys(data: bytes | bytearray) -> list[LipKey]:
             tag_a=_read_fixed_ascii(data, off + 0x14, 8),
             tag_b=_read_fixed_ascii(data, off + 0x1C, 8),
             value=struct.unpack_from("<f", data, off + 0x24)[0],
+            _source_record=bytes(data[off:off + ENTRY_SIZE]),
         ))
     return keys
 
@@ -127,16 +136,22 @@ def _pack_keys(keys: list[LipKey]) -> bytes:
     struct.pack_into("<H", buf, 0, len(keys))
     for idx, key in enumerate(keys):
         off = HEADER_SIZE + idx * ENTRY_SIZE
-        struct.pack_into("<f", buf, off + 0x00, float(key.time))
-        _write_fixed_ascii(buf, off + 0x04, key.animation, 16)
-        _write_fixed_ascii(buf, off + 0x14, key.tag_a, 8)
-        _write_fixed_ascii(buf, off + 0x1C, key.tag_b, 8)
-        struct.pack_into("<f", buf, off + 0x24, float(key.value))
+        raw = key._source_record
+        if raw:
+            buf[off:off + ENTRY_SIZE] = raw
+        for offset, value in ((0x00, key.time), (0x24, key.value)):
+            encoded = struct.pack('<f', value)
+            if not raw or encoded != struct.pack('<f', struct.unpack_from('<f', raw, offset)[0]):
+                buf[off + offset:off + offset + 4] = encoded
+        for offset, value, size in ((0x04, key.animation, ANIMATION_MAX),
+                                    (0x14, key.tag_a, TAG_MAX), (0x1C, key.tag_b, TAG_MAX)):
+            if not raw or value != _read_fixed_ascii(raw, offset, size):
+                _write_fixed_ascii(buf, off + offset, value, size)
     return bytes(buf)
 
 
 def load_lipsync_xfbin(path: str):
-    xfbin = read_xfbin(path)
+    xfbin = read_xfbin(path, preserve_source=True)
     clips: list[LipClip] = []
     for page_index, page in enumerate(xfbin.pages):
         for chunk in page.chunks:
@@ -158,13 +173,18 @@ def load_lipsync_xfbin(path: str):
 
 
 def save_lipsync_xfbin(xfbin, path: str, clips: list[LipClip]) -> None:
-    for clip in clips:
-        clip.chunk.name = clip.name
-        clip.chunk.filePath = clip.file_path
-        clip.chunk.binary_data = _pack_keys(clip.keys)
-        clip.chunk.has_props = True
-        clip.chunk.extension = ".binary"
-    write_xfbin_to_path(xfbin, path)
+    updates = [(clip, _pack_keys(clip.keys)) for clip in clips]
+    previous = [(clip.chunk, clip.chunk.name, clip.chunk.filePath, clip.chunk.binary_data) for clip, _ in updates]
+    try:
+        for clip, data in updates:
+            clip.chunk.name = clip.name
+            clip.chunk.filePath = clip.file_path
+            clip.chunk.binary_data = data
+        write_bytes_atomically(path, write_xfbin(xfbin))
+    except Exception:
+        for chunk, old_name, old_path, old_data in previous:
+            chunk.name, chunk.filePath, chunk.binary_data = old_name, old_path, old_data
+        raise
 
 
 def duplicate_clip(xfbin, clips: list[LipClip], source: LipClip) -> LipClip:

@@ -14,6 +14,7 @@ class BrXfbin(BrStruct):
     def __br_read__(self, br: BinaryReader):
         self.header      = br.read_struct(BrNuccHeader)
         self.chunk_table = br.read_struct(BrChunkTable)
+        self.pages_offset = br.pos()
 
         self.pages               = []
         self.cur_page_start      = 0
@@ -278,6 +279,7 @@ class BrPage(BrStruct):
             self.chunks_dict[br_chunk.chunk_map_index] = chunk
 
             if isinstance(chunk, BrNuccChunkPage):
+                self.end_offset = br.pos()
                 self.page_chunk = chunk
                 ps = br_xfbin.cur_page_start
                 rs = br_xfbin.cur_reference_start

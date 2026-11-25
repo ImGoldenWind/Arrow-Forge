@@ -91,9 +91,11 @@ from editors.xfbin_audio_editor import _decode_bnsf_to_wav, _detect_audio_tool a
 from parsers.acb_parser import load_companion_acb_labels
 from parsers.awb_parser import extract_entry, get_entry_label, parse_awb
 from parsers.lipsync_parser import (
+    ANIMATION_MAX,
     LipKey,
     OBSERVED_ANIMATION_TOKENS,
     OBSERVED_TAG_TOKENS,
+    TAG_MAX,
     add_clip,
     delete_clip,
     duplicate_clip,
@@ -2090,10 +2092,10 @@ class LipSyncEditor(QWidget):
                 OBSERVED_ANIMATION_TOKENS,
                 row,
                 "animation",
-                15,
+                ANIMATION_MAX,
             ))
-            self._table.setCellWidget(row, 3, self._make_combo(key.tag_a, OBSERVED_TAG_TOKENS, row, "tag_a", 7))
-            self._table.setCellWidget(row, 4, self._make_combo(key.tag_b, OBSERVED_TAG_TOKENS, row, "tag_b", 7))
+            self._table.setCellWidget(row, 3, self._make_combo(key.tag_a, OBSERVED_TAG_TOKENS, row, "tag_a", TAG_MAX))
+            self._table.setCellWidget(row, 4, self._make_combo(key.tag_b, OBSERVED_TAG_TOKENS, row, "tag_b", TAG_MAX))
             self._table.setCellWidget(row, 5, self._make_spin(key.value, row, "value", 3))
         self._rebuilding_table = False
         if 0 <= self._selected_key_idx < len(clip.keys):

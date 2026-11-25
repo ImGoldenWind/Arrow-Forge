@@ -32,7 +32,6 @@ from core.ui.editor_widgets import (
 from core.ui.editor_chrome import install_editor_chrome
 from core.ui.editor_actions import commit_save_path, editor_path, install_file_actions
 import os
-import copy
 
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QLineEdit, QScrollArea,
@@ -392,6 +391,8 @@ class ConstParamEditor(QWidget):
         if self._name_field is None or idx < 0 or idx >= len(self._params):
             return
         new_name = self._name_field.text()
+        if new_name == self._params[idx]['name']:
+            return
         self._params[idx]['name'] = new_name
         for btn, i in self._param_buttons:
             if i == idx:
@@ -405,7 +406,10 @@ class ConstParamEditor(QWidget):
     def _commit_value(self, idx):
         if self._value_field is None or idx < 0 or idx >= len(self._params):
             return
-        self._params[idx]['value'] = self._value_field.text()
+        new_value = self._value_field.text()
+        if new_value == self._params[idx]['value']:
+            return
+        self._params[idx]['value'] = new_value
         self._mark_dirty()
 
     def _mark_dirty(self):
@@ -429,6 +433,8 @@ class ConstParamEditor(QWidget):
         if not save_path or self._original_data is None:
             return
         try:
+            self._commit_name(self._current_idx)
+            self._commit_value(self._current_idx)
             save_constparam_xfbin(save_path, self._original_data, self._params)
             commit_save_path(self, save_path)
             self._dirty = False
@@ -450,7 +456,7 @@ class ConstParamEditor(QWidget):
     def _on_dup(self):
         if self._current_idx < 0 or self._current_idx >= len(self._params):
             return
-        new_param = copy.deepcopy(self._params[self._current_idx])
+        new_param = self._params[self._current_idx].copy()
         new_idx = self._current_idx + 1
         self._params.insert(new_idx, new_param)
         self._current_idx = new_idx
