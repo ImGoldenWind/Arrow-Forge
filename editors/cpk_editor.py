@@ -14,6 +14,7 @@ from core.style_helpers import (
     add_editor_card_title,
     make_editor_card,
     ss_bg_dark,
+    ss_dialog,
     ss_dim_label,
     ss_main_label,
     ss_progressbar,
@@ -32,6 +33,7 @@ from core.ui.editor_widgets import (
 from core.ui.editor_chrome import install_editor_chrome
 from core.ui.editor_actions import install_file_actions
 import os
+import re
 import subprocess
 
 import qtawesome as qta
@@ -39,14 +41,15 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QTreeWidget, QTreeWidgetItem, QLabel, QPushButton, QProgressBar,
     QTextEdit, QFileDialog, QMessageBox, QFrame,
-    QApplication, QSizePolicy, QMenu,
+    QSizePolicy, QMenu, QDialog, QDialogButtonBox, QListWidget, QListWidgetItem,
 )
 from PyQt6.QtGui import QFont, QColor, QAction
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
+from PyQt6.QtCore import QCoreApplication, Qt, QThread, pyqtSignal, QSize
 
 from core.themes import P
 from core.translations import ui_text
 from core.settings import create_backup_on_open, game_files_dialog_dir
+from parsers.cpk_parser import CpkReader
 
 
 # Worker thread for long operations
@@ -54,22 +57,24 @@ from core.settings import create_backup_on_open, game_files_dialog_dir
 class _Worker(QThread):
     progress = pyqtSignal(int, int, str)   # done, total, path
     log      = pyqtSignal(str)
-    finished = pyqtSignal(bool, str)       # success, message
 
-    def __init__(self, task, *args, **kwargs):
-        super().__init__()
+    def __init__(self, task, *args, reload_archive=False):
+        app = QCoreApplication.instance()
+        super().__init__(app)
         self._task   = task
         self._args   = args
-        self._kwargs = kwargs
+        self.reload_archive = reload_archive
+        self.error = None
+        app.aboutToQuit.connect(self.wait)
+        self.finished.connect(self.deleteLater)
 
     def run(self):
         try:
-            self._task(*self._args, **self._kwargs,
+            self._task(*self._args,
                        progress_cb=self._on_progress,
                        log_cb=self._on_log)
-            self.finished.emit(True, "")
         except Exception as exc:
-            self.finished.emit(False, str(exc))
+            self.error = str(exc)
 
     def _on_progress(self, done, total, path):
         self.progress.emit(done, total, path)
@@ -113,6 +118,119 @@ def _fmt_size(n: int) -> str:
     return f"{n} B"
 
 
+def _archive_priority(path: str) -> tuple[int, int]:
+    name = os.path.splitext(os.path.basename(path))[0].casefold()
+    if name == "data":
+        return 0, 0
+    patch = re.fullmatch(r"patch[ ._-]*([0-9]+)", name)
+    if patch:
+        return 1, int(patch[1])
+    return 2, 0
+
+
+def _choose_cpk_paths(parent, title, directory):
+    paths, _ = QFileDialog.getOpenFileNames(
+        parent, title, directory, "CPK Archives (*.cpk);;All Files (*)")
+    return paths
+
+
+def _entry_path_key(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path.replace("\\", "/")))
+
+
+def _merged_entries(readers):
+    by_path = {}
+    for reader in readers:
+        for entry in reader.entries:
+            by_path[_entry_path_key(entry.path)] = (entry, reader)
+    return dict(by_path.values())
+
+
+class _ArchiveOrderDialog(QDialog):
+    def __init__(self, parent, paths, t):
+        super().__init__(parent)
+        self.t = t
+        self.setWindowTitle(t("cpk_order_title"))
+        self.setStyleSheet(ss_dialog())
+        layout = QVBoxLayout(self)
+        configure_layout(layout, LayoutRole.PAGE)
+
+        hint = _label(t("cpk_order_hint"))
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self._archives = QListWidget(self)
+        for row, path in enumerate(paths):
+            self._insert(row, path)
+        layout.addWidget(self._archives)
+
+        controls = QHBoxLayout()
+        configure_layout(controls, LayoutRole.FIELD)
+        self._add = _make_btn(t("cpk_order_add"), icon_name="fa6s.folder-plus")
+        self._up = _make_btn(t("cpk_order_up"), icon_name="fa6s.arrow-up")
+        self._down = _make_btn(t("cpk_order_down"), icon_name="fa6s.arrow-down")
+        self._add.clicked.connect(self._add_archives)
+        self._up.clicked.connect(lambda: self._move(-1))
+        self._down.clicked.connect(lambda: self._move(1))
+        controls.addWidget(self._add)
+        controls.addWidget(self._up)
+        controls.addWidget(self._down)
+        controls.addStretch()
+        layout.addLayout(controls)
+
+        buttons = QDialogButtonBox(self)
+        open_button = buttons.addButton(t("cpk_order_open"), QDialogButtonBox.ButtonRole.AcceptRole)
+        cancel_button = buttons.addButton(t("qol_cancel"), QDialogButtonBox.ButtonRole.RejectRole)
+        configure_button(open_button, accent=True)
+        configure_button(cancel_button)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self._archives.currentRowChanged.connect(self._update_buttons)
+        self._archives.setCurrentRow(0)
+
+    def _insert(self, row, path):
+        item = QListWidgetItem(os.path.basename(path))
+        item.setData(Qt.ItemDataRole.UserRole, path)
+        item.setToolTip(path)
+        self._archives.insertItem(row, item)
+
+    def _add_archives(self):
+        directory = os.path.dirname(self.paths()[self._archives.currentRow()])
+        paths = _choose_cpk_paths(self, self.t("cpk_open_dialog"), directory)
+        existing = self.paths()
+        known = {os.path.normcase(os.path.realpath(path)) for path in existing}
+        for path in sorted(paths, key=_archive_priority):
+            key = os.path.normcase(os.path.realpath(path))
+            if key in known:
+                continue
+            priority = _archive_priority(path)
+            row = next((i for i, current in enumerate(existing)
+                        if _archive_priority(current) > priority), len(existing))
+            self._insert(row, path)
+            existing.insert(row, path)
+            known.add(key)
+        self._update_buttons(self._archives.currentRow())
+
+    def _update_buttons(self, row):
+        self._up.setEnabled(row > 0)
+        self._down.setEnabled(0 <= row < self._archives.count() - 1)
+
+    def _move(self, offset):
+        row = self._archives.currentRow()
+        target = row + offset
+        if row >= 0 and 0 <= target < self._archives.count():
+            self._archives.insertItem(target, self._archives.takeItem(row))
+            self._archives.setCurrentRow(target)
+
+    def paths(self):
+        return [
+            self._archives.item(row).data(Qt.ItemDataRole.UserRole)
+            for row in range(self._archives.count())
+        ]
+
+
 # CPK tree widget
 
 class CpkTreeWidget(QTreeWidget):
@@ -131,37 +249,36 @@ class CpkTreeWidget(QTreeWidget):
         self.setAnimated(True)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
-    def populate(self, reader):
+    def populate(self, entries, *, sources=None):
         self.clear()
-        from parsers.cpk_parser import CpkReader
         dir_items: dict[str, QTreeWidgetItem] = {}
+        root = self.invisibleRootItem()
 
-        for entry in reader.entries:
-            # Ensure parent dir item exists
-            if entry.dir_name not in dir_items:
-                parts = entry.dir_name.split("/")
-                parent = self.invisibleRootItem()
-                built  = ""
-                for part in parts:
-                    built = (built + "/" + part).lstrip("/")
-                    if built not in dir_items:
-                        item = QTreeWidgetItem(parent, [part, "", ""])
-                        item.setForeground(0, QColor(P["secondary"]))
-                        item.setFont(0, ui_font(TypeSize.BODY, QFont.Weight.Bold))
-                        item.setData(0, Qt.ItemDataRole.UserRole, ("dir", built))
-                        dir_items[built] = item
-                        parent.addChild(item) if parent is not self.invisibleRootItem() else None
-                    parent = dir_items[built]
+        for entry in entries:
+            parent = root
+            built = ""
+            dir_name = entry.dir_name.replace("\\", "/") if sources is not None else entry.dir_name
+            for part in filter(None, dir_name.split("/")):
+                built = f"{built}/{part}" if built else part
+                key = _entry_path_key(built) if sources is not None else built
+                if key not in dir_items:
+                    item = QTreeWidgetItem(parent, [part, "", ""])
+                    item.setForeground(0, QColor(P["secondary"]))
+                    item.setFont(0, ui_font(TypeSize.BODY, QFont.Weight.Bold))
+                    item.setData(0, Qt.ItemDataRole.UserRole, ("dir", built))
+                    dir_items[key] = item
+                parent = dir_items[key]
 
-            dir_item = dir_items[entry.dir_name]
             disp     = _fmt_size(entry.display_size)
             comp_txt = (f"{_fmt_size(entry.file_size)} ({100*entry.file_size//entry.display_size}%)"
                         if entry.is_compressed else "—")
             file_item = QTreeWidgetItem(
-                dir_item,
+                parent,
                 [entry.file_name, disp, comp_txt]
             )
             file_item.setData(0, Qt.ItemDataRole.UserRole, ("file", entry))
+            if sources is not None:
+                file_item.setToolTip(0, sources[entry].path)
             file_item.setForeground(0, QColor(P["text_main"]))
             file_item.setForeground(1, QColor(P["text_dim"]))
             file_item.setForeground(2, QColor(P["text_dim"]))
@@ -200,9 +317,10 @@ class CpkEditor(QWidget):
     def __init__(self, parent=None, t_func=None):
         super().__init__(parent)
         self.t = t_func or ui_text
-        self._reader   = None
-        self._worker   = None
-        self._cpk_path: str | None = None
+        self._reader = None
+        self._worker = None
+        self._archives = ()
+        self._sources = {}
 
         self.setStyleSheet(ss_bg_dark() + ss_splitter())
 
@@ -311,12 +429,17 @@ class CpkEditor(QWidget):
         top_l.setSpacing(Size.GAP)
 
         tree_card, tree_l = make_editor_card(top_widget)
-        _row, _title, self._tree_subtitle_lbl = add_editor_card_title(
+        row, _title, self._tree_subtitle_lbl = add_editor_card_title(
             tree_l,
             self.t("cpk_title"),
             "fa6s.box-archive",
             self.t("cpk_no_file"),
         )
+        self._btn_archive_order = _make_btn(
+            self.t("cpk_order_manage"), icon_name="fa6s.layer-group")
+        self._btn_archive_order.clicked.connect(self._edit_archive_order)
+        self._btn_archive_order.hide()
+        row.layout().addWidget(self._btn_archive_order)
 
         self._tree = CpkTreeWidget()
         tree_l.addWidget(self._tree, 1)
@@ -496,61 +619,92 @@ class CpkEditor(QWidget):
     # File open
 
     def _open_cpk(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, self.t("cpk_open_dialog"), game_files_dialog_dir(target_patterns="*.cpk"), "CPK Archives (*.cpk);;All Files (*)")
-        if not path:
+        paths = _choose_cpk_paths(
+            self, self.t("cpk_open_dialog"), game_files_dialog_dir(target_patterns="*.cpk"),
+        )
+        if not paths:
             return
-        create_backup_on_open(path)
-        self._load_cpk(path)
+        if len(paths) == 1:
+            create_backup_on_open(paths[0])
+            self._load_cpks(paths)
+        else:
+            self._confirm_archive_order(sorted(paths, key=_archive_priority))
+
+    def _edit_archive_order(self):
+        self._confirm_archive_order([reader.path for reader in self._archives])
+
+    def _confirm_archive_order(self, paths):
+        dialog = _ArchiveOrderDialog(self, paths, self.t)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._load_cpks(dialog.paths())
+        dialog.deleteLater()
 
     def load_file(self, path: str):
         """Called externally to pre-load a CPK path."""
-        self._load_cpk(path)
+        self._load_cpks([path])
 
-    def _load_cpk(self, path: str):
-        from parsers.cpk_parser import CpkReader
-        self._log(self.t("cpk_log_loading", path=path))
-        try:
-            reader = CpkReader(path)
-        except Exception as exc:
-            self._log(f"[ERROR] {exc}")
-            QMessageBox.critical(self, self.t("dlg_title_error"), str(exc))
+    def _load_cpks(self, paths):
+        if self._worker is not None:
             return
 
-        self._reader   = reader
-        self._cpk_path = path
-        self._tree.populate(reader)
-        self._path_lbl.setText(os.path.basename(path))
-        self._path_lbl.setToolTip(path)
-        if getattr(self, "_tree_subtitle_lbl", None) is not None:
-            self._tree_subtitle_lbl.setText(os.path.basename(path))
-            self._tree_subtitle_lbl.setToolTip(path)
+        readers = []
+        try:
+            for path in paths:
+                self._log(self.t("cpk_log_loading", path=path))
+                readers.append(CpkReader(path))
+        except Exception as exc:
+            self._log(f"[ERROR] {exc}")
+            QMessageBox.critical(self, self.t("dlg_title_error"), f"{path}\n{exc}")
+            return
 
-        dirs = reader.directories
+        self._archives = tuple(readers)
+        self._reader = readers[0] if len(readers) == 1 else None
+        self._sources = _merged_entries(readers) if self._reader is None else {}
 
+        if self._reader is not None:
+            entries = self._reader.entries
+            self._tree.populate(entries)
+            title = os.path.basename(self._reader.path)
+            dirs = self._reader.directories
+        else:
+            entries = self._sources
+            self._tree.populate(entries, sources=self._sources)
+            title = self.t("cpk_archive_count", count=len(readers))
+            dirs = {_entry_path_key(entry.dir_name) for entry in entries if entry.dir_name}
+
+        tooltip = "\n".join(reader.path for reader in readers)
+        for label in (self._path_lbl, self._tree_subtitle_lbl):
+            label.setText(title)
+            label.setToolTip(tooltip)
         self._log(self.t("cpk_log_loaded",
-                          files=reader.num_files,
+                          files=len(entries),
                           dirs=len(dirs)))
-
-        self._btn_unpack_all.setEnabled(True)
-        self._btn_save_as.setEnabled(True)
-        self._update_dir_btns()
+        self._update_buttons()
 
     def _on_selection_changed(self):
-        self._update_dir_btns()
+        self._update_buttons()
 
-    def _update_dir_btns(self):
-        has_dir  = self._tree.selected_dir()   is not None and self._reader is not None
-        has_file = self._tree.selected_entry() is not None and self._reader is not None
+    def _update_buttons(self):
+        idle = self._worker is None
+        loaded = idle and bool(self._archives)
+        editable = loaded and self._reader is not None
+        selected_dir = self._tree.selected_dir()
+        has_dir = loaded and bool(selected_dir)
+        has_file = loaded and self._tree.selected_entry() is not None
+        self._btn_open.setEnabled(idle)
+        self._btn_archive_order.setVisible(bool(self._archives))
+        self._btn_archive_order.setEnabled(loaded)
+        self._btn_unpack_all.setEnabled(loaded)
         self._btn_unpack_dir.setEnabled(has_dir)
         self._btn_unpack_file.setEnabled(has_file)
-        self._btn_repack_dir.setEnabled(has_dir)
-        self._btn_replace_file.setEnabled(has_file)
-        self._btn_delete.setEnabled(has_dir or has_file)
+        self._btn_repack_dir.setEnabled(editable and has_dir)
+        self._btn_replace_file.setEnabled(editable and has_file)
+        self._btn_delete.setEnabled(editable and selected_dir is not None)
+        self._btn_save_as.setEnabled(loaded)
 
     def _show_tree_context_menu(self, pos):
         item = self._tree.itemAt(pos)
-        if item is None or self._reader is None:
+        if item is None or self._reader is None or self._worker is not None:
             return
         self._tree.setCurrentItem(item)
         action = QAction(self.t("cpk_delete_context"), self)
@@ -560,7 +714,7 @@ class CpkEditor(QWidget):
         menu.exec(self._tree.viewport().mapToGlobal(pos))
 
     def _delete_selected(self):
-        if not self._reader or not self._cpk_path:
+        if self._reader is None or self._worker is not None:
             return
         entry = self._tree.selected_entry()
         cpk_dir = None if entry else self._tree.selected_dir()
@@ -599,15 +753,16 @@ class CpkEditor(QWidget):
         ))
         self._start_worker(
             _task_delete_entries,
-            self._cpk_path,
+            self._reader.path,
             target_kind,
             target_value,
+            reload_archive=True,
         )
 
     # Unpack all
 
     def _unpack_all(self):
-        if not self._reader:
+        if not self._archives:
             return
         out_dir = QFileDialog.getExistingDirectory(
             self, self.t("cpk_choose_out_dir"))
@@ -615,16 +770,15 @@ class CpkEditor(QWidget):
             return
 
         self._log(self.t("cpk_log_unpack_all", out=out_dir))
-        self._start_worker(
-            _task_extract_all,
-            self._cpk_path,
-            out_dir,
-        )
+        if self._reader is None:
+            self._start_worker(_task_extract_archives, self._archives, out_dir)
+        else:
+            self._start_worker(_task_extract_all, self._reader, out_dir)
 
     # Unpack selected dir
 
     def _unpack_selected_dir(self):
-        if not self._reader:
+        if not self._archives:
             return
         cpk_dir = self._tree.selected_dir()
         if not cpk_dir:
@@ -638,17 +792,21 @@ class CpkEditor(QWidget):
             return
 
         self._log(self.t("cpk_log_unpack_dir", cpk_dir=cpk_dir, out=out_dir))
-        self._start_worker(
-            _task_extract_dir,
-            self._cpk_path,
-            cpk_dir,
-            out_dir,
-        )
+        if self._reader is None:
+            directory = _entry_path_key(cpk_dir)
+            sources = {
+                entry: reader for entry, reader in self._sources.items()
+                if _entry_path_key(entry.dir_name) == directory
+                or _entry_path_key(entry.dir_name).startswith(directory + os.sep)
+            }
+            self._start_worker(_task_extract_entries, sources, out_dir)
+        else:
+            self._start_worker(_task_extract_dir, self._reader.path, cpk_dir, out_dir)
 
     # Unpack selected file
 
     def _unpack_selected_file(self):
-        if not self._reader:
+        if not self._archives:
             return
         entry = self._tree.selected_entry()
         if not entry:
@@ -665,19 +823,17 @@ class CpkEditor(QWidget):
                           file_name=entry.file_name,
                           cpk_dir=entry.dir_name,
                           out=out_dir))
-        self._start_worker(
-            _task_extract_file,
-            self._cpk_path,
-            entry.dir_name,
-            entry.file_name,
-            out_dir,
-        )
+        if self._reader is None:
+            self._start_worker(_task_extract_entries, {entry: self._sources[entry]}, out_dir)
+        else:
+            self._start_worker(
+                _task_extract_file, self._reader.path, entry.dir_name, entry.file_name, out_dir)
 
     # Save as new CPK
 
     def _save_as(self):
-        """Rebuild the current CPK and save to a new file."""
-        if not self._reader:
+        """Build a new CPK from a local directory."""
+        if not self._archives:
             return
         src_dir = QFileDialog.getExistingDirectory(
             self, self.t("cpk_choose_src_dir"))
@@ -700,7 +856,7 @@ class CpkEditor(QWidget):
     # Replace single file inside CPK
 
     def _replace_file(self):
-        if not self._reader or not self._cpk_path:
+        if self._reader is None or self._worker is not None:
             return
         entry = self._tree.selected_entry()
         if not entry:
@@ -718,7 +874,7 @@ class CpkEditor(QWidget):
         answer = QMessageBox.question(
             self,
             self.t("cpk_repack_confirm_title"),
-            self.t("cpk_repack_confirm_msg", path=self._cpk_path),
+            self.t("cpk_repack_confirm_msg", path=self._reader.path),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
@@ -730,17 +886,18 @@ class CpkEditor(QWidget):
                           src=src_file))
         self._start_worker(
             _task_replace_file,
-            self._cpk_path,
+            self._reader.path,
             entry.dir_name,
             entry.file_name,
             src_file,
+            reload_archive=True,
         )
 
     # Replace single dir inside CPK
 
     def _replace_dir(self):
         """Replace one CPK directory from a local folder, rebuild CPK."""
-        if not self._reader or not self._cpk_path:
+        if self._reader is None or self._worker is not None:
             return
         cpk_dir = self._tree.selected_dir()
         if not cpk_dir:
@@ -756,7 +913,7 @@ class CpkEditor(QWidget):
         answer = QMessageBox.question(
             self,
             self.t("cpk_repack_confirm_title"),
-            self.t("cpk_repack_confirm_msg", path=self._cpk_path),
+            self.t("cpk_repack_confirm_msg", path=self._reader.path),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
@@ -766,32 +923,22 @@ class CpkEditor(QWidget):
                           cpk_dir=cpk_dir, src=src_dir))
         self._start_worker(
             _task_replace_dir,
-            self._cpk_path,
+            self._reader.path,
             cpk_dir,
             src_dir,
+            reload_archive=True,
         )
 
     # Worker management
 
-    def _set_buttons_enabled(self, enabled: bool):
-        for btn in (self._btn_open, self._btn_unpack_all, self._btn_unpack_dir,
-                    self._btn_unpack_file, self._btn_repack_dir,
-                    self._btn_replace_file, self._btn_delete,
-                    self._btn_save_as):
-            btn.setEnabled(enabled and (
-                btn is self._btn_open or self._reader is not None))
-        if enabled:
-            self._update_dir_btns()
-
-    def _start_worker(self, task, *args):
-        if self._worker and self._worker.isRunning():
+    def _start_worker(self, task, *args, reload_archive=False):
+        if self._worker is not None:
             return
 
         self._progress.setValue(0)
         self._status_lbl.setText(self.t("cpk_working"))
-        self._set_buttons_enabled(False)
-
-        self._worker = _Worker(task, *args)
+        self._worker = _Worker(task, *args, reload_archive=reload_archive)
+        self._update_buttons()
         self._worker.progress.connect(self._on_progress)
         self._worker.log.connect(self._log)
         self._worker.finished.connect(self._on_finished)
@@ -804,17 +951,19 @@ class CpkEditor(QWidget):
         self._status_lbl.setText(
             self.t("cpk_progress", done=done, total=total,
                    name=os.path.basename(path)))
-        QApplication.processEvents()
 
-    def _on_finished(self, success, message):
+    def _on_finished(self):
+        worker = self._worker
+        self._worker = None
+        message = worker.error
+        success = message is None
         self._progress.setValue(100 if success else 0)
-        self._set_buttons_enabled(True)
+        self._update_buttons()
         if success:
             self._status_lbl.setText(self.t("cpk_done"))
             self._log(self.t("cpk_log_done"))
-            # Reload tree if CPK was modified
-            if self._cpk_path:
-                QTimer.singleShot(200, lambda: self._load_cpk(self._cpk_path))
+            if worker.reload_archive:
+                self.load_file(self._reader.path)
         else:
             self._status_lbl.setText(self.t("cpk_failed"))
             self._log(f"[ERROR] {message}")
@@ -823,16 +972,38 @@ class CpkEditor(QWidget):
 
 # Worker task functions (run in QThread)
 
-def _task_extract_all(cpk_path: str, out_dir: str,
+def _task_extract_archives(readers, out_dir: str, progress_cb=None, log_cb=None):
+    archive_paths = {os.path.normcase(os.path.realpath(reader.path)) for reader in readers}
+    for reader in readers:
+        for entry in reader.entries:
+            dest = os.path.normcase(os.path.realpath(reader.extraction_path(entry, out_dir)))
+            if dest in archive_paths:
+                raise ValueError(ui_text("cpk_error_output_is_source", path=dest))
+
+    total = sum(reader.num_files for reader in readers)
+    done = 0
+
+    def report(count, _archive_total, path):
+        progress_cb(done + count, total, path)
+
+    for reader in readers:
+        if log_cb:
+            log_cb(ui_text("cpk_log_extract_archive", path=reader.path))
+        _task_extract_all(reader, out_dir, progress_cb=report if progress_cb else None, log_cb=log_cb)
+        done += reader.num_files
+
+
+def _task_extract_all(reader: CpkReader, out_dir: str,
                       progress_cb=None, log_cb=None):
     from core.external_tools import find_cpkforge, tool_command
 
     helper = find_cpkforge()
-    if helper:
+    if helper and reader.uses_default_file_encryption:
+        cpk_path = reader.path
         if log_cb:
             log_cb(f"Fast unpack via CPKForge: {cpk_path}")
         if progress_cb:
-            progress_cb(0, 0, os.path.basename(cpk_path))
+            progress_cb(0, reader.num_files, cpk_path)
         result = subprocess.run(
             [*tool_command(helper), "unpack", cpk_path, out_dir],
             capture_output=True,
@@ -850,24 +1021,29 @@ def _task_extract_all(cpk_path: str, out_dir: str,
         else:
             if log_cb:
                 log_cb(f"Fast unpack completed: {out_dir}")
+            if progress_cb:
+                progress_cb(reader.num_files, reader.num_files, cpk_path)
             return
 
-    from parsers.cpk_parser import CpkReader
-    reader = CpkReader(cpk_path)
-    total  = reader.num_files
+    _task_extract_entries(dict.fromkeys(reader.entries, reader), out_dir,
+                          progress_cb=progress_cb, log_cb=log_cb)
+
+
+def _task_extract_entries(sources, out_dir: str, progress_cb=None, log_cb=None):
+    total = len(sources)
     if log_cb:
         log_cb(f"Extracting {total} files to: {out_dir}")
 
     warn_count = 0
-    for i, entry in enumerate(reader.entries):
+    for i, (entry, reader) in enumerate(sources.items(), start=1):
         dest, decomp_ok = reader.extract_entry(entry, out_dir, decompress=True)
         status = "" if decomp_ok else ui_text("ui_cpk_raw_decompression_not_supported")
         if not decomp_ok:
             warn_count += 1
         if log_cb:
-            log_cb(f"  [{i+1}/{total}] {entry.path}{status}")
+            log_cb(f"  [{i}/{total}] {entry.path}{status}")
         if progress_cb:
-            progress_cb(i + 1, total, dest)
+            progress_cb(i, total, dest)
 
     if warn_count and log_cb:
         log_cb(f"[WARN] {warn_count} file(s) written as raw compressed bytes "

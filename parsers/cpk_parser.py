@@ -539,6 +539,11 @@ class CpkReader:
     def entries_for_dir(self, dir_name: str) -> list[CpkEntry]:
         return [e for e in self.entries if e.dir_name == dir_name]
 
+    @property
+    def uses_default_file_encryption(self) -> bool:
+        """Whether the basename-based CPKForge decryptor can read this archive."""
+        return self._file_data_encrypted == _cpk_uses_asbr_file_encryption(self.path, {})
+
     def read_entry_data(self, entry: CpkEntry,
                         decompress: bool = True) -> bytes:
         """
@@ -549,6 +554,8 @@ class CpkReader:
         with open(self.path, "rb") as f:
             f.seek(entry.absolute_offset)
             raw = f.read(entry.file_size)
+        if len(raw) != entry.file_size:
+            raise EOFError(f"Incomplete CPK entry: {entry.path}")
 
         if self._file_data_encrypted:
             raw = crypt_jojo_asbr(raw)
@@ -556,6 +563,17 @@ class CpkReader:
         if decompress and entry.is_compressed:
             return decompress_crilayla(raw, entry.extract_size)
         return raw
+
+    @staticmethod
+    def extraction_path(entry: CpkEntry, out_dir: str) -> str:
+        """Resolve the output path and check that it stays under the output root."""
+        rel_path = entry.path.replace("\\", "/")
+        dest = os.path.abspath(os.path.join(out_dir, rel_path))
+        root = os.path.normcase(os.path.realpath(out_dir))
+        resolved = os.path.normcase(os.path.realpath(dest))
+        if resolved == root or not resolved.startswith(os.path.join(root, "")):
+            raise ValueError(f"Invalid CPK output path: {entry.path}")
+        return dest
 
     def extract_entry(self, entry: CpkEntry, out_dir: str,
                       decompress: bool = True) -> tuple[str, bool]:
@@ -566,14 +584,22 @@ class CpkReader:
         *decompressed_ok* is False when decompression was attempted but
         failed (output size mismatch); the raw compressed bytes are written.
         """
+        dest         = self.extraction_path(entry, out_dir)
         data         = self.read_entry_data(entry, decompress=decompress)
         expected     = entry.extract_size if entry.extract_size else entry.file_size
         decomp_ok    = not entry.is_compressed or len(data) == expected
-        rel_path     = entry.path.replace("/", os.sep)
-        dest         = os.path.join(out_dir, rel_path)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        with open(dest, "wb") as f:
-            f.write(data)
+        parent = os.path.dirname(dest)
+        os.makedirs(parent, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=parent, delete=False) as f:
+                temporary = f.name
+                f.write(data)
+            os.replace(temporary, dest)
+            temporary = None
+        finally:
+            if temporary is not None:
+                os.unlink(temporary)
         return dest, decomp_ok
 
     def extract_all(self, out_dir: str, decompress: bool = True,
