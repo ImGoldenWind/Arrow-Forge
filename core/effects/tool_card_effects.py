@@ -25,8 +25,7 @@ class ToolCardEffectsMixin:
             self._theme_personality_enabled()
             and self._theme_personality_motion_enabled()
             and P.get("card_texture") in {
-                "bubbles", "rain", "star_particles", "diamond_facets", "terminal_crt", "aero_glass",
-                "frosted_glass", "nightmare_chaos"
+                "bubbles", "rain", "star_particles", "aero_glass", "frosted_glass", "nightmare_chaos"
             }
         )
 

@@ -76,9 +76,6 @@ class NavigationMixin:
             "d13 flash": self._test_death13_flash,
             "death13 flash": self._test_death13_flash,
             "death 13 flash": self._test_death13_flash,
-            "d13 chaos": self._test_death13_chaos,
-            "death13 chaos": self._test_death13_chaos,
-            "death 13 chaos": self._test_death13_chaos,
         }
         action = aliases.get(command)
         if action is None:

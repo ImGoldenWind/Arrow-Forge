@@ -2,7 +2,7 @@ import math
 
 from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt
 from PyQt6.QtGui import (
-    QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen,
+    QBrush, QColor, QLinearGradient, QPainter, QPainterPath, QPen,
     QPixmap, QPolygonF, QRadialGradient,
 )
 
@@ -26,14 +26,10 @@ class ToolCardTextureMixin:
             self._draw_image_overlay_texture(painter, rect, radius, pulse)
         elif texture == "gold_luxury":
             self._draw_gold_luxury_texture(painter, rect, radius, pulse)
-        elif texture == "stone_threads":
-            self._draw_stone_thread_texture(painter, rect, radius, pulse)
         elif texture == "terminal_crt":
-            self._draw_terminal_crt_texture(painter, rect, radius, pulse)
+            self._draw_terminal_crt_texture(painter, rect, radius)
         elif texture == "star_particles":
             self._draw_star_particle_texture(painter, rect, radius, pulse)
-        elif texture == "diamond_facets":
-            self._draw_diamond_facets_texture(painter, rect, radius, pulse)
         elif texture == "aero_glass":
             self._draw_aero_glass_texture(painter, rect, radius, pulse)
         elif texture == "frosted_glass":
@@ -670,6 +666,8 @@ class ToolCardTextureMixin:
 
         shape_count = max(4, min(14, _theme_int("card_nightmare_shapes", 8)))
         for idx in range(shape_count):
+            if idx % 3 == 1:
+                continue
             x_seed = _hash01(self._bubble_seed + idx * 101.1)
             y_seed = _hash01(self._bubble_seed + idx * 131.3)
             size_seed = _hash01(self._bubble_seed + idx * 151.5)
@@ -687,14 +685,6 @@ class ToolCardTextureMixin:
             painter.setPen(QPen(self._color(color_key, int(alpha * (0.28 + size_seed * 0.38)), "accent"), 0.8 + size_seed * 0.6))
             if idx % 3 == 0:
                 painter.drawRect(QRectF(-size * 0.55, -size * 0.36, size * 1.1, size * 0.72))
-            elif idx % 3 == 1:
-                smile = QPainterPath()
-                smile.moveTo(-size * 0.44, -size * 0.10)
-                smile.cubicTo(-size * 0.18, size * 0.46, size * 0.24, size * 0.46, size * 0.50, -size * 0.08)
-                painter.drawPath(smile)
-                painter.drawRect(QRectF(-size * 0.30, -size * 0.28, 3.0, 2.0))
-                painter.drawLine(QPointF(size * 0.22, -size * 0.28), QPointF(size * 0.34, -size * 0.16))
-                painter.drawLine(QPointF(size * 0.34, -size * 0.28), QPointF(size * 0.22, -size * 0.16))
             else:
                 shard = QPolygonF([
                     QPointF(-size * 0.45, size * 0.36),
@@ -881,7 +871,7 @@ class ToolCardTextureMixin:
 
         painter.restore()
 
-    def _draw_terminal_crt_texture(self, painter, rect, radius, pulse):
+    def _draw_terminal_crt_texture(self, painter, rect, radius):
         texture = self._terminal_crt_pixmap(rect.size())
         if texture is None:
             return
@@ -891,17 +881,6 @@ class ToolCardTextureMixin:
         painter.save()
         painter.setClipPath(path)
         painter.drawPixmap(rect, texture)
-
-        if self._theme_personality_motion_enabled():
-            blink = int(self._hover_phase * 8 + (self._bubble_seed % 3)) % 2 == 0
-            if blink:
-                cursor_alpha = max(0, min(255, _theme_int("card_terminal_cursor_alpha", 118)))
-                cursor_x = rect.right() - 34
-                cursor_y = rect.top() + 17 + ((_hash01(self._bubble_seed) * 3) // 1) * 16
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(self._color("card_terminal_cursor", cursor_alpha, "accent"))
-                painter.drawRect(QRectF(cursor_x, cursor_y, 8, 12))
-
         painter.restore()
 
     def _terminal_crt_pixmap(self, size):
@@ -918,10 +897,9 @@ class ToolCardTextureMixin:
             size.height(),
             alpha,
             P.get("card_terminal_scanline"),
-            P.get("card_terminal_noise"),
-            P.get("card_terminal_warning"),
+            P.get("card_terminal_grid"),
+            P.get("card_terminal_frame"),
             P.get("accent"),
-            P.get("font_mono"),
             self._bubble_seed,
         )
         if self._texture_cache_key == cache_key and self._texture_cache_pixmap is not None:
@@ -935,7 +913,6 @@ class ToolCardTextureMixin:
 
         w = size.width()
         h = size.height()
-        rect = QRectF(0, 0, w, h)
         scanline = self._color("card_terminal_scanline", int(alpha * 0.34), "accent")
         for y in range(1, h, 4):
             painter.setPen(QPen(scanline, 1.0))
@@ -944,13 +921,6 @@ class ToolCardTextureMixin:
         painter.setPen(QPen(self._color("card_terminal_grid", int(alpha * 0.16), "accent"), 0.7))
         for x in range(24 + int(_hash01(self._bubble_seed) * 18), w, 96):
             painter.drawLine(x, 0, x, h)
-
-        noise = self._color("card_terminal_noise", int(alpha * 0.22), "accent")
-        painter.setPen(QPen(noise, 1.0))
-        for idx in range(34):
-            x = int(_hash01(self._bubble_seed + idx * 17.0) * w)
-            y = int(_hash01(self._bubble_seed + idx * 31.0) * h)
-            painter.drawPoint(x, y)
 
         frame = self._color("card_terminal_frame", int(alpha * 0.68), "accent")
         painter.setPen(QPen(frame, 1.0))
@@ -963,146 +933,6 @@ class ToolCardTextureMixin:
         painter.drawLine(8, h - 8, 8, h - 8 - corner)
         painter.drawLine(w - 8, h - 8, w - 8 - corner, h - 8)
         painter.drawLine(w - 8, h - 8, w - 8, h - 8 - corner)
-
-        painter.setFont(QFont(P.get("font_mono", "Consolas"), 7, QFont.Weight.Bold))
-        text_alpha = int(alpha * 0.74)
-        painter.setPen(self._color("card_terminal_text", text_alpha, "accent"))
-        node = int(_hash01(self._bubble_seed + 9.0) * 900 + 100)
-        mem = int(_hash01(self._bubble_seed + 19.0) * 88 + 11)
-        rx = int(_hash01(self._bubble_seed + 29.0) * 9000 + 1000)
-        painter.drawText(QRectF(14, 12, w - 28, 12), Qt.AlignmentFlag.AlignLeft, f"> CONNECTED :: NODE-{node}")
-        painter.drawText(QRectF(14, 28, w - 28, 12), Qt.AlignmentFlag.AlignLeft, f"MEM:{mem:02d}%  RX:{rx:04d}  TRACE:OK")
-
-        if _hash01(self._bubble_seed + 43.0) > 0.56:
-            painter.setPen(self._color("card_terminal_warning", int(alpha * 0.82), "warning"))
-            painter.drawText(QRectF(w - 116, h - 24, 100, 12), Qt.AlignmentFlag.AlignRight, "WARN: LATENCY")
-
-        vignette = QRadialGradient(QPointF(w * 0.5, h * 0.48), max(w, h) * 0.70)
-        vignette.setColorAt(0.0, self._color("card_terminal_vignette", 0, "accent"))
-        vignette.setColorAt(0.78, self._color("card_terminal_vignette", 0, "accent"))
-        vignette.setColorAt(1.0, self._color("card_terminal_vignette", int(alpha * 0.36), "accent"))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(vignette))
-        painter.drawRect(rect)
-
-        painter.end()
-        self._texture_cache_key = cache_key
-        self._texture_cache_pixmap = pixmap
-        return pixmap
-
-    def _draw_stone_thread_texture(self, painter, rect, radius, pulse):
-        texture = self._stone_thread_pixmap(rect.size())
-        if texture is None:
-            return
-
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(rect), radius, radius)
-        painter.save()
-        painter.setClipPath(path)
-        painter.drawPixmap(rect, texture)
-        painter.restore()
-
-    def _stone_thread_pixmap(self, size):
-        if size.width() <= 1 or size.height() <= 1:
-            return None
-
-        alpha = max(0, min(255, _theme_int("card_thread_alpha", 72)))
-        if alpha <= 0:
-            return None
-
-        thread_count = max(4, min(16, _theme_int("card_thread_count", 9)))
-        cache_key = (
-            "stone_threads",
-            size.width(),
-            size.height(),
-            thread_count,
-            alpha,
-            P.get("card_thread"),
-            P.get("card_thread_alt"),
-            P.get("card_thread_flash"),
-            P.get("card_thread_weave"),
-            P.get("card_thread_knot_alpha"),
-            self._bubble_seed,
-        )
-        if self._texture_cache_key == cache_key and self._texture_cache_pixmap is not None:
-            return self._texture_cache_pixmap
-
-        pixmap = QPixmap(size)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
-
-        weave = max(0.0, min(1.0, _theme_float("card_thread_weave", 0.72)))
-        margin = 26.0
-        rect = QRectF(0, 0, size.width(), size.height())
-
-        def thread_points(idx, variant):
-            lane_seed = _hash01(self._bubble_seed + idx * 31.17 + variant * 101.0)
-            wave_seed = _hash01(self._bubble_seed + idx * 43.23 + variant * 29.0)
-            bend_seed = _hash01(self._bubble_seed + idx * 59.71 + variant * 17.0)
-            points = []
-            samples = 13
-            diagonal = idx % 3 == 0
-            for step in range(samples):
-                t = step / (samples - 1)
-                if diagonal:
-                    x = rect.left() - margin + (rect.width() + margin * 2.0) * t
-                    y = rect.top() + rect.height() * (0.10 + lane_seed * 0.82)
-                    y += (t - 0.5) * rect.height() * (0.38 + bend_seed * 0.34)
-                else:
-                    x = rect.left() - margin + (rect.width() + margin * 2.0) * t
-                    y = rect.top() + rect.height() * (0.08 + lane_seed * 0.86)
-                wave = math.sin((t * (2.0 + wave_seed * 2.5) + lane_seed + variant * 0.17) * math.tau)
-                counter = math.sin((t * (4.0 + bend_seed * 2.0) + wave_seed) * math.tau)
-                y += (wave * 6.0 + counter * 1.8) * weave
-                points.append(QPointF(x, y))
-            return points
-
-        def smooth_path(points):
-            stroke = QPainterPath()
-            stroke.moveTo(points[0])
-            for idx in range(1, len(points) - 1):
-                mid = QPointF(
-                    (points[idx].x() + points[idx + 1].x()) * 0.5,
-                    (points[idx].y() + points[idx + 1].y()) * 0.5,
-                )
-                stroke.quadTo(points[idx], mid)
-            stroke.lineTo(points[-1])
-            return stroke
-
-        def draw_thread(points, color_key, line_alpha, width):
-            if len(points) < 2 or line_alpha <= 0:
-                return
-            pen = QPen(self._color(color_key, line_alpha, "accent"), width)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawPath(smooth_path(points))
-
-        for idx in range(thread_count):
-            points = thread_points(idx, 0)
-            color_key = "card_thread_alt" if idx % 4 == 0 else "card_thread"
-            depth = 0.58 + _hash01(self._bubble_seed + idx * 79.0) * 0.42
-            draw_thread(points, color_key, int(alpha * 0.12 * depth), 2.1)
-            draw_thread(points, color_key, int(alpha * 0.72 * depth), 0.68 + depth * 0.34)
-
-        knot_alpha = max(0, min(255, _theme_int("card_thread_knot_alpha", 52)))
-        painter.setPen(Qt.PenStyle.NoPen)
-        for idx in range(max(2, thread_count // 3)):
-            x_seed = _hash01(self._bubble_seed + idx * 97.0)
-            y_seed = _hash01(self._bubble_seed + idx * 113.0)
-            point = QPointF(
-                rect.left() + rect.width() * (0.10 + x_seed * 0.80),
-                rect.top() + rect.height() * (0.16 + y_seed * 0.68),
-            )
-            knot = QRadialGradient(point, 9.0)
-            knot.setColorAt(0.0, self._color("card_thread_flash", int(knot_alpha * 0.72), "shine"))
-            knot.setColorAt(0.44, self._color("card_thread", int(knot_alpha * 0.32), "accent"))
-            knot.setColorAt(1.0, self._color("card_thread", 0, "accent"))
-            painter.setBrush(QBrush(knot))
-            painter.drawEllipse(point, 9.0, 9.0)
 
         painter.end()
         self._texture_cache_key = cache_key
@@ -1182,214 +1012,6 @@ class ToolCardTextureMixin:
             painter.restore()
 
         painter.restore()
-
-    def _draw_diamond_facets_texture(self, painter, rect, radius, pulse):
-        texture = self._diamond_facets_pixmap(rect.size())
-        if texture is None:
-            return
-
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(rect), radius, radius)
-        painter.save()
-        painter.setClipPath(path)
-        painter.drawPixmap(rect, texture)
-        if self._theme_personality_motion_enabled():
-            self._draw_diamond_sheen(painter, rect, pulse)
-        painter.restore()
-
-    def _draw_diamond_sheen(self, painter, rect, pulse):
-        alpha = max(0, min(255, _theme_int("card_diamond_sheen_alpha", 72)))
-        if alpha <= 0:
-            return
-
-        facet_target = max(18, min(72, _theme_int("card_diamond_facets", 42)))
-        triangles = self._diamond_facet_triangles(rect.size(), facet_target)
-        seed_phase = (self._bubble_seed % 743) / 743.0
-        phase = (self._hover_phase * 1.45 + seed_phase) % 1.0
-        w = max(1.0, float(rect.width()))
-        h = max(1.0, float(rect.height()))
-
-        def shifted(point):
-            return QPointF(rect.left() + point.x(), rect.top() + point.y())
-
-        def lerp(a, b, t):
-            return QPointF(a.x() + (b.x() - a.x()) * t, a.y() + (b.y() - a.y()) * t)
-
-        seen = set()
-        edges = []
-        for tri_idx, tri in enumerate(triangles):
-            for edge_idx, (a, b) in enumerate(((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0]))):
-                key = tuple(sorted((
-                    (round(a.x() * 10), round(a.y() * 10)),
-                    (round(b.x() * 10), round(b.y() * 10)),
-                )))
-                if key in seen:
-                    continue
-                seen.add(key)
-                edges.append((a, b, tri_idx, edge_idx))
-
-        painter.save()
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        for edge_idx, (raw_a, raw_b, tri_idx, local_idx) in enumerate(edges):
-            a = shifted(raw_a)
-            b = shifted(raw_b)
-            mid_x = (raw_a.x() + raw_b.x()) * 0.5 / w
-            mid_y = (raw_a.y() + raw_b.y()) * 0.5 / h
-            lane = (mid_x * 0.68 + mid_y * 0.32 + _hash01(self._bubble_seed + edge_idx * 17.0) * 0.10) % 1.0
-            intensity = 0.0
-            for wave_offset, wave_strength in ((0.0, 1.0), (0.38, 0.62)):
-                wave_phase = (phase + wave_offset) % 1.0
-                distance = abs(((lane - wave_phase + 0.5) % 1.0) - 0.5)
-                intensity = max(intensity, max(0.0, 1.0 - distance / 0.165) * wave_strength)
-            if intensity <= 0.0:
-                continue
-
-            intensity = (intensity ** 1.35) * (0.80 + pulse * 0.20)
-            center_t = (_hash01(self._bubble_seed + tri_idx * 73.0 + local_idx * 29.0) + phase * 0.36) % 1.0
-            span = 0.30 + _hash01(self._bubble_seed + edge_idx * 43.0) * 0.24
-            start = max(0.0, center_t - span * 0.5)
-            end = min(1.0, center_t + span * 0.5)
-            if end - start < 0.04:
-                continue
-
-            seg_a = lerp(a, b, start)
-            seg_b = lerp(a, b, end)
-            glow_alpha = int(alpha * intensity * 0.82)
-            hot_alpha = int(alpha * intensity * 1.48)
-            glow_pen = QPen(self._color("card_diamond", glow_alpha, "accent"), 2.7)
-            glow_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(glow_pen)
-            painter.drawLine(seg_a, seg_b)
-            hot_pen = QPen(self._color("card_diamond_flash", hot_alpha, "shine"), 0.85 + intensity * 0.85)
-            hot_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(hot_pen)
-            painter.drawLine(seg_a, seg_b)
-        painter.restore()
-
-    def _diamond_facet_triangles(self, size, facet_target):
-        w = size.width()
-        h = size.height()
-
-        def dist2(a, b):
-            dx = a.x() - b.x()
-            dy = a.y() - b.y()
-            return dx * dx + dy * dy
-
-        def lerp(a, b, t):
-            return QPointF(a.x() + (b.x() - a.x()) * t, a.y() + (b.y() - a.y()) * t)
-
-        def tri_area(tri):
-            a, b, c = tri
-            return abs((b.x() - a.x()) * (c.y() - a.y()) - (c.x() - a.x()) * (b.y() - a.y())) * 0.5
-
-        def longest_edge(tri):
-            a, b, c = tri
-            edges = ((dist2(a, b), a, b, c), (dist2(b, c), b, c, a), (dist2(c, a), c, a, b))
-            return max(edges, key=lambda item: item[0])[1:]
-
-        triangles = [
-            (QPointF(0, 0), QPointF(w, 0), QPointF(w, h)),
-            (QPointF(0, 0), QPointF(w, h), QPointF(0, h)),
-        ]
-        split_step = 0
-        while len(triangles) < facet_target:
-            split_idx = max(
-                range(len(triangles)),
-                key=lambda idx: tri_area(triangles[idx]) * (0.84 + _hash01(self._bubble_seed + idx * 31.0) * 0.32),
-            )
-            tri = triangles.pop(split_idx)
-            edge_a, edge_b, opposite = longest_edge(tri)
-            split_t = 0.32 + _hash01(self._bubble_seed + split_step * 83.0 + split_idx * 19.0) * 0.36
-            split_point = lerp(edge_a, edge_b, split_t)
-            drift = (_hash01(self._bubble_seed + split_step * 47.0) - 0.5) * min(w, h) * 0.035
-            if 3 < split_point.x() < w - 3 and 3 < split_point.y() < h - 3:
-                split_point = QPointF(split_point.x() + drift, split_point.y() - drift * 0.55)
-            triangles.append((opposite, edge_a, split_point))
-            triangles.append((opposite, split_point, edge_b))
-            split_step += 1
-        return triangles
-
-    def _diamond_facets_pixmap(self, size):
-        if size.width() <= 1 or size.height() <= 1:
-            return None
-
-        facet_target = max(18, min(72, _theme_int("card_diamond_facets", 42)))
-        alpha = max(0, min(255, _theme_int("card_diamond_alpha", 58)))
-        cache_key = (
-            "diamond_facets",
-            size.width(),
-            size.height(),
-            facet_target,
-            alpha,
-            P.get("card_diamond"),
-            P.get("card_diamond_alt"),
-            P.get("card_diamond_flash"),
-            P.get("card_diamond_shadow"),
-            self._bubble_seed,
-        )
-        if self._texture_cache_key == cache_key and self._texture_cache_pixmap is not None:
-            return self._texture_cache_pixmap
-
-        pixmap = QPixmap(size)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-
-        triangles = self._diamond_facet_triangles(size, facet_target)
-
-        palette = (
-            ("card_diamond_shadow", "card_diamond"),
-            ("card_diamond", "card_diamond_flash"),
-            ("card_diamond_alt", "card_diamond_flash"),
-            ("card_diamond_shadow", "card_diamond_alt"),
-            ("card_diamond", "card_diamond_alt"),
-        )
-
-        def draw_triangle(tri, idx):
-            shade = _hash01(self._bubble_seed + idx * 97.0)
-            glint = _hash01(self._bubble_seed + idx * 53.0 + 11.0)
-            pair = palette[int(shade * len(palette)) % len(palette)]
-            color_a = self._color(pair[0], int(alpha * (0.24 + shade * 0.34)), "accent")
-            color_b = self._color(pair[1], int(alpha * (0.46 + (1.0 - shade) * 0.46)), "shine")
-            if shade < 0.16:
-                color_b = self._color("card_diamond_shadow", int(alpha * 0.78), "bg_dark")
-            elif glint > 0.88:
-                color_b = self._color("card_diamond_flash", int(alpha * 1.08), "shine")
-
-            center = QPointF(
-                (tri[0].x() + tri[1].x() + tri[2].x()) / 3.0,
-                (tri[0].y() + tri[1].y() + tri[2].y()) / 3.0,
-            )
-            far = tri[int(_hash01(self._bubble_seed + idx * 13.0) * 3) % 3]
-            gradient = QLinearGradient(center, far)
-            gradient.setColorAt(0.0, color_a)
-            gradient.setColorAt(0.66, color_b)
-            gradient.setColorAt(1.0, self._color("card_diamond_flash", int(alpha * (0.12 + glint * 0.18)), "shine"))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(gradient))
-            painter.drawPolygon(QPolygonF(tri))
-
-        for tri_idx, tri in enumerate(triangles):
-            draw_triangle(tri, tri_idx)
-
-        edge_alpha = int(alpha * 0.42)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        for idx, tri in enumerate(triangles):
-            edge_tone = _hash01(self._bubble_seed + idx * 67.0)
-            pen_color = self._color("card_diamond_flash", int(edge_alpha * (0.35 + edge_tone * 0.65)), "shine")
-            painter.setPen(QPen(pen_color, 0.36 if edge_tone < 0.82 else 0.7))
-            a, b, c = tri
-            painter.drawLine(a, b)
-            if edge_tone > 0.32:
-                painter.drawLine(b, c)
-            if edge_tone > 0.58:
-                painter.drawLine(c, a)
-
-        painter.end()
-        self._texture_cache_key = cache_key
-        self._texture_cache_pixmap = pixmap
-        return pixmap
 
     def _image_overlay_pixmap(self, size):
         if size.width() <= 1 or size.height() <= 1:

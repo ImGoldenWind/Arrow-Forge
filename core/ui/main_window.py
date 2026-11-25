@@ -1,6 +1,6 @@
 import os
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QMainWindow, QVBoxLayout, QWidget
 
@@ -129,6 +129,7 @@ class App(
         self._unlock_toasts = []
 
         self._central = QWidget()
+        self._central.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.setCentralWidget(self._central)
         self._root_layout = QVBoxLayout(self._central)
         self._root_layout.setContentsMargins(0, 0, 0, 0)
@@ -136,6 +137,7 @@ class App(
 
         self._init_white_album_effect()
         self._rebuild_ui()
+        self._central.setFocus()
         self._shortcut_manager = ShortcutManager(self)
         QTimer.singleShot(900, self._restore_workspace_on_startup)
         self._init_death13_chaos()

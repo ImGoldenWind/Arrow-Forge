@@ -50,6 +50,7 @@ SHORTCUT_ACTIONS: tuple[ShortcutAction, ...] = (
 
 ACTION_BY_ID = {action.action_id: action for action in SHORTCUT_ACTIONS}
 TEXT_NATIVE_ACTIONS = {"editor.undo", "editor.redo", "editor.delete", "editor.copy"}
+_DEATH13_SEQUENCE = "d13chaos"
 MODIFIER_KEYS = {
     Qt.Key.Key_Control,
     Qt.Key.Key_Shift,
@@ -147,6 +148,8 @@ class ShortcutManager(QObject):
         self._sequence_to_actions: dict[str, list[str]] = {}
         self.reload()
         if editor is None:
+            self._death13_input = ""
+            QApplication.instance().focusChanged.connect(self._reset_death13_input)
             self._set_active(True)
         else:
             self._visibility = _EditorShortcutVisibility(self)
@@ -192,6 +195,9 @@ class ShortcutManager(QObject):
             focus = QApplication.focusWidget()
             if focus is None or (focus is not self._editor and not self._editor.isAncestorOf(focus)):
                 return False
+        elif self._match_death13_input(watched, event):
+            self._app_window._test_death13_chaos()
+            return True
 
         sequence = normalize_sequence(QKeySequence(event.keyCombination()))
         action_ids = self._sequence_to_actions.get(sequence, [])
@@ -206,6 +212,34 @@ class ShortcutManager(QObject):
                 continue
             if handler(action_id):
                 return True
+        return False
+
+    def _reset_death13_input(self):
+        self._death13_input = ""
+
+    def _match_death13_input(self, watched, event):
+        focus = QApplication.focusWidget() or self._app_window
+        if watched is not focus or focus.window() is not self._app_window:
+            return False
+        if self._focus_is_text_editor() or event.isAutoRepeat():
+            return False
+        blocked_modifiers = (
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
+            | Qt.KeyboardModifier.MetaModifier
+        )
+        text = event.text().lower()
+        if len(text) != 1 or event.modifiers() & blocked_modifiers:
+            self._reset_death13_input()
+            return False
+
+        candidate = self._death13_input + text
+        if candidate == _DEATH13_SEQUENCE:
+            self._reset_death13_input()
+            return True
+        if _DEATH13_SEQUENCE.startswith(candidate):
+            self._death13_input = candidate
+        else:
+            self._death13_input = text if text == _DEATH13_SEQUENCE[0] else ""
         return False
 
     def _ordered_actions(self, action_ids: list[str]) -> list[str]:
